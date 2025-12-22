@@ -1,0 +1,626 @@
+{
+  "$schema": "./pii-entities.schema.json",
+  "version": "1.0.0",
+  "description": "Training examples generated from ai4privacy/open-pii-masking-500k-ai4privacy dataset",
+  "source_dataset": "ai4privacy/open-pii-masking-500k-ai4privacy",
+  "statistics": {
+    "total_examples": 20,
+    "languages": {
+      "nl": 2,
+      "de": 1,
+      "hi": 2,
+      "fr": 5,
+      "it": 5,
+      "en": 4,
+      "es": 1
+    },
+    "entity_types": {
+      "first_name": 20,
+      "last_name": 10,
+      "street_address": 7,
+      "time": 4,
+      "date": 4,
+      "phone_intl": 4,
+      "city": 3,
+      "passport_us": 3,
+      "email": 3,
+      "drivers_license": 2,
+      "ssn": 2,
+      "person": 2,
+      "credit_card": 1,
+      "eu_id": 1,
+      "zip_code": 1
+    }
+  },
+  "examples": [
+    {
+      "text": "Beste Wesam Dari, ik wil een terrarium maken met een uniek glaseffect. Kun je me een aanbeveling geven voor een好的 glassupplier? Mijn Borger-Odoorn Valthermond is Het Hogeland Oudeschip.",
+      "language": "nl",
+      "annotations": [
+        {
+          "entity_type": "first_name",
+          "value": "Wesam Dari",
+          "start": 6,
+          "end": 16,
+          "category": "identity"
+        },
+        {
+          "entity_type": "city",
+          "value": "Borger-Odoorn Valthermond",
+          "start": 133,
+          "end": 158,
+          "category": "location"
+        },
+        {
+          "entity_type": "city",
+          "value": "Het Hogeland Oudeschip",
+          "start": 162,
+          "end": 184,
+          "category": "location"
+        }
+      ]
+    },
+    {
+      "text": "Bitte senden Sie uns Ihre 374388431771637, um Ihre Zahlung abzuschließen.)",
+      "language": "de",
+      "annotations": [
+        {
+          "entity_type": "credit_card",
+          "value": "374388431771637",
+          "start": 26,
+          "end": 41,
+          "category": "financial"
+        }
+      ]
+    },
+    {
+      "text": "07:48 Ursalina Andreou: मुझे 25/09/1984 को सौर ऊर्जा संयंत्र स्थापित करने के लिए अनुमति मिल गई है, लेकिन मुझे अभी भी कुछ दस्तावेजों की आवश्यकता है",
+      "language": "hi",
+      "annotations": [
+        {
+          "entity_type": "time",
+          "value": "07:48",
+          "start": 0,
+          "end": 5,
+          "category": "temporal"
+        },
+        {
+          "entity_type": "first_name",
+          "value": "Ursalina",
+          "start": 6,
+          "end": 14,
+          "category": "identity"
+        },
+        {
+          "entity_type": "last_name",
+          "value": "Andreou",
+          "start": 15,
+          "end": 22,
+          "category": "identity"
+        },
+        {
+          "entity_type": "date",
+          "value": "25/09/1984",
+          "start": 29,
+          "end": 39,
+          "category": "temporal"
+        }
+      ]
+    },
+    {
+      "text": "Pierino Arbnor D'ario 1 October 1967 9 Male ES7553601 CO0P7KSVAM 95779.57582 1831772283",
+      "language": "hi",
+      "annotations": [
+        {
+          "entity_type": "first_name",
+          "value": "Pierino Arbnor",
+          "start": 0,
+          "end": 14,
+          "category": "identity"
+        },
+        {
+          "entity_type": "last_name",
+          "value": "D'ario",
+          "start": 15,
+          "end": 21,
+          "category": "identity"
+        },
+        {
+          "entity_type": "date",
+          "value": "1 October 1967",
+          "start": 22,
+          "end": 36,
+          "category": "temporal"
+        },
+        {
+          "entity_type": "passport_us",
+          "value": "ES7553601",
+          "start": 44,
+          "end": 53,
+          "category": "identity"
+        },
+        {
+          "entity_type": "drivers_license",
+          "value": "CO0P7KSVAM",
+          "start": 54,
+          "end": 64,
+          "category": "identity"
+        },
+        {
+          "entity_type": "ssn",
+          "value": "1831772283",
+          "start": 77,
+          "end": 87,
+          "category": "identity"
+        }
+      ]
+    },
+    {
+      "text": "Nevill a besoin d'un 046 5336754  pour contacter les fournisseurs de matériel de jardinage. Il utilise actuellement un GC@tutanota.com pour communiquer avec ses amis.",
+      "language": "fr",
+      "annotations": [
+        {
+          "entity_type": "first_name",
+          "value": "Nevill",
+          "start": 0,
+          "end": 6,
+          "category": "identity"
+        },
+        {
+          "entity_type": "phone_intl",
+          "value": "046 5336754 ",
+          "start": 21,
+          "end": 33,
+          "category": "contact"
+        },
+        {
+          "entity_type": "email",
+          "value": "GC@tutanota.com",
+          "start": 119,
+          "end": 134,
+          "category": "contact"
+        }
+      ]
+    },
+    {
+      "text": "Per convalidare la tua registrazione, per favore fornisci il tuo CD3929054 e il tuo BDW880135S.",
+      "language": "it",
+      "annotations": [
+        {
+          "entity_type": "passport_us",
+          "value": "CD3929054",
+          "start": 65,
+          "end": 74,
+          "category": "identity"
+        },
+        {
+          "entity_type": "eu_id",
+          "value": "BDW880135S",
+          "start": 84,
+          "end": 94,
+          "category": "identity"
+        }
+      ]
+    },
+    {
+      "text": "19:23 Stellie Mekka: 'Hello Gxime Roxana-Georgiana, I hope you're doing well. I was wondering if you could send me the agenda for the upcoming Toastmaster meeting?'",
+      "language": "en",
+      "annotations": [
+        {
+          "entity_type": "time",
+          "value": "19:23",
+          "start": 0,
+          "end": 5,
+          "category": "temporal"
+        },
+        {
+          "entity_type": "first_name",
+          "value": "Stellie Mekka",
+          "start": 6,
+          "end": 19,
+          "category": "identity"
+        },
+        {
+          "entity_type": "first_name",
+          "value": "Gxime Roxana-Georgiana",
+          "start": 28,
+          "end": 50,
+          "category": "identity"
+        }
+      ]
+    },
+    {
+      "text": "To: Ferid Amey Rezgui, Facility Management Team\nFrom: Walaa Zennaro\nSubject: Inspection Report for 162 Upper South Wraxall\n\nPlease find attached the inspection report for 193 Salisbury Road. Kindly review and implement the necessary repairs by 11th March 2002.",
+      "language": "en",
+      "annotations": [
+        {
+          "entity_type": "first_name",
+          "value": "Ferid Amey",
+          "start": 4,
+          "end": 14,
+          "category": "identity"
+        },
+        {
+          "entity_type": "last_name",
+          "value": "Rezgui",
+          "start": 15,
+          "end": 21,
+          "category": "identity"
+        },
+        {
+          "entity_type": "first_name",
+          "value": "Walaa",
+          "start": 54,
+          "end": 59,
+          "category": "identity"
+        },
+        {
+          "entity_type": "last_name",
+          "value": "Zennaro",
+          "start": 60,
+          "end": 67,
+          "category": "identity"
+        },
+        {
+          "entity_type": "street_address",
+          "value": "162",
+          "start": 99,
+          "end": 102,
+          "category": "location"
+        },
+        {
+          "entity_type": "street_address",
+          "value": "Upper South Wraxall",
+          "start": 103,
+          "end": 122,
+          "category": "location"
+        },
+        {
+          "entity_type": "street_address",
+          "value": "193",
+          "start": 171,
+          "end": 174,
+          "category": "location"
+        },
+        {
+          "entity_type": "street_address",
+          "value": "Salisbury Road",
+          "start": 175,
+          "end": 189,
+          "category": "location"
+        },
+        {
+          "entity_type": "date",
+          "value": "11th March 2002",
+          "start": 244,
+          "end": 259,
+          "category": "temporal"
+        }
+      ]
+    },
+    {
+      "text": "Il JO7074456 di Emiranda Sehabe è stato registrato per la partecipazione all'evento Via Castel Leone.",
+      "language": "it",
+      "annotations": [
+        {
+          "entity_type": "passport_us",
+          "value": "JO7074456",
+          "start": 3,
+          "end": 12,
+          "category": "identity"
+        },
+        {
+          "entity_type": "first_name",
+          "value": "Emiranda Sehabe",
+          "start": 16,
+          "end": 31,
+          "category": "identity"
+        },
+        {
+          "entity_type": "street_address",
+          "value": "Via Castel Leone",
+          "start": 84,
+          "end": 100,
+          "category": "location"
+        }
+      ]
+    },
+    {
+      "text": "Bonjour Virendra Kovarova, votre rendez-vous avec M Vilvarasa est fixé pour le 1er avril 1992 à 18:25.",
+      "language": "fr",
+      "annotations": [
+        {
+          "entity_type": "first_name",
+          "value": "Virendra",
+          "start": 8,
+          "end": 16,
+          "category": "identity"
+        },
+        {
+          "entity_type": "last_name",
+          "value": "Kovarova",
+          "start": 17,
+          "end": 25,
+          "category": "identity"
+        },
+        {
+          "entity_type": "person",
+          "value": "M",
+          "start": 50,
+          "end": 51,
+          "category": "identity"
+        },
+        {
+          "entity_type": "last_name",
+          "value": "Vilvarasa",
+          "start": 52,
+          "end": 61,
+          "category": "identity"
+        },
+        {
+          "entity_type": "date",
+          "value": "1er avril 1992",
+          "start": 79,
+          "end": 93,
+          "category": "temporal"
+        },
+        {
+          "entity_type": "time",
+          "value": "18:25",
+          "start": 96,
+          "end": 101,
+          "category": "temporal"
+        }
+      ]
+    },
+    {
+      "text": "Emsel Brunalli ha guidato un gruppo di studio sulla conservazione dei paesaggi sonori urbani. La relazione finale è stata inviata a +41-408-306.3657.",
+      "language": "it",
+      "annotations": [
+        {
+          "entity_type": "first_name",
+          "value": "Emsel",
+          "start": 0,
+          "end": 5,
+          "category": "identity"
+        },
+        {
+          "entity_type": "last_name",
+          "value": "Brunalli",
+          "start": 6,
+          "end": 14,
+          "category": "identity"
+        },
+        {
+          "entity_type": "phone_intl",
+          "value": "+41-408-306.3657",
+          "start": 132,
+          "end": 148,
+          "category": "contact"
+        }
+      ]
+    },
+    {
+      "text": "Igorche Ramtin Eshekary will need to bring their MARGA7101160M9183 and 805 099 8045 for verification.",
+      "language": "en",
+      "annotations": [
+        {
+          "entity_type": "first_name",
+          "value": "Igorche Ramtin",
+          "start": 0,
+          "end": 14,
+          "category": "identity"
+        },
+        {
+          "entity_type": "last_name",
+          "value": "Eshekary",
+          "start": 15,
+          "end": 23,
+          "category": "identity"
+        },
+        {
+          "entity_type": "drivers_license",
+          "value": "MARGA7101160M9183",
+          "start": 49,
+          "end": 66,
+          "category": "identity"
+        },
+        {
+          "entity_type": "ssn",
+          "value": "805 099 8045",
+          "start": 71,
+          "end": 83,
+          "category": "identity"
+        }
+      ]
+    },
+    {
+      "text": "Salve Smiljan Gian-Lucca, il tuo nuovo badge di raccolta patch è stato spedito alla tua sede a Wenden 52.",
+      "language": "it",
+      "annotations": [
+        {
+          "entity_type": "first_name",
+          "value": "Smiljan Gian-Lucca",
+          "start": 6,
+          "end": 24,
+          "category": "identity"
+        },
+        {
+          "entity_type": "street_address",
+          "value": "Wenden",
+          "start": 95,
+          "end": 101,
+          "category": "location"
+        },
+        {
+          "entity_type": "street_address",
+          "value": "52",
+          "start": 102,
+          "end": 104,
+          "category": "location"
+        }
+      ]
+    },
+    {
+      "text": "9:21 PM Asmita 💼: 'Merci encore ! Je vous souhaite aussi bonne chance pour vos futurs projets.'",
+      "language": "fr",
+      "annotations": [
+        {
+          "entity_type": "time",
+          "value": "9:21 PM",
+          "start": 0,
+          "end": 7,
+          "category": "temporal"
+        },
+        {
+          "entity_type": "first_name",
+          "value": "Asmita",
+          "start": 8,
+          "end": 14,
+          "category": "identity"
+        }
+      ]
+    },
+    {
+      "text": "Jndira a besoin de N0B pour envoyer les vêtements modifiés.",
+      "language": "fr",
+      "annotations": [
+        {
+          "entity_type": "first_name",
+          "value": "Jndira",
+          "start": 0,
+          "end": 6,
+          "category": "identity"
+        },
+        {
+          "entity_type": "zip_code",
+          "value": "N0B",
+          "start": 19,
+          "end": 22,
+          "category": "location"
+        }
+      ]
+    },
+    {
+      "text": "Hallo Chou, ik heb een leuk recept voor Apeldoorn Schoonlocht appelgebak. Wil je het hebben? Mijn Wendela Zupan heeft het me gegeven.",
+      "language": "nl",
+      "annotations": [
+        {
+          "entity_type": "first_name",
+          "value": "Chou",
+          "start": 6,
+          "end": 10,
+          "category": "identity"
+        },
+        {
+          "entity_type": "city",
+          "value": "Apeldoorn Schoonlocht",
+          "start": 40,
+          "end": 61,
+          "category": "location"
+        },
+        {
+          "entity_type": "first_name",
+          "value": "Wendela",
+          "start": 98,
+          "end": 105,
+          "category": "identity"
+        },
+        {
+          "entity_type": "last_name",
+          "value": "Zupan",
+          "start": 106,
+          "end": 111,
+          "category": "identity"
+        }
+      ]
+    },
+    {
+      "text": "Il Sig.ra Arunasalam Lyes Rauschgold sarà il responsabile della pianificazione delle condizioni meteorologiche per il festival e potrà essere contattato al elijalódi@protonmail.com.",
+      "language": "it",
+      "annotations": [
+        {
+          "entity_type": "person",
+          "value": "Sig.ra",
+          "start": 3,
+          "end": 9,
+          "category": "identity"
+        },
+        {
+          "entity_type": "first_name",
+          "value": "Arunasalam Lyes",
+          "start": 10,
+          "end": 25,
+          "category": "identity"
+        },
+        {
+          "entity_type": "last_name",
+          "value": "Rauschgold",
+          "start": 26,
+          "end": 36,
+          "category": "identity"
+        },
+        {
+          "entity_type": "email",
+          "value": "elijalódi@protonmail.com",
+          "start": 156,
+          "end": 180,
+          "category": "contact"
+        }
+      ]
+    },
+    {
+      "text": "If there are any issues, please contact 05.94 62 54-81 or M28@outlook.com.",
+      "language": "en",
+      "annotations": [
+        {
+          "entity_type": "phone_intl",
+          "value": "05.94 62 54-81",
+          "start": 40,
+          "end": 54,
+          "category": "contact"
+        },
+        {
+          "entity_type": "email",
+          "value": "M28@outlook.com",
+          "start": 58,
+          "end": 73,
+          "category": "contact"
+        }
+      ]
+    },
+    {
+      "text": "Le +1 435 181 7757 de Abdelrazak Yap est disponible pour les consultations sur la gestion du temps et l'organisation personnelle.",
+      "language": "fr",
+      "annotations": [
+        {
+          "entity_type": "phone_intl",
+          "value": "+1 435 181 7757",
+          "start": 3,
+          "end": 18,
+          "category": "contact"
+        },
+        {
+          "entity_type": "first_name",
+          "value": "Abdelrazak Yap",
+          "start": 22,
+          "end": 36,
+          "category": "identity"
+        }
+      ]
+    },
+    {
+      "text": "Branislavka: 'Sí, por favor. ¿Cuánta cera de soja necesito para hacer 10 velas?'",
+      "language": "es",
+      "annotations": [
+        {
+          "entity_type": "first_name",
+          "value": "Branislavka",
+          "start": 0,
+          "end": 11,
+          "category": "identity"
+        }
+      ]
+    }
+  ]
+}

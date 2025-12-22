@@ -1,0 +1,112 @@
+# Example configuration for nym PII anonymization CLI
+# Copy this file to $XDG_CONFIG_HOME/nym/config.toml and adjust as needed.
+"$schema" = "https://raw.githubusercontent.com/byteowlz/schemas/refs/heads/main/nym/nym.config.schema.json"
+
+[detection]
+# Built-in patterns to enable (default: all high-confidence patterns)
+# enabled_patterns = ["email", "phone_us", "ssn", "credit_card", "ipv4", "uuid"]
+
+# Patterns to disable
+# disabled_patterns = ["passport_us"]
+
+# Minimum confidence level: "high", "medium", "low"
+min_confidence = "high"
+
+[replacement]
+# Strategy: "placeholder", "mask", "hash", "random", "consistent"
+# - placeholder: Use fixed placeholders like <EMAIL>, <PHONE>
+# - mask: Preserve length with X characters (user@example.com -> XXXX@XXXXXXX.XXX)
+# - hash: Deterministic hash-based replacement
+# - random: Random but realistic-looking replacements
+# - consistent: Same input always gets same replacement (within session)
+strategy = "placeholder"
+
+# Seed for deterministic replacements (optional)
+# seed = 42
+
+# Domain for email replacements
+email_domain = "example.com"
+
+[keys]
+# Default key file location (supports ~ and $ENV_VARS)
+# default_key_file = "$XDG_STATE_HOME/nym/keys.jsonl"
+
+# Auto-generate key file if not specified
+auto_generate = false
+
+# Key file retention in days (0 = forever)
+retention_days = 30
+
+[logging]
+# Valid levels: error, warn, info, debug, trace
+level = "warn"
+
+[runtime]
+# Parallel processing threads (0 = auto-detect based on CPU count)
+parallelism = 0
+
+# Buffer size for file reading in bytes
+buffer_size = 65536
+
+[paths]
+# Uncomment to move persistent data/state to custom directories.
+# data_dir = "$XDG_DATA_HOME/nym"
+# state_dir = "$XDG_STATE_HOME/nym"
+
+[ner]
+# Enable NER-based detection for names, addresses, organizations
+# Requires building with --features ner (or ner-cuda for GPU acceleration)
+enabled = false
+
+# HuggingFace model repository (Apache-2.0 licensed, multilingual)
+model = "onnx-community/gliner_multi-v2.1"
+
+# Custom cache directory for model files
+# If not set, uses HF_HOME env var or ~/.cache/huggingface/
+# cache_dir = "$XDG_CACHE_HOME/huggingface"
+
+# Confidence threshold for NER detections (0.0-1.0)
+threshold = 0.5
+
+# Entity labels to detect (zero-shot, can be any labels)
+labels = ["person", "organization", "street_address", "city", "country"]
+
+# =============================================================================
+# Rulesets
+# =============================================================================
+# Rulesets are named presets for common use cases. Use with: nym anon -r <name>
+# Built-in rulesets: programming, identity, contact, financial, gdpr, hipaa, all, minimal
+#
+# You can define custom rulesets here that override or extend the built-ins:
+
+# [rulesets.my-custom]
+# description = "My custom ruleset"
+# enabled_patterns = ["email", "phone_us", "person"]
+# disabled_patterns = []
+# min_confidence = "medium"  # "high", "medium", "low"
+# ner = "auto"  # "auto", "on", "off" - auto uses NER only when needed
+# strategy = "consistent"  # Override replacement strategy
+
+# Example: Stricter programming ruleset with only API keys
+# [rulesets.strict-keys]
+# description = "Only high-confidence API keys and tokens"
+# enabled_patterns = ["aws_key", "jwt"]
+# min_confidence = "high"
+# ner = "off"
+# strategy = "placeholder"
+
+# =============================================================================
+# Per-pattern configuration
+# =============================================================================
+# Override settings for specific patterns:
+
+# [patterns.email]
+# enabled = true
+# strategy = "consistent"  # Override replacement strategy for emails
+# template = "<REDACTED_EMAIL>"  # Custom placeholder template
+
+# [patterns.credit_card]
+# strategy = "mask"  # Always mask credit cards regardless of global strategy
+
+# [patterns.ssn]
+# min_confidence = "high"  # Only detect high-confidence SSNs

@@ -1,0 +1,828 @@
+{
+  "$schema": "./pii-entities.schema.json",
+  "version": "1.0.0",
+  "entities": [
+    {
+      "name": "email",
+      "description": "Email address",
+      "category": "contact",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "(?i)\\b[a-z0-9._%+-]+@[a-z0-9.-]+\\.[a-z]{2,}\\b",
+      "examples": [
+        "user@example.com",
+        "first.last@sub.domain.org",
+        "user+tag@example.co.uk",
+        "john.doe123@company.io"
+      ],
+      "counter_examples": [
+        "not-an-email",
+        "@missing-local.com",
+        "user@",
+        "spaces in@email.com"
+      ],
+      "replacement_template": "<EMAIL>",
+      "validation": {
+        "min_length": 5,
+        "format": "local-part@domain"
+      },
+      "sensitivity": "high",
+      "compliance": ["gdpr", "ccpa"]
+    },
+    {
+      "name": "phone_us",
+      "description": "US phone number",
+      "category": "contact",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "(?:\\+?1[-.\\s]?)?\\(?[2-9]\\d{2}\\)?[-.\\s]?[2-9]\\d{2}[-.\\s]?\\d{4}",
+      "examples": [
+        "(555) 234-5678",
+        "555-234-5678",
+        "555.234.5678",
+        "+1 555 234 5678",
+        "5552345678"
+      ],
+      "counter_examples": [
+        "123-456",
+        "000-000-0000",
+        "111-111-1111"
+      ],
+      "replacement_template": "<PHONE>",
+      "validation": {
+        "min_length": 10,
+        "max_length": 17
+      },
+      "locales": ["US", "CA"],
+      "sensitivity": "high",
+      "compliance": ["gdpr", "ccpa"]
+    },
+    {
+      "name": "phone_intl",
+      "description": "International phone number (E.164 format)",
+      "category": "contact",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "\\+[1-9][\\d\\s\\-]{6,17}\\d\\b",
+      "examples": [
+        "+44 20 7946 0958",
+        "+49 30 12345678",
+        "+33 1 23 45 67 89",
+        "+81-3-1234-5678"
+      ],
+      "counter_examples": [
+        "+0123456789",
+        "+1"
+      ],
+      "replacement_template": "<PHONE>",
+      "validation": {
+        "min_length": 8,
+        "max_length": 20
+      },
+      "sensitivity": "high",
+      "compliance": ["gdpr", "ccpa"]
+    },
+    {
+      "name": "ssn",
+      "description": "US Social Security Number",
+      "category": "identity",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "\\b\\d{3}[-.\\s]\\d{2,3}[-.\\s]\\d{4}\\b",
+      "examples": [
+        "123-45-6789",
+        "123.45.6789",
+        "123 45 6789"
+      ],
+      "counter_examples": [
+        "000-00-0000",
+        "123456789",
+        "12-345-6789"
+      ],
+      "replacement_template": "<SSN>",
+      "validation": {
+        "min_length": 11,
+        "max_length": 11,
+        "format": "XXX-XX-XXXX"
+      },
+      "locales": ["US"],
+      "sensitivity": "critical",
+      "compliance": ["gdpr", "ccpa", "hipaa"]
+    },
+    {
+      "name": "ssn_nodash",
+      "description": "US Social Security Number (no dashes)",
+      "category": "identity",
+      "confidence": "medium",
+      "detection_method": "regex",
+      "regex_pattern": "\\b\\d{9}\\b",
+      "examples": [
+        "123456789",
+        "987654321"
+      ],
+      "counter_examples": [
+        "12345678",
+        "1234567890",
+        "000000000"
+      ],
+      "replacement_template": "<SSN>",
+      "validation": {
+        "min_length": 9,
+        "max_length": 9
+      },
+      "locales": ["US"],
+      "sensitivity": "critical",
+      "compliance": ["gdpr", "ccpa", "hipaa"]
+    },
+    {
+      "name": "credit_card",
+      "description": "Credit card number (Visa, Mastercard, Amex, Discover)",
+      "category": "financial",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "\\b(?:4\\d{3}|5[1-5]\\d{2}|3[47]\\d{2}|6(?:011|5\\d{2}))[-.\\s]?\\d{4}[-.\\s]?\\d{4}[-.\\s]?\\d{4}\\b",
+      "examples": [
+        "4111-1111-1111-1111",
+        "5500 0000 0000 0004",
+        "378282246310005",
+        "6011-1111-1111-1117"
+      ],
+      "counter_examples": [
+        "1234-5678-9012-3456",
+        "0000-0000-0000-0000"
+      ],
+      "replacement_template": "<CREDIT_CARD>",
+      "validation": {
+        "min_length": 13,
+        "max_length": 19,
+        "checksum": "luhn"
+      },
+      "sensitivity": "critical",
+      "compliance": ["pci-dss", "gdpr"]
+    },
+    {
+      "name": "iban",
+      "description": "International Bank Account Number",
+      "category": "financial",
+      "confidence": "medium",
+      "detection_method": "regex",
+      "regex_pattern": "\\b[A-Z]{2}\\d{2}[A-Z0-9]{11,30}\\b",
+      "examples": [
+        "DE89370400440532013000",
+        "GB82WEST12345698765432",
+        "FR7630006000011234567890189"
+      ],
+      "counter_examples": [
+        "XX00BANK00000000",
+        "DE123"
+      ],
+      "replacement_template": "<IBAN>",
+      "validation": {
+        "min_length": 15,
+        "max_length": 34,
+        "checksum": "mod97"
+      },
+      "sensitivity": "critical",
+      "compliance": ["gdpr", "pci-dss"]
+    },
+    {
+      "name": "ipv4",
+      "description": "IPv4 address",
+      "category": "network",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "\\b(?:(?:25[0-5]|2[0-4]\\d|1\\d{2}|[1-9]?\\d)\\.){3}(?:25[0-5]|2[0-4]\\d|1\\d{2}|[1-9]?\\d)\\b",
+      "examples": [
+        "192.168.1.1",
+        "10.0.0.1",
+        "255.255.255.255",
+        "8.8.8.8"
+      ],
+      "counter_examples": [
+        "256.1.1.1",
+        "1.2.3",
+        "1.2.3.4.5"
+      ],
+      "replacement_template": "<IPV4>",
+      "validation": {
+        "format": "X.X.X.X where X is 0-255"
+      },
+      "sensitivity": "medium",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "ipv6",
+      "description": "IPv6 address",
+      "category": "network",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "(?i)\\b(?:[a-f0-9]{1,4}:){7}[a-f0-9]{1,4}\\b",
+      "examples": [
+        "2001:0db8:85a3:0000:0000:8a2e:0370:7334",
+        "fe80:0000:0000:0000:0204:61ff:fe9d:f156"
+      ],
+      "counter_examples": [
+        "2001:db8::1",
+        "::1"
+      ],
+      "replacement_template": "<IPV6>",
+      "sensitivity": "medium",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "mac",
+      "description": "MAC address",
+      "category": "network",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "(?i)\\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\\b",
+      "examples": [
+        "00:1A:2B:3C:4D:5E",
+        "00-1A-2B-3C-4D-5E",
+        "aa:bb:cc:dd:ee:ff"
+      ],
+      "counter_examples": [
+        "00:1A:2B:3C:4D",
+        "001A2B3C4D5E"
+      ],
+      "replacement_template": "<MAC>",
+      "sensitivity": "medium",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "uuid",
+      "description": "Universally Unique Identifier",
+      "category": "other",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "(?i)\\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\\b",
+      "examples": [
+        "550e8400-e29b-41d4-a716-446655440000",
+        "123e4567-e89b-12d3-a456-426614174000"
+      ],
+      "counter_examples": [
+        "550e8400-e29b-41d4-a716",
+        "not-a-uuid"
+      ],
+      "replacement_template": "<UUID>",
+      "validation": {
+        "min_length": 36,
+        "max_length": 36,
+        "format": "8-4-4-4-12 hex digits"
+      },
+      "sensitivity": "low"
+    },
+    {
+      "name": "jwt",
+      "description": "JSON Web Token",
+      "category": "authentication",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "eyJ[a-zA-Z0-9_-]*\\.eyJ[a-zA-Z0-9_-]*\\.[a-zA-Z0-9_-]*",
+      "examples": [
+        "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.TJVA95OrM7E2cBab30RMHrHDcEfxjoYZgeFONFh7HgQ"
+      ],
+      "counter_examples": [
+        "not.a.jwt",
+        "eyJnot_base64.invalid.token"
+      ],
+      "replacement_template": "<JWT>",
+      "sensitivity": "critical",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "aws_key",
+      "description": "AWS Access Key ID",
+      "category": "authentication",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "(?:A3T[A-Z0-9]|AKIA|AGPA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}",
+      "examples": [
+        "AKIAIOSFODNN7EXAMPLE",
+        "ASIAJEXAMPLEEXAMPLE"
+      ],
+      "counter_examples": [
+        "XXXXXXXXXXXXXXXXXXXX"
+      ],
+      "replacement_template": "<AWS_KEY>",
+      "validation": {
+        "min_length": 20,
+        "max_length": 20
+      },
+      "sensitivity": "critical"
+    },
+    {
+      "name": "api_key",
+      "description": "Generic API key (sk_, pk_, api_, key_, token_)",
+      "category": "authentication",
+      "confidence": "medium",
+      "detection_method": "regex",
+      "regex_pattern": "\\b(?:sk|pk|api|key|token)[-_]?(?:live|test|prod)?[-_]?[a-zA-Z0-9]{32,}\\b",
+      "examples": [
+        "sk_live_abcdefghijklmnopqrstuvwxyz123456",
+        "pk_test_1234567890abcdefghijklmnopqrstuv",
+        "api_key_abcdefghijklmnopqrstuvwxyz123456789"
+      ],
+      "counter_examples": [
+        "sk_short",
+        "not_an_api_key"
+      ],
+      "replacement_template": "<API_KEY>",
+      "sensitivity": "critical"
+    },
+    {
+      "name": "passport_us",
+      "description": "US Passport number",
+      "category": "identity",
+      "confidence": "low",
+      "detection_method": "regex",
+      "regex_pattern": "\\b[A-Z]\\d{8}\\b",
+      "examples": [
+        "A12345678",
+        "B98765432"
+      ],
+      "counter_examples": [
+        "12345678A",
+        "AB1234567"
+      ],
+      "replacement_template": "<PASSPORT>",
+      "validation": {
+        "min_length": 9,
+        "max_length": 9,
+        "format": "Letter + 8 digits"
+      },
+      "locales": ["US"],
+      "sensitivity": "critical",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "uk_nino",
+      "description": "UK National Insurance Number",
+      "category": "identity",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "(?i)\\b[A-Z]{2}\\s?\\d{2}\\s?\\d{2}\\s?\\d{2}\\s?[A-D]\\b",
+      "examples": [
+        "AB123456C",
+        "AB 12 34 56 C",
+        "ZZ999999D"
+      ],
+      "counter_examples": [
+        "AB123456E",
+        "123456789"
+      ],
+      "replacement_template": "<UK_NINO>",
+      "validation": {
+        "format": "2 letters + 6 digits + 1 letter (A-D)"
+      },
+      "locales": ["GB"],
+      "sensitivity": "critical",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "fr_nir",
+      "description": "French Social Security Number (NIR)",
+      "category": "identity",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "\\b[12]\\s?\\d{2}\\s?\\d{2}\\s?\\d{2}\\s?\\d{3}\\s?\\d{3}\\s?\\d{2}\\b",
+      "examples": [
+        "1 85 12 75 108 108 42",
+        "185127510810842"
+      ],
+      "counter_examples": [
+        "3 85 12 75 108 108 42"
+      ],
+      "replacement_template": "<FR_NIR>",
+      "validation": {
+        "format": "1 or 2 + birth year + birth month + department + commune + order + key"
+      },
+      "locales": ["FR"],
+      "sensitivity": "critical",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "it_cf",
+      "description": "Italian Fiscal Code (Codice Fiscale)",
+      "category": "identity",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "(?i)\\b[A-Z]{6}\\d{2}[A-Z]\\d{2}[A-Z]\\d{3}[A-Z]\\b",
+      "examples": [
+        "RSSMRA85M01H501U",
+        "BNCLRD80A01F205X"
+      ],
+      "counter_examples": [
+        "123456789012345",
+        "ABCDEFGHIJKLMNOP"
+      ],
+      "replacement_template": "<IT_CF>",
+      "validation": {
+        "min_length": 16,
+        "max_length": 16,
+        "format": "6 letters (surname+name) + birth date code + municipality + control"
+      },
+      "locales": ["IT"],
+      "sensitivity": "critical",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "es_dni",
+      "description": "Spanish DNI/NIE",
+      "category": "identity",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "(?i)\\b(?:\\d{8}[A-Z]|[XYZ]\\d{7}[A-Z])\\b",
+      "examples": [
+        "12345678Z",
+        "X1234567L",
+        "Y0123456P"
+      ],
+      "counter_examples": [
+        "123456789",
+        "ABCDEFGHI"
+      ],
+      "replacement_template": "<ES_DNI>",
+      "validation": {
+        "format": "8 digits + letter (DNI) or X/Y/Z + 7 digits + letter (NIE)"
+      },
+      "locales": ["ES"],
+      "sensitivity": "critical",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "eu_id",
+      "description": "European ID number (generic pattern)",
+      "category": "identity",
+      "confidence": "low",
+      "detection_method": "regex",
+      "regex_pattern": "(?i)\\b[A-Z]{1,3}[-\\s]?\\d{6,12}\\b",
+      "examples": [
+        "DE-123456789",
+        "AT123456789",
+        "PL12345678901"
+      ],
+      "counter_examples": [
+        "A123",
+        "12345"
+      ],
+      "replacement_template": "<EU_ID>",
+      "locales": ["DE", "AT", "CH", "NL", "BE", "PL"],
+      "sensitivity": "high",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "drivers_license",
+      "description": "Driver's license number (various formats)",
+      "category": "identity",
+      "confidence": "medium",
+      "detection_method": "regex",
+      "regex_pattern": "(?xi)\\b(?:[A-Z]{3,6}[.\\-][0-9]{5,7}[.\\-][A-Z0-9]{1,2}[.\\-][0-9]{2,4}|[A-Z]{5}[0-9]{9,12}[A-Z]{0,3}[0-9]{0,3}|[A-Z][0-9]{8,12}|[A-Z][0-9]{2,3}[A-Z0-9]{5,12}|(?:DL|D\\.?L\\.?|License|Lic)[:\\-\\s]?[A-Z0-9]{5,15})\\b",
+      "examples": [
+        "DL-A1234567",
+        "LOUMA.657200.9.504",
+        "MASCU910077MV815",
+        "A123456789"
+      ],
+      "counter_examples": [
+        "DL-123",
+        "ABC"
+      ],
+      "replacement_template": "<DRIVERS_LICENSE>",
+      "sensitivity": "high",
+      "compliance": ["gdpr", "ccpa"]
+    },
+    {
+      "name": "date",
+      "description": "Date in various formats (ISO, US, EU, written)",
+      "category": "temporal",
+      "confidence": "medium",
+      "detection_method": "hybrid",
+      "regex_pattern": "\\b(?:\\d{4}[-/]\\d{1,2}[-/]\\d{1,2}|\\d{1,2}[-/\\.]\\d{1,2}[-/\\.]\\d{2,4}|(?:Jan(?:uary)?|Feb(?:ruary)?|Mar(?:ch)?|Apr(?:il)?|May|Jun(?:e)?|Jul(?:y)?|Aug(?:ust)?|Sep(?:tember)?|Oct(?:ober)?|Nov(?:ember)?|Dec(?:ember)?)\\s+\\d{1,2}(?:st|nd|rd|th)?,?\\s+\\d{2,4})\\b",
+      "ner_labels": ["date", "date_of_birth"],
+      "examples": [
+        "2024-12-25",
+        "12/25/2024",
+        "25.12.2024",
+        "December 25, 2024",
+        "25th December 2024"
+      ],
+      "counter_examples": [
+        "2024",
+        "12/2024"
+      ],
+      "replacement_template": "<DATE>",
+      "sensitivity": "medium",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "date_of_birth",
+      "description": "Date of birth (same formats as date, but contextually identified)",
+      "category": "identity",
+      "confidence": "medium",
+      "detection_method": "ner",
+      "ner_labels": ["date_of_birth", "dob", "birthday", "birthdate"],
+      "examples": [
+        "born on 1985-06-15",
+        "DOB: 06/15/1985",
+        "Birthday: June 15, 1985"
+      ],
+      "replacement_template": "<DOB>",
+      "sensitivity": "high",
+      "compliance": ["gdpr", "hipaa"]
+    },
+    {
+      "name": "time",
+      "description": "Time in various formats",
+      "category": "temporal",
+      "confidence": "low",
+      "detection_method": "regex",
+      "regex_pattern": "(?ix)\\b(?:(?:0?[1-9]|1[0-2]):[0-5]\\d\\s?(?:AM|PM)|(?:[01]?\\d|2[0-3]):[0-5]\\d(?::[0-5]\\d)?|(?:quarter|half)\\s+(?:past|to)\\s+\\d{1,2}|\\d{1,2}\\s+o'clock|\\d{1,2}\\s?(?:AM|PM))\\b",
+      "ner_labels": ["time"],
+      "examples": [
+        "14:30",
+        "2:30 PM",
+        "10:20am",
+        "quarter past 3"
+      ],
+      "counter_examples": [
+        "30:99",
+        "25:00"
+      ],
+      "replacement_template": "<TIME>",
+      "sensitivity": "low"
+    },
+    {
+      "name": "geocoord",
+      "description": "GPS coordinates (latitude, longitude)",
+      "category": "location",
+      "confidence": "medium",
+      "detection_method": "regex",
+      "regex_pattern": "\\(?[-+]?(?:[1-8]?\\d\\.\\d{2,}|90\\.0+)\\s*[,]\\s*[-+]?(?:1[0-7]\\d\\.\\d{2,}|180\\.0+|\\d{1,2}\\.\\d{2,})\\)?",
+      "examples": [
+        "40.7128,-74.0060",
+        "(40.7128, -74.0060)",
+        "51.5074, -0.1278"
+      ],
+      "counter_examples": [
+        "40, 74",
+        "91.0, 181.0"
+      ],
+      "replacement_template": "<GEOCOORD>",
+      "sensitivity": "high",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "username",
+      "description": "Username pattern (user123, john_doe style)",
+      "category": "social",
+      "confidence": "low",
+      "detection_method": "regex",
+      "regex_pattern": "\\b[a-zA-Z][a-zA-Z0-9_]{2,20}\\d+[a-zA-Z0-9_]*\\b|\\b[a-zA-Z][a-zA-Z0-9]*_[a-zA-Z0-9_]+\\b",
+      "examples": [
+        "user123",
+        "john_doe",
+        "admin_2024"
+      ],
+      "counter_examples": [
+        "user",
+        "123user",
+        "a"
+      ],
+      "replacement_template": "<USERNAME>",
+      "sensitivity": "medium"
+    },
+    {
+      "name": "twitter_handle",
+      "description": "Twitter/X handle (@username, 1-15 chars)",
+      "category": "social",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "@[a-zA-Z_][a-zA-Z0-9_]{0,14}\\b",
+      "examples": [
+        "@jack",
+        "@elonmusk",
+        "@user_name"
+      ],
+      "counter_examples": [
+        "@",
+        "@1user",
+        "@thisusernameiswaytoolong"
+      ],
+      "replacement_template": "<HANDLE>",
+      "sensitivity": "medium",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "social_handle",
+      "description": "Social media handle (@username, various platforms)",
+      "category": "social",
+      "confidence": "medium",
+      "detection_method": "regex",
+      "regex_pattern": "@[a-zA-Z][a-zA-Z0-9_.]{1,30}\\b",
+      "examples": [
+        "@johndoe",
+        "@John_Doe123",
+        "@user.name"
+      ],
+      "counter_examples": [
+        "@",
+        "@1",
+        "user@example.com"
+      ],
+      "replacement_template": "<HANDLE>",
+      "sensitivity": "medium",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "social_url",
+      "description": "Social media profile URL",
+      "category": "social",
+      "confidence": "high",
+      "detection_method": "regex",
+      "regex_pattern": "(?i)https?://(?:www\\.)?(?:twitter|x|instagram|facebook|fb|linkedin|github|tiktok|youtube|reddit)\\.com/@?[a-zA-Z0-9_.-]{1,39}(?:\\?|/|$)",
+      "examples": [
+        "https://twitter.com/johndoe",
+        "https://github.com/torvalds",
+        "https://linkedin.com/in/johndoe"
+      ],
+      "counter_examples": [
+        "https://example.com/page",
+        "https://google.com"
+      ],
+      "replacement_template": "<SOCIAL_URL>",
+      "sensitivity": "medium",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "person",
+      "description": "Person's full name",
+      "category": "identity",
+      "confidence": "medium",
+      "detection_method": "ner",
+      "ner_labels": ["person"],
+      "examples": [
+        "John Doe",
+        "Dr. Jane Smith",
+        "Hans Mueller",
+        "Marie Curie",
+        "Pablo Garcia Lopez"
+      ],
+      "counter_examples": [
+        "The",
+        "Hello",
+        "Company Inc"
+      ],
+      "replacement_template": "<PERSON>",
+      "related_entities": ["first_name", "last_name"],
+      "sensitivity": "high",
+      "compliance": ["gdpr", "hipaa", "ccpa"]
+    },
+    {
+      "name": "first_name",
+      "description": "Person's first/given name",
+      "category": "identity",
+      "confidence": "medium",
+      "detection_method": "ner",
+      "ner_labels": ["first_name", "firstname", "given_name", "givenname"],
+      "examples": [
+        "John",
+        "Marie",
+        "Hans",
+        "Pablo"
+      ],
+      "replacement_template": "<FIRST_NAME>",
+      "related_entities": ["person", "last_name"],
+      "sensitivity": "high",
+      "compliance": ["gdpr", "hipaa"]
+    },
+    {
+      "name": "last_name",
+      "description": "Person's last/family name",
+      "category": "identity",
+      "confidence": "medium",
+      "detection_method": "ner",
+      "ner_labels": ["last_name", "lastname", "surname", "family_name"],
+      "examples": [
+        "Doe",
+        "Smith",
+        "Mueller",
+        "Garcia"
+      ],
+      "replacement_template": "<LAST_NAME>",
+      "related_entities": ["person", "first_name"],
+      "sensitivity": "high",
+      "compliance": ["gdpr", "hipaa"]
+    },
+    {
+      "name": "organization",
+      "description": "Organization, company, or institution name",
+      "category": "other",
+      "confidence": "medium",
+      "detection_method": "ner",
+      "ner_labels": ["organization", "company", "org"],
+      "examples": [
+        "Acme Corporation",
+        "Stanford University",
+        "World Health Organization",
+        "Google LLC"
+      ],
+      "counter_examples": [
+        "the",
+        "a company"
+      ],
+      "replacement_template": "<ORGANIZATION>",
+      "sensitivity": "low"
+    },
+    {
+      "name": "street_address",
+      "description": "Street address",
+      "category": "location",
+      "confidence": "medium",
+      "detection_method": "ner",
+      "ner_labels": ["street_address", "address"],
+      "examples": [
+        "123 Main Street",
+        "456 Oak Ave, Suite 100",
+        "1600 Pennsylvania Avenue NW"
+      ],
+      "replacement_template": "<STREET_ADDRESS>",
+      "related_entities": ["city", "state", "country"],
+      "sensitivity": "high",
+      "compliance": ["gdpr", "ccpa"]
+    },
+    {
+      "name": "city",
+      "description": "City name",
+      "category": "location",
+      "confidence": "medium",
+      "detection_method": "ner",
+      "ner_labels": ["city"],
+      "examples": [
+        "New York",
+        "London",
+        "Berlin",
+        "Tokyo",
+        "San Francisco"
+      ],
+      "replacement_template": "<CITY>",
+      "related_entities": ["street_address", "state", "country"],
+      "sensitivity": "medium",
+      "compliance": ["gdpr"]
+    },
+    {
+      "name": "state",
+      "description": "State, province, or region name",
+      "category": "location",
+      "confidence": "medium",
+      "detection_method": "ner",
+      "ner_labels": ["state", "province", "region"],
+      "examples": [
+        "California",
+        "Texas",
+        "Bavaria",
+        "Ontario",
+        "Queensland"
+      ],
+      "replacement_template": "<STATE>",
+      "related_entities": ["city", "country"],
+      "sensitivity": "low"
+    },
+    {
+      "name": "country",
+      "description": "Country name",
+      "category": "location",
+      "confidence": "medium",
+      "detection_method": "ner",
+      "ner_labels": ["country"],
+      "examples": [
+        "United States",
+        "Germany",
+        "Japan",
+        "Brazil",
+        "Australia"
+      ],
+      "replacement_template": "<COUNTRY>",
+      "related_entities": ["city", "state"],
+      "sensitivity": "low"
+    },
+    {
+      "name": "phone_ner",
+      "description": "Phone number detected via NER (for non-standard formats)",
+      "category": "contact",
+      "confidence": "medium",
+      "detection_method": "ner",
+      "ner_labels": ["phone_number", "phone"],
+      "examples": [
+        "call me at five five five one two three four",
+        "my number is 555-CALL-NOW"
+      ],
+      "replacement_template": "<PHONE>",
+      "validation": {
+        "min_length": 7
+      },
+      "sensitivity": "high",
+      "compliance": ["gdpr", "ccpa"]
+    }
+  ]
+}

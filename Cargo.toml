@@ -1,0 +1,127 @@
+[package]
+name = "nym"
+version = "0.1.0"
+edition = "2024"
+description = "Fast, reversible PII anonymization CLI"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/byteowlz/nym"
+keywords = ["pii", "anonymization", "privacy", "redaction", "cli"]
+categories = ["command-line-utilities", "text-processing"]
+
+[dependencies]
+# Core
+anyhow = "1.0"
+thiserror = "1.0"
+
+# CLI
+clap = { version = "4.5", features = ["derive", "env", "wrap_help"] }
+clap_complete = "4.5"
+
+# Configuration
+config = { version = "0.15", features = ["toml"] }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "0.8"
+serde_yaml = "0.9"
+
+# Regex (core functionality)
+regex = "1.11"
+once_cell = "1.20"
+
+# Random generation (use fake's re-export for compatibility)
+
+# Hashing
+sha2 = "0.10"
+base64 = "0.22"
+
+# File handling
+shellexpand = "3.1"
+dirs = "6.0"
+
+# Logging
+log = "0.4"
+env_logger = "0.11"
+
+# Time
+chrono = { version = "0.4", features = ["serde"] }
+
+# CSV handling
+csv = "1.3"
+
+# Fake data generation
+fake = { version = "4", features = ["derive"] }
+
+# Progress bars (optional)
+indicatif = { version = "0.17", optional = true }
+
+# Async streaming (optional)
+tokio = { version = "1", features = ["rt-multi-thread", "io-std", "io-util", "fs", "macros", "sync"], optional = true }
+futures = { version = "0.3", optional = true }
+async-stream = { version = "0.3", optional = true }
+
+# Sentence segmentation for streaming NER (optional)
+async-tqsm = { git = "https://github.com/WismutHansen/async-tqsm", optional = true }
+unicode-segmentation = { version = "1.12", optional = true }
+
+# NER with GLiNER (optional)
+gline-rs = { version = "1", optional = true }
+orp = { version = "0.9", optional = true }
+hf-hub = { version = "0.4", optional = true, default-features = false, features = ["ureq"] }
+# Direct ort dependency for environment leak workaround (macOS crash fix)
+ort = { version = "=2.0.0-rc.9", optional = true }
+# libc for macOS crash workaround (_exit)
+libc = { version = "0.2", optional = true }
+
+# HTTP client for downloading datasets
+ureq = { version = "3", optional = true }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = ["progress", "streaming"]
+progress = ["indicatif"]
+streaming = ["tokio", "futures", "async-stream"]
+bench = ["ureq"]
+
+# NER with GLiNER
+ner = ["gline-rs", "orp", "hf-hub", "ort", "libc", "async-tqsm", "unicode-segmentation"]
+
+# Dynamic loading of ONNX runtime (recommended for distribution)
+ner-load-dynamic = ["ner", "gline-rs/load-dynamic"]
+
+# GPU/NPU acceleration for NER (requires appropriate hardware and drivers)
+# NVIDIA CUDA
+ner-cuda = ["ner", "gline-rs/cuda"]
+# NVIDIA TensorRT (optimized inference on NVIDIA GPUs)
+ner-tensorrt = ["ner", "gline-rs/tensorrt"]
+# AMD ROCm
+ner-rocm = ["ner", "gline-rs/rocm"]
+# Intel OpenVINO
+ner-openvino = ["ner", "gline-rs/openvino"]
+# Intel oneDNN
+ner-onednn = ["ner", "gline-rs/onednn"]
+# Windows DirectML (DirectX 12 GPU acceleration)
+ner-directml = ["ner", "gline-rs/directml"]
+# Apple CoreML (macOS/iOS)
+ner-coreml = ["ner", "gline-rs/coreml"]
+# Qualcomm QNN
+ner-qnn = ["ner", "gline-rs/qnn"]
+# Huawei CANN
+ner-cann = ["ner", "gline-rs/cann"]
+# Android NNAPI
+ner-nnapi = ["ner", "gline-rs/nnapi"]
+# Apache TVM
+ner-tvm = ["ner", "gline-rs/tvm"]
+# ARM ACL
+ner-acl = ["ner", "gline-rs/acl"]
+# ARM NN
+ner-armnn = ["ner", "gline-rs/armnn"]
+# AMD MIGraphX
+ner-migraphx = ["ner", "gline-rs/migraphx"]
+# Xilinx Vitis AI
+ner-vitis = ["ner", "gline-rs/vitis"]
+# Rockchip RKNPU
+ner-rknpu = ["ner", "gline-rs/rknpu"]
+# XNNPACK (CPU optimization)
+ner-xnnpack = ["ner", "gline-rs/xnnpack"]

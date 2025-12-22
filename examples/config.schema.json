@@ -1,0 +1,251 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/byteowlz/nym/schemas/config.schema.json",
+  "title": "nym configuration",
+  "description": "Configuration schema for nym PII anonymization CLI",
+  "type": "object",
+  "properties": {
+    "$schema": {
+      "type": "string",
+      "description": "JSON Schema reference for editor support"
+    },
+    "detection": {
+      "type": "object",
+      "description": "PII detection settings",
+      "properties": {
+        "enabled_patterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Built-in patterns to enable (default: all high-confidence patterns)",
+          "default": []
+        },
+        "disabled_patterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Patterns to disable",
+          "default": []
+        },
+        "min_confidence": {
+          "type": "string",
+          "enum": ["high", "medium", "low"],
+          "description": "Minimum confidence level for pattern matching",
+          "default": "high"
+        }
+      },
+      "additionalProperties": false
+    },
+    "replacement": {
+      "type": "object",
+      "description": "PII replacement settings",
+      "properties": {
+        "strategy": {
+          "type": "string",
+          "enum": ["placeholder", "mask", "hash", "random", "consistent"],
+          "description": "Replacement strategy for detected PII",
+          "default": "placeholder"
+        },
+        "seed": {
+          "type": "integer",
+          "description": "Seed for deterministic replacements (optional)",
+          "minimum": 0
+        },
+        "email_domain": {
+          "type": "string",
+          "description": "Domain to use for email replacements",
+          "default": "example.com"
+        }
+      },
+      "additionalProperties": false
+    },
+    "keys": {
+      "type": "object",
+      "description": "Key file settings for reversible anonymization",
+      "properties": {
+        "default_key_file": {
+          "type": "string",
+          "description": "Default key file location (supports ~ and $ENV_VARS)"
+        },
+        "auto_generate": {
+          "type": "boolean",
+          "description": "Auto-generate key file if not specified",
+          "default": false
+        },
+        "retention_days": {
+          "type": "integer",
+          "description": "Key file retention in days (0 = forever)",
+          "default": 30,
+          "minimum": 0
+        }
+      },
+      "additionalProperties": false
+    },
+    "logging": {
+      "type": "object",
+      "description": "Logging settings",
+      "properties": {
+        "level": {
+          "type": "string",
+          "enum": ["error", "warn", "info", "debug", "trace"],
+          "description": "Log level",
+          "default": "warn"
+        }
+      },
+      "additionalProperties": false
+    },
+    "runtime": {
+      "type": "object",
+      "description": "Runtime performance settings",
+      "properties": {
+        "parallelism": {
+          "type": "integer",
+          "description": "Parallel processing threads (0 = auto-detect based on CPU count)",
+          "default": 0,
+          "minimum": 0
+        },
+        "buffer_size": {
+          "type": "integer",
+          "description": "Buffer size for file reading in bytes",
+          "default": 65536,
+          "minimum": 1024
+        }
+      },
+      "additionalProperties": false
+    },
+    "paths": {
+      "type": "object",
+      "description": "Custom directory paths",
+      "properties": {
+        "data_dir": {
+          "type": "string",
+          "description": "Custom data directory (default: $XDG_DATA_HOME/nym)"
+        },
+        "state_dir": {
+          "type": "string",
+          "description": "Custom state directory (default: $XDG_STATE_HOME/nym)"
+        }
+      },
+      "additionalProperties": false
+    },
+    "ner": {
+      "type": "object",
+      "description": "Named Entity Recognition settings (requires 'ner' feature)",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Enable NER-based detection for names, addresses, etc.",
+          "default": false
+        },
+        "model": {
+          "type": "string",
+          "description": "HuggingFace model repository for GLiNER",
+          "default": "onnx-community/gliner_multi-v2.1"
+        },
+        "cache_dir": {
+          "type": "string",
+          "description": "Custom cache directory for model files (default: HF_HOME or ~/.cache/huggingface/)"
+        },
+        "threshold": {
+          "type": "number",
+          "description": "Confidence threshold for NER detections (0.0-1.0)",
+          "default": 0.5,
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "labels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Entity labels to detect",
+          "default": ["person", "organization", "street_address", "city", "country"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "rulesets": {
+      "type": "object",
+      "description": "Named rulesets for common use cases (programming, gdpr, hipaa, etc.)",
+      "additionalProperties": {
+        "$ref": "#/definitions/ruleset"
+      }
+    },
+    "patterns": {
+      "type": "object",
+      "description": "Per-pattern configuration overrides",
+      "additionalProperties": {
+        "$ref": "#/definitions/pattern_config"
+      }
+    }
+  },
+  "definitions": {
+    "ruleset": {
+      "type": "object",
+      "description": "A ruleset is a named preset for common use cases",
+      "properties": {
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of the ruleset"
+        },
+        "enabled_patterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Patterns to enable for this ruleset"
+        },
+        "disabled_patterns": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Patterns to disable for this ruleset"
+        },
+        "min_confidence": {
+          "type": "string",
+          "enum": ["high", "medium", "low"],
+          "description": "Minimum confidence level override"
+        },
+        "ner": {
+          "type": "string",
+          "enum": ["auto", "on", "off"],
+          "description": "NER mode: auto (use when needed), on (always), off (never)",
+          "default": "auto"
+        },
+        "strategy": {
+          "type": "string",
+          "enum": ["placeholder", "mask", "hash", "random", "consistent"],
+          "description": "Replacement strategy override"
+        },
+        "pattern_strategies": {
+          "type": "object",
+          "description": "Per-pattern strategy overrides within this ruleset",
+          "additionalProperties": {
+            "type": "string",
+            "enum": ["placeholder", "mask", "hash", "random", "consistent"]
+          }
+        }
+      },
+      "additionalProperties": false
+    },
+    "pattern_config": {
+      "type": "object",
+      "description": "Configuration for a specific pattern",
+      "properties": {
+        "enabled": {
+          "type": "boolean",
+          "description": "Whether this pattern is enabled by default"
+        },
+        "strategy": {
+          "type": "string",
+          "enum": ["placeholder", "mask", "hash", "random", "consistent"],
+          "description": "Replacement strategy for this pattern"
+        },
+        "template": {
+          "type": "string",
+          "description": "Custom replacement template (for placeholder strategy)"
+        },
+        "min_confidence": {
+          "type": "string",
+          "enum": ["high", "medium", "low"],
+          "description": "Minimum confidence override for this pattern"
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

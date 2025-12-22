@@ -1,0 +1,124 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/byteowlz/nym/schemas/pii-entities.schema.json",
+  "title": "PII Entity Types Schema",
+  "description": "Comprehensive schema for PII (Personally Identifiable Information) entity types. Designed for training small LLMs for NER-based PII detection.",
+  "version": "1.0.0",
+  "definitions": {
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"],
+      "description": "Detection confidence level. High = structured patterns with checksums/strict formats. Medium = common patterns that may have false positives. Low = loose patterns, context-dependent."
+    },
+    "category": {
+      "type": "string",
+      "enum": ["identity", "contact", "financial", "network", "authentication", "social", "temporal", "location", "other"],
+      "description": "Category of PII type for grouping and filtering."
+    },
+    "detection_method": {
+      "type": "string",
+      "enum": ["regex", "ner", "hybrid"],
+      "description": "Recommended detection method. regex = pattern-based, ner = named entity recognition, hybrid = both."
+    },
+    "entity_type": {
+      "type": "object",
+      "required": ["name", "description", "category", "confidence", "detection_method"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "description": "Unique identifier for this entity type (e.g., 'email', 'person', 'ssn')."
+        },
+        "description": {
+          "type": "string",
+          "description": "Human-readable description of what this entity type represents."
+        },
+        "category": {
+          "$ref": "#/definitions/category"
+        },
+        "confidence": {
+          "$ref": "#/definitions/confidence"
+        },
+        "detection_method": {
+          "$ref": "#/definitions/detection_method"
+        },
+        "regex_pattern": {
+          "type": "string",
+          "description": "Regex pattern for detection (if applicable). Uses Rust regex syntax."
+        },
+        "ner_labels": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "NER labels that map to this entity type (for NER-based detection)."
+        },
+        "examples": {
+          "type": "array",
+          "items": { "type": "string" },
+          "minItems": 1,
+          "description": "Example values that match this entity type."
+        },
+        "counter_examples": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Examples that should NOT match (false positives to avoid)."
+        },
+        "replacement_template": {
+          "type": "string",
+          "description": "Default placeholder template for anonymization (e.g., '<EMAIL>', '<PERSON>')."
+        },
+        "validation": {
+          "type": "object",
+          "properties": {
+            "min_length": { "type": "integer" },
+            "max_length": { "type": "integer" },
+            "checksum": { "type": "string", "description": "Checksum algorithm if applicable (e.g., 'luhn' for credit cards)." },
+            "format": { "type": "string", "description": "Format description or regex for validation." }
+          },
+          "description": "Validation rules for this entity type."
+        },
+        "locales": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Locale/country codes where this entity type is applicable (e.g., ['US'], ['DE', 'AT', 'CH'])."
+        },
+        "aliases": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Alternative names for this entity type."
+        },
+        "related_entities": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "Related entity types that often appear together (e.g., first_name + last_name = person)."
+        },
+        "sensitivity": {
+          "type": "string",
+          "enum": ["critical", "high", "medium", "low"],
+          "description": "Data sensitivity level for compliance (GDPR, HIPAA, etc.)."
+        },
+        "compliance": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": ["gdpr", "hipaa", "pci-dss", "ccpa", "ferpa"]
+          },
+          "description": "Compliance frameworks that consider this PII."
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "type": "object",
+  "required": ["version", "entities"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "description": "Schema version."
+    },
+    "entities": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/entity_type" },
+      "description": "List of all PII entity types."
+    }
+  },
+  "additionalProperties": false
+}
