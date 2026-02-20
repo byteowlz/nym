@@ -5,13 +5,17 @@ Generate PII training examples from the ai4privacy dataset.
 This script downloads examples from the ai4privacy/open-pii-masking-500k-ai4privacy
 dataset and formats them according to the nym PII entities schema for LLM training.
 
+Each example is output as an individual JSON file containing:
+- input_text: The text to analyze
+- expected_json: The expected PII entities following the nym schema
+
 Usage:
-    python scripts/generate_training_examples.py [--count N] [--output FILE] [--languages LANGS]
+    uv run scripts/generate_training_examples.py [--count N] [--output-dir DIR] [--languages LANGS]
 
 Examples:
-    python scripts/generate_training_examples.py --count 20
-    python scripts/generate_training_examples.py --count 50 --output training_data.json
-    python scripts/generate_training_examples.py --languages en,de,fr --count 30
+    uv run scripts/generate_training_examples.py --count 20
+    uv run scripts/generate_training_examples.py --count 50 --output-dir training_data
+    uv run scripts/generate_training_examples.py --languages en,de,fr --count 30
 """
 
 import argparse
@@ -248,6 +252,7 @@ def get_diverse_examples(
     count: int = 20,
     languages: list[str] | None = None,
     fetch_limit: int = 500,
+    min_length: int = 0,
 ) -> list[dict[str, Any]]:
     """
     Fetch diverse examples from the dataset.
@@ -283,6 +288,9 @@ def get_diverse_examples(
             if languages and example["language"].lower() not in [
                 l.lower() for l in languages
             ]:
+                continue
+            # Filter by minimum text length
+            if len(example["text"]) < min_length:
                 continue
             examples.append(example)
 
@@ -328,51 +336,61 @@ def get_diverse_examples(
     return selected[:count]
 
 
-def format_output(examples: list[dict[str, Any]]) -> dict[str, Any]:
-    """Format examples for output according to our schema."""
+def format_single_example(example: dict[str, Any]) -> dict[str, Any]:
+    """Format a single example for output as input_text + expected_json.
 
-    # Collect entity type statistics
+    Output format follows schemas/training-example.schema.json:
+    {
+        "input_text": "...",
+        "expected_json": {
+            "entities": [
+                {"type": "email", "value": "user@example.com"},
+                {"type": "phone_intl", "value": "+1-555-123-4567"}
+            ]
+        }
+    }
+
+    This flat structure is ideal for LLM training as models can reliably
+    output entity type and value pairs without needing byte offsets.
+    """
+    entities = [{"type": e["type"], "value": e["value"]} for e in example["entities"]]
+
+    return {
+        "input_text": example["text"],
+        "expected_json": {
+            "entities": entities,
+        },
+    }
+
+
+def write_examples_to_files(
+    examples: list[dict[str, Any]], output_dir: Path
+) -> dict[str, Any]:
+    """Write each example to an individual JSON file and return statistics."""
+    output_dir.mkdir(parents=True, exist_ok=True)
+
+    # Collect statistics
     entity_stats: dict[str, int] = {}
     language_stats: dict[str, int] = {}
 
-    for example in examples:
+    for idx, example in enumerate(examples, start=1):
         lang = example["language"]
         language_stats[lang] = language_stats.get(lang, 0) + 1
         for entity in example["entities"]:
             etype = entity["type"]
             entity_stats[etype] = entity_stats.get(etype, 0) + 1
 
-    # Format for output
-    formatted_examples = []
-    for example in examples:
-        formatted_examples.append(
-            {
-                "text": example["text"],
-                "language": example["language"],
-                "annotations": [
-                    {
-                        "entity_type": e["type"],
-                        "value": e["value"],
-                        "start": e["start"],
-                        "end": e["end"],
-                        "category": e["category"],
-                    }
-                    for e in example["entities"]
-                ],
-            }
+        # Format and write individual file
+        formatted = format_single_example(example)
+        filename = output_dir / f"example_{idx:04d}.json"
+        filename.write_text(
+            json.dumps(formatted, indent=2, ensure_ascii=False), encoding="utf-8"
         )
 
     return {
-        "$schema": "./pii-entities.schema.json",
-        "version": "1.0.0",
-        "description": "Training examples generated from ai4privacy/open-pii-masking-500k-ai4privacy dataset",
-        "source_dataset": DATASET_NAME,
-        "statistics": {
-            "total_examples": len(examples),
-            "languages": language_stats,
-            "entity_types": dict(sorted(entity_stats.items(), key=lambda x: -x[1])),
-        },
-        "examples": formatted_examples,
+        "total_examples": len(examples),
+        "languages": language_stats,
+        "entity_types": dict(sorted(entity_stats.items(), key=lambda x: -x[1])),
     }
 
 
@@ -388,11 +406,11 @@ def main():
         help="Number of examples to generate (default: 20)",
     )
     parser.add_argument(
-        "--output",
+        "--output-dir",
         "-o",
         type=str,
-        default=None,
-        help="Output file path (default: stdout)",
+        default="training_examples",
+        help="Output directory for individual JSON files (default: training_examples)",
     )
     parser.add_argument(
         "--languages",
@@ -411,6 +429,13 @@ def main():
     parser.add_argument(
         "--seed", "-s", type=int, default=None, help="Random seed for reproducibility"
     )
+    parser.add_argument(
+        "--min-length",
+        "-m",
+        type=int,
+        default=0,
+        help="Minimum character length for input_text (default: 0)",
+    )
 
     args = parser.parse_args()
 
@@ -426,31 +451,23 @@ def main():
         count=args.count,
         languages=languages,
         fetch_limit=args.fetch_limit,
+        min_length=args.min_length,
     )
 
     if not examples:
         print("Error: No examples found matching criteria", file=sys.stderr)
         sys.exit(1)
 
-    output = format_output(examples)
-
-    # Output
-    json_output = json.dumps(output, indent=2, ensure_ascii=False)
-
-    if args.output:
-        output_path = Path(args.output)
-        output_path.write_text(json_output, encoding="utf-8")
-        print(f"Wrote {len(examples)} examples to {output_path}", file=sys.stderr)
-    else:
-        print(json_output)
+    # Write individual files
+    output_dir = Path(args.output_dir)
+    stats = write_examples_to_files(examples, output_dir)
 
     # Print summary to stderr
-    print(f"\nSummary:", file=sys.stderr)
-    print(f"  Examples: {output['statistics']['total_examples']}", file=sys.stderr)
-    print(f"  Languages: {output['statistics']['languages']}", file=sys.stderr)
     print(
-        f"  Entity types: {len(output['statistics']['entity_types'])}", file=sys.stderr
+        f"\nWrote {stats['total_examples']} examples to {output_dir}/", file=sys.stderr
     )
+    print(f"  Languages: {stats['languages']}", file=sys.stderr)
+    print(f"  Entity types: {len(stats['entity_types'])}", file=sys.stderr)
 
 
 if __name__ == "__main__":

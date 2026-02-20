@@ -676,15 +676,36 @@ impl Replacer {
                 name
             }
             "first_name" => {
+                let original = &pii_match.matched_text;
+                // Check if we already have a replacement for this name
+                if let Some(replacement) = self.lookup_component(original).cloned() {
+                    return replacement;
+                }
                 let name: String = FirstName().fake_with_rng(&mut self.rng);
+                // Register for linking
+                self.register_component(original, &name);
                 name
             }
             "last_name" => {
+                let original = &pii_match.matched_text;
+                // Check if we already have a replacement for this name
+                if let Some(replacement) = self.lookup_component(original).cloned() {
+                    return replacement;
+                }
                 let name: String = LastName().fake_with_rng(&mut self.rng);
+                // Register for linking
+                self.register_component(original, &name);
                 name
             }
             "company" | "organization" => {
+                let original = &pii_match.matched_text;
+                // Check if we already have a replacement for this organization
+                if let Some(replacement) = self.lookup_component(original).cloned() {
+                    return replacement;
+                }
                 let company: String = CompanyName().fake_with_rng(&mut self.rng);
+                // Register for linking
+                self.register_component(original, &company);
                 company
             }
             "street_address" => {
@@ -693,18 +714,44 @@ impl Replacer {
                 format!("{num} {street}")
             }
             "city" => {
+                let original = &pii_match.matched_text;
+                // Check if we already have a replacement for this city
+                if let Some(replacement) = self.lookup_component(original).cloned() {
+                    return replacement;
+                }
                 let city: String = CityName().fake_with_rng(&mut self.rng);
+                // Register for linking (e.g., in full_address fields)
+                self.register_component(original, &city);
                 city
             }
             "state" => {
+                let original = &pii_match.matched_text;
+                // Check if we already have a replacement for this state
+                if let Some(replacement) = self.lookup_component(original).cloned() {
+                    return replacement;
+                }
                 let state: String = StateAbbr().fake_with_rng(&mut self.rng);
+                // Register for linking
+                self.register_component(original, &state);
                 state
             }
             "zip_code" | "postal_code" => {
+                let original = &pii_match.matched_text;
+                // Check if we already have a replacement for this zip
+                if let Some(replacement) = self.lookup_component(original).cloned() {
+                    return replacement;
+                }
                 let zip: String = ZipCode().fake_with_rng(&mut self.rng);
+                // Register for linking
+                self.register_component(original, &zip);
                 zip
             }
             "country" => {
+                let original = &pii_match.matched_text;
+                // Check if we already have a replacement for this country
+                if let Some(replacement) = self.lookup_component(original).cloned() {
+                    return replacement;
+                }
                 // Generate a fake country name
                 // Using a list of fictional/common countries for consistency
                 let countries = [
@@ -712,12 +759,23 @@ impl Replacer {
                     "Florin", "Guilder", "Latveria", "Sokovia", "Kahndaq",
                 ];
                 let idx = self.rng.random_range(0..countries.len());
-                countries[idx].to_string()
+                let country = countries[idx].to_string();
+                // Register for linking
+                self.register_component(original, &country);
+                country
             }
             "number" | "street_number" | "building_number" => {
+                let original = &pii_match.matched_text;
+                // Check if we already have a replacement for this number
+                if let Some(replacement) = self.lookup_component(original).cloned() {
+                    return replacement;
+                }
                 // Generate a fake street/building number
                 let num: u32 = self.rng.random_range(1..9999);
-                num.to_string()
+                let num_str = num.to_string();
+                // Register for linking
+                self.register_component(original, &num_str);
+                num_str
             }
             "date" | "date_of_birth" => {
                 // Generate a fake date (in past for DOB)
@@ -739,8 +797,15 @@ impl Replacer {
                 format!("{username}{num}")
             }
             "location" => {
+                let original = &pii_match.matched_text;
+                // Check if we already have a replacement for this location
+                if let Some(replacement) = self.lookup_component(original).cloned() {
+                    return replacement;
+                }
                 // Generic location - use city
                 let city: String = CityName().fake_with_rng(&mut self.rng);
+                // Register for linking
+                self.register_component(original, &city);
                 city
             }
             _ => {
@@ -1224,34 +1289,51 @@ impl Replacer {
             "street_address" => {
                 // Parse address components
                 let original = &pii_match.matched_text;
-                let fake_street: String = StreetName().fake_with_rng(&mut self.rng);
-                let fake_num: u32 = self.rng.random_range(1..9999);
-                let full_address = format!("{fake_num} {fake_street}");
+                
+                // First try to replace using known address components
+                let (replaced, was_linked) = self.replace_with_components(original);
+                
+                if was_linked {
+                    // Some parts were linked to known components
+                    (replaced, components)
+                } else {
+                    // Generate new fake address components
+                    let fake_street: String = StreetName().fake_with_rng(&mut self.rng);
+                    let fake_num: u32 = self.rng.random_range(1..9999);
+                    let full_address = format!("{fake_num} {fake_street}");
 
-                // Try to extract and map number and street separately
-                if let Some(first_space) = original.find(' ') {
-                    let (orig_num, orig_street) = original.split_at(first_space);
-                    let orig_street = orig_street.trim();
+                    // Try to extract and map number and street separately
+                    if let Some(first_space) = original.find(' ') {
+                        let (orig_num, orig_street) = original.split_at(first_space);
+                        let orig_street = orig_street.trim();
 
-                    // Only add component if the number looks like a number
-                    if orig_num.chars().all(|c| c.is_ascii_digit()) {
-                        components.push(ComponentMapping {
-                            original: orig_num.to_string(),
-                            replacement: fake_num.to_string(),
-                            component_type: "street_number".to_string(),
-                        });
+                        // Only add component if the number looks like a number
+                        if orig_num.chars().all(|c| c.is_ascii_digit()) {
+                            components.push(ComponentMapping {
+                                original: orig_num.to_string(),
+                                replacement: fake_num.to_string(),
+                                component_type: "street_number".to_string(),
+                            });
+                            // Register for linking
+                            self.register_component(orig_num, &fake_num.to_string());
+                        }
+
+                        if !orig_street.is_empty() {
+                            components.push(ComponentMapping {
+                                original: orig_street.to_string(),
+                                replacement: fake_street.clone(),
+                                component_type: "street_name".to_string(),
+                            });
+                            // Register for linking
+                            self.register_component(orig_street, &fake_street);
+                        }
+                    } else {
+                        // No space - register the whole thing as street_name
+                        self.register_component(original, &full_address);
                     }
 
-                    if !orig_street.is_empty() {
-                        components.push(ComponentMapping {
-                            original: orig_street.to_string(),
-                            replacement: fake_street,
-                            component_type: "street_name".to_string(),
-                        });
-                    }
+                    (full_address, components)
                 }
-
-                (full_address, components)
             }
             "email" => {
                 // Parse email into local part and domain
@@ -1746,5 +1828,105 @@ mod tests {
         assert_eq!(Replacer::match_case_pattern("john", "Donald"), "donald");
         assert_eq!(Replacer::match_case_pattern("John", "donald"), "Donald");
         assert_eq!(Replacer::match_case_pattern("Smith", "duck"), "Duck");
+    }
+
+    #[test]
+    fn test_address_component_linking() {
+        let mut replacer = Replacer::new(ReplacerConfig {
+            strategy: ReplacementStrategy::Fake,
+            seed: Some(42),
+            ..Default::default()
+        });
+
+        // First process individual address components
+        let street_match = make_match("street_address", "123 Main Street");
+        let _street_result = replacer.replace(&street_match);
+
+        let city_match = make_match("city", "San Francisco");
+        let city_result = replacer.replace(&city_match);
+
+        let state_match = make_match("state", "CA");
+        let _state_result = replacer.replace(&state_match);
+
+        // Extract the fake components
+        let fake_city = city_result.replacement.clone();
+
+        // Now process the same city again - should get the same replacement
+        let city_match2 = make_match("city", "San Francisco");
+        let city_result2 = replacer.replace(&city_match2);
+
+        assert_eq!(
+            city_result.replacement, city_result2.replacement,
+            "Same city should get same replacement"
+        );
+
+        // Process a street_address that contains the original city
+        // (simulating a "full_address" field that includes city)
+        let full_addr_match = make_match("street_address", "456 Oak Avenue, San Francisco");
+        let full_addr_result = replacer.replace(&full_addr_match);
+
+        // The full address should contain the linked fake city
+        assert!(
+            full_addr_result.replacement.to_lowercase().contains(&fake_city.to_lowercase()),
+            "Full address '{}' should contain fake city '{}' (original: San Francisco)",
+            full_addr_result.replacement,
+            fake_city
+        );
+    }
+
+    #[test]
+    fn test_city_consistency() {
+        let mut replacer = Replacer::new(ReplacerConfig {
+            strategy: ReplacementStrategy::Fake,
+            seed: Some(42),
+            ..Default::default()
+        });
+
+        // Process city
+        let city_match1 = make_match("city", "New York");
+        let city_result1 = replacer.replace(&city_match1);
+
+        // Process the same city again
+        let city_match2 = make_match("city", "New York");
+        let city_result2 = replacer.replace(&city_match2);
+
+        // Should get the same fake city
+        assert_eq!(
+            city_result1.replacement, city_result2.replacement,
+            "Same city should always get same replacement"
+        );
+
+        // Case-insensitive matching
+        let city_match3 = make_match("city", "new york");
+        let city_result3 = replacer.replace(&city_match3);
+
+        assert_eq!(
+            city_result1.replacement.to_lowercase(),
+            city_result3.replacement.to_lowercase(),
+            "City matching should be case-insensitive"
+        );
+    }
+
+    #[test]
+    fn test_organization_consistency() {
+        let mut replacer = Replacer::new(ReplacerConfig {
+            strategy: ReplacementStrategy::Fake,
+            seed: Some(42),
+            ..Default::default()
+        });
+
+        // Process organization
+        let org_match1 = make_match("organization", "Acme Corp");
+        let org_result1 = replacer.replace(&org_match1);
+
+        // Process the same organization again
+        let org_match2 = make_match("organization", "Acme Corp");
+        let org_result2 = replacer.replace(&org_match2);
+
+        // Should get the same fake organization
+        assert_eq!(
+            org_result1.replacement, org_result2.replacement,
+            "Same organization should always get same replacement"
+        );
     }
 }

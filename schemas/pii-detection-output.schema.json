@@ -1,0 +1,69 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://github.com/byteowlz/nym/schemas/pii-detection-output.schema.json",
+  "title": "PII Detection Output Schema",
+  "description": "Structured PII entities extracted from text. This is the expected LLM output format.",
+  "type": "object",
+  "properties": {
+    "entities": {
+      "type": "array",
+      "description": "List of detected PII entities",
+      "items": {
+        "type": "object",
+        "required": ["type", "value"],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "email",
+              "phone_us",
+              "phone_intl",
+              "ssn",
+              "credit_card",
+              "iban",
+              "ipv4",
+              "ipv6",
+              "mac",
+              "uuid",
+              "jwt",
+              "aws_key",
+              "api_key",
+              "passport_us",
+              "uk_nino",
+              "fr_nir",
+              "it_cf",
+              "es_dni",
+              "eu_id",
+              "drivers_license",
+              "date",
+              "date_of_birth",
+              "time",
+              "geocoord",
+              "username",
+              "twitter_handle",
+              "social_handle",
+              "social_url",
+              "person",
+              "first_name",
+              "last_name",
+              "organization",
+              "street_address",
+              "city",
+              "state",
+              "country",
+              "zip_code"
+            ],
+            "description": "The PII entity type (matches names from pii-entities.json)"
+          },
+          "value": {
+            "type": "string",
+            "description": "The actual PII value found in the text"
+          }
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "required": ["entities"],
+  "additionalProperties": false
+}
