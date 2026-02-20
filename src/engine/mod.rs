@@ -30,7 +30,7 @@ pub mod replacer;
 
 pub use detector::{Detector, DetectorConfig, PiiMatch};
 pub use formats::{JsonPiiMatch, detect_json, process_json};
-#[allow(unused_imports)]
+#[expect(unused_imports, reason = "Conditionally used with ner feature")]
 pub use ner::set_exit_code;
 pub use patterns::{BUILTIN_PATTERNS, Confidence, PiiCategory, PiiPattern, get_pattern};
 pub use replacer::{Replacement, ReplacementStrategy, Replacer, ReplacerConfig};

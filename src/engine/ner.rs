@@ -42,7 +42,10 @@ use crate::engine::patterns::PiiCategory;
 ///
 /// Note: GLiNER is a zero-shot NER model, so we can add any labels we want.
 /// The model will try to extract entities matching these semantic concepts.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Public API - used by consumers")
+)]
 pub const PII_LABELS: &[&str] = &[
     // Name components - try to get first/last name separately
     "person",
@@ -138,14 +141,20 @@ static EXIT_CODE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::n
 ///
 /// This is a no-op on non-macOS platforms or when NER is not enabled.
 #[cfg(all(feature = "ner", target_os = "macos"))]
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Public API - used by consumers")
+)]
 pub fn set_exit_code(code: i32) {
     EXIT_CODE.store(code, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Set the exit code (no-op stub for non-macOS).
 #[cfg(not(all(feature = "ner", target_os = "macos")))]
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Public API - used by consumers")
+)]
 pub fn set_exit_code(_code: i32) {
     // No-op on non-macOS platforms
 }
@@ -567,32 +576,47 @@ impl NerDetector {
     }
 
     /// Get the configured labels.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn labels(&self) -> &[String] {
         &self.labels
     }
 
     /// Get the confidence threshold.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn threshold(&self) -> f32 {
         self.threshold
     }
 
     /// Get the chunk size in words.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn chunk_size(&self) -> usize {
         self.chunk_size
     }
 
     /// Get the chunk overlap in words.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn chunk_overlap(&self) -> usize {
         self.chunk_overlap
     }
 }
 
 /// Default model repository on HuggingFace.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Public API - used by consumers")
+)]
 pub const DEFAULT_NER_MODEL: &str = "onnx-community/gliner_multi-v2.1";
 
 /// Model paths configuration for NER.
@@ -606,7 +630,10 @@ pub struct NerModelPaths {
 #[cfg(feature = "ner")]
 impl NerModelPaths {
     /// Create from explicit paths.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn new(tokenizer: std::path::PathBuf, model: std::path::PathBuf) -> Self {
         Self { tokenizer, model }
     }
@@ -689,7 +716,10 @@ impl NerModelConfig {
     }
 
     /// Check if model is already cached.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn is_cached(&self) -> bool {
         // Try to get paths without downloading
         if let Ok(paths) = self.get_cached_paths() {
@@ -700,7 +730,10 @@ impl NerModelConfig {
     }
 
     /// Get cached paths without downloading.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     fn get_cached_paths(&self) -> Result<NerModelPaths, Box<dyn std::error::Error + Send + Sync>> {
         use hf_hub::Cache;
 

@@ -3,10 +3,17 @@
 //! This module provides the core detection logic using compiled regex patterns
 //! and optional NER (Named Entity Recognition) for detecting names and addresses.
 
-use regex::RegexSet;
+use std::sync::LazyLock;
+
+use regex::{Regex, RegexSet};
 use serde::{Deserialize, Serialize};
 
 use super::patterns::{BUILTIN_PATTERNS, Confidence, PiiCategory, PiiPattern};
+
+/// Static regex for TLD detection in social handle validation.
+#[expect(clippy::unwrap_used, reason = "Static regex literal is infallible")]
+static TLD_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"^\.[a-z]{2,}(\s|$|[^a-z])").unwrap());
 
 #[cfg(feature = "ner")]
 use super::ner::{NerDetector, NerModelConfig};
@@ -35,7 +42,10 @@ impl PiiMatch {
     }
 
     /// Check if the match is empty (required by clippy when `len` is defined).
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn is_empty(&self) -> bool {
         self.len() == 0
     }
@@ -79,13 +89,19 @@ impl Default for DetectorConfig {
 
 impl DetectorConfig {
     /// Create a new config with all patterns enabled.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn all_patterns() -> Self {
         Self::default()
     }
 
     /// Create a config with only high-confidence patterns.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn high_confidence_only() -> Self {
         Self {
             min_confidence: Confidence::High,
@@ -166,14 +182,8 @@ impl Detector {
         let patterns: Vec<&'static PiiPattern> = BUILTIN_PATTERNS
             .iter()
             .filter(|p| {
-                // Check confidence level
-                let confidence_ok = match (config.min_confidence, p.confidence) {
-                    (Confidence::Low, _) => true,
-                    (Confidence::Medium, Confidence::Low) => false,
-                    (Confidence::Medium, _) => true,
-                    (Confidence::High, Confidence::High) => true,
-                    (Confidence::High, _) => false,
-                };
+                // Check confidence level (pattern must meet minimum)
+                let confidence_ok = p.confidence >= config.min_confidence;
 
                 if !confidence_ok {
                     return false;
@@ -188,7 +198,6 @@ impl Detector {
                 }
 
                 // Check exclude list
-                
 
                 !config.exclude_patterns.iter().any(|n| n == p.name)
             })
@@ -199,8 +208,10 @@ impl Detector {
             .map(|p| p.regex.as_str().to_string())
             .collect();
 
+        // All built-in patterns are compile-time string literals validated by tests.
+        #[expect(clippy::expect_used, reason = "Built-in regex patterns are infallible")]
         let regex_set =
-            RegexSet::new(&regex_patterns).expect("All patterns should be valid regexes");
+            RegexSet::new(&regex_patterns).expect("built-in patterns must be valid regexes");
 
         // Initialize NER detector if enabled
         #[cfg(feature = "ner")]
@@ -287,10 +298,10 @@ impl Detector {
             for m in pattern.regex.find_iter(text) {
                 // Filter out false positives for social handles
                 // (e.g., @domain in emails should not match as a handle)
-                if Self::is_social_handle_pattern(pattern.name) {
-                    if !Self::is_valid_social_handle(text, m.start(), m.end()) {
-                        continue;
-                    }
+                if Self::is_social_handle_pattern(pattern.name)
+                    && !Self::is_valid_social_handle(text, m.start(), m.end())
+                {
+                    continue;
                 }
 
                 matches.push(PiiMatch {
@@ -335,7 +346,10 @@ impl Detector {
     }
 
     /// Check if the text contains any PII (fast check without extracting matches).
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn contains_pii(&self, text: &str) -> bool {
         self.regex_set.is_match(text)
     }
@@ -346,7 +360,10 @@ impl Detector {
     }
 
     /// Get pattern info by name.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn get_pattern(&self, name: &str) -> Option<&'static PiiPattern> {
         self.patterns.iter().find(|p| p.name == name).copied()
     }
@@ -359,6 +376,10 @@ impl Detector {
 
     /// Check if NER detection is enabled (always false without feature).
     #[cfg(not(feature = "ner"))]
+    #[expect(
+        clippy::unused_self,
+        reason = "Matches the ner-feature variant signature"
+    )]
     pub fn ner_enabled(&self) -> bool {
         false
     }
@@ -378,23 +399,19 @@ impl Detector {
         // Check if this @ is preceded by alphanumeric (likely email local part)
         if start > 0 {
             let prev_char = text[..start].chars().last();
-            if let Some(c) = prev_char {
-                if c.is_alphanumeric() || c == '.' || c == '_' || c == '+' || c == '-' {
-                    // Preceded by email-like characters, likely part of email
-                    return false;
-                }
+            if let Some(c) = prev_char
+                && (c.is_alphanumeric() || c == '.' || c == '_' || c == '+' || c == '-')
+            {
+                // Preceded by email-like characters, likely part of email
+                return false;
             }
         }
 
         // Check if followed by a TLD-like pattern (e.g., .com, .org)
         // This would indicate it's part of an email domain
         let after = &text[end..];
-        if after.starts_with('.') {
-            // Could be email domain, check for common TLDs
-            let tld_pattern = regex::Regex::new(r"^\.[a-z]{2,}(\s|$|[^a-z])").unwrap();
-            if tld_pattern.is_match(&after.to_lowercase()) {
-                return false;
-            }
+        if after.starts_with('.') && TLD_REGEX.is_match(&after.to_lowercase()) {
+            return false;
         }
 
         true

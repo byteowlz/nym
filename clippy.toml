@@ -1,0 +1,25 @@
+# ============================================
+# RUST MAGIC LINTER - CLIPPY CONFIGURATION
+# ============================================
+
+cognitive-complexity-threshold = 15
+type-complexity-threshold = 200
+too-many-lines-threshold = 100
+
+# Domain terms that shouldn't trigger spelling warnings in docs
+doc-valid-idents = [
+    "PII",
+    "CLI",
+    "API",
+    "URL",
+    "UUID",
+    "JSON",
+    "CSV",
+    "TOML",
+    "YAML",
+    "SQL",
+    "NER",
+    "ONNX",
+    "GLiNER",
+    "NNAPI",
+]

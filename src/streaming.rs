@@ -73,8 +73,7 @@ pub struct ProcessedLine {
 
 /// Configuration for streaming processing.
 #[cfg(feature = "streaming")]
-#[derive(Debug, Clone)]
-#[derive(Default)]
+#[derive(Debug, Clone, Default)]
 pub struct StreamConfig {
     /// Detector configuration
     pub detector_config: DetectorConfig,
@@ -83,8 +82,6 @@ pub struct StreamConfig {
     /// Session ID for tracking
     pub session_id: Option<String>,
 }
-
-#[cfg(feature = "streaming")]
 
 /// Creates an async stream that processes lines from a reader.
 ///

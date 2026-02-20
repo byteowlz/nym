@@ -26,7 +26,7 @@ serde_yaml = "0.9"
 
 # Regex (core functionality)
 regex = "1.11"
-once_cell = "1.20"
+
 
 # Random generation (use fake's re-export for compatibility)
 
@@ -125,3 +125,38 @@ ner-vitis = ["ner", "gline-rs/vitis"]
 ner-rknpu = ["ner", "gline-rs/rknpu"]
 # XNNPACK (CPU optimization)
 ner-xnnpack = ["ner", "gline-rs/xnnpack"]
+
+# ============================================
+# RUST MAGIC LINTER - STANDARD PRESET
+# ============================================
+[lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+
+# === GUARDRAILS (Critical for AI Agents) ===
+unwrap_used = "deny"
+expect_used = "deny"
+panic = "deny"
+panic_in_result_fn = "deny"
+allow_attributes = "deny"
+
+# === CODE HYGIENE ===
+dbg_macro = "deny"
+todo = "deny"
+unimplemented = "deny"
+print_stdout = "deny"
+print_stderr = "deny"
+
+# === ASYNC SAFETY ===
+await_holding_lock = "deny"
+
+# === PROCESS SAFETY ===
+exit = "deny"
+
+# === PEDANTIC RELAXATIONS ===
+missing_errors_doc = "allow"
+missing_panics_doc = "allow"
+doc_markdown = "allow"
+must_use_candidate = "allow"
+module_name_repetitions = "allow"
+similar_names = "allow"
+too_many_lines = "allow"

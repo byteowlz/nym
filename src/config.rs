@@ -35,7 +35,6 @@ pub struct Config {
     pub patterns: HashMap<String, PatternConfig>,
 }
 
-
 /// Detection configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -205,8 +204,8 @@ pub struct NerConfig {
     pub cache_dir: Option<String>,
     /// Confidence threshold for NER detections (0.0-1.0)
     pub threshold: f32,
-    /// Entity labels to detect
-    /// Default: ["person", "organization", "street_address", "city", "country"]
+    /// Entity labels to detect.
+    /// Default: `person`, `organization`, `street_address`, `city`, `country`
     pub labels: Vec<String>,
 }
 
@@ -244,7 +243,7 @@ pub enum NerMode {
 
 impl NerMode {
     /// Check if NER should be enabled for the given patterns.
-    pub fn should_enable_ner(&self, patterns: &[String]) -> bool {
+    pub fn should_enable_ner(self, patterns: &[String]) -> bool {
         match self {
             NerMode::On => true,
             NerMode::Off => false,
@@ -331,16 +330,6 @@ pub struct PatternConfig {
 
 /// Built-in rulesets.
 impl Config {
-    /// Get built-in rulesets merged with user-defined ones.
-    pub fn get_rulesets(&self) -> HashMap<String, RulesetConfig> {
-        let mut rulesets = Self::builtin_rulesets();
-        // User rulesets override built-ins
-        for (name, ruleset) in &self.rulesets {
-            rulesets.insert(name.clone(), ruleset.clone());
-        }
-        rulesets
-    }
-
     /// Get a specific ruleset by name.
     pub fn get_ruleset(&self, name: &str) -> Option<RulesetConfig> {
         self.rulesets
@@ -556,10 +545,10 @@ impl Config {
         ));
 
         // Add global config file if it exists
-        if let Some(global_path) = global_config_path() {
-            if global_path.exists() {
-                builder = builder.add_source(config::File::from(global_path).required(false));
-            }
+        if let Some(global_path) = global_config_path()
+            && global_path.exists()
+        {
+            builder = builder.add_source(config::File::from(global_path).required(false));
         }
 
         // Add local config file if it exists
@@ -603,7 +592,10 @@ pub fn global_config_path() -> Option<PathBuf> {
 }
 
 /// Get the data directory path.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Public API - used by consumers")
+)]
 pub fn data_dir() -> PathBuf {
     // Try XDG_DATA_HOME first
     if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
@@ -611,15 +603,22 @@ pub fn data_dir() -> PathBuf {
     }
 
     // Fall back to dirs crate or default
-    dirs::data_dir().map(|p| p.join("nym")).unwrap_or_else(|| {
-        dirs::home_dir()
-            .map(|h| h.join(".local").join("share").join("nym"))
-            .unwrap_or_else(|| PathBuf::from(".nym"))
-    })
+    dirs::data_dir().map_or_else(
+        || {
+            dirs::home_dir().map_or_else(
+                || PathBuf::from(".nym"),
+                |h| h.join(".local").join("share").join("nym"),
+            )
+        },
+        |p| p.join("nym"),
+    )
 }
 
 /// Get the state directory path.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Public API - used by consumers")
+)]
 pub fn state_dir() -> PathBuf {
     // Try XDG_STATE_HOME first
     if let Ok(xdg_state) = std::env::var("XDG_STATE_HOME") {
@@ -627,15 +626,22 @@ pub fn state_dir() -> PathBuf {
     }
 
     // Fall back to dirs crate or default
-    dirs::state_dir().map(|p| p.join("nym")).unwrap_or_else(|| {
-        dirs::home_dir()
-            .map(|h| h.join(".local").join("state").join("nym"))
-            .unwrap_or_else(|| PathBuf::from(".nym"))
-    })
+    dirs::state_dir().map_or_else(
+        || {
+            dirs::home_dir().map_or_else(
+                || PathBuf::from(".nym"),
+                |h| h.join(".local").join("state").join("nym"),
+            )
+        },
+        |p| p.join("nym"),
+    )
 }
 
 /// Expand environment variables and ~ in a path string.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Public API - used by consumers")
+)]
 pub fn expand_path(path: &str) -> PathBuf {
     let expanded = shellexpand::full(path).unwrap_or_else(|_| path.into());
     PathBuf::from(expanded.as_ref())

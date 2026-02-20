@@ -49,6 +49,10 @@ pub struct ComponentMapping {
 
 /// A replacement mapping entry.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[expect(
+    clippy::struct_field_names,
+    reason = "Field names match domain terminology"
+)]
 pub struct Replacement {
     /// Original PII value
     pub original: String,
@@ -84,7 +88,10 @@ impl Default for ReplacerConfig {
 
 impl ReplacerConfig {
     /// Create a config with placeholder strategy.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn placeholder() -> Self {
         Self {
             strategy: ReplacementStrategy::Placeholder,
@@ -93,7 +100,10 @@ impl ReplacerConfig {
     }
 
     /// Create a config with mask strategy.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn mask() -> Self {
         Self {
             strategy: ReplacementStrategy::Mask,
@@ -102,7 +112,10 @@ impl ReplacerConfig {
     }
 
     /// Create a config with hash strategy.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn hash() -> Self {
         Self {
             strategy: ReplacementStrategy::Hash,
@@ -111,7 +124,10 @@ impl ReplacerConfig {
     }
 
     /// Create a config with consistent strategy.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn consistent() -> Self {
         Self {
             strategy: ReplacementStrategy::Consistent,
@@ -120,14 +136,20 @@ impl ReplacerConfig {
     }
 
     /// Set a seed for deterministic output.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn with_seed(mut self, seed: u64) -> Self {
         self.seed = Some(seed);
         self
     }
 
     /// Set the email domain for replacements.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn with_email_domain(mut self, domain: impl Into<String>) -> Self {
         self.email_domain = domain.into();
         self
@@ -192,8 +214,8 @@ impl Replacer {
     /// Generate a replacement for a PII match.
     pub fn replace(&mut self, pii_match: &PiiMatch) -> Replacement {
         let (replacement, components) = match self.config.strategy {
-            ReplacementStrategy::Placeholder => (self.placeholder_replacement(pii_match), vec![]),
-            ReplacementStrategy::Mask => (self.mask_replacement(pii_match), vec![]),
+            ReplacementStrategy::Placeholder => (Self::placeholder_replacement(pii_match), vec![]),
+            ReplacementStrategy::Mask => (Self::mask_replacement(pii_match), vec![]),
             ReplacementStrategy::Hash => (self.hash_replacement(pii_match), vec![]),
             ReplacementStrategy::Random => (self.random_replacement(pii_match), vec![]),
             ReplacementStrategy::Consistent => self.consistent_replacement(pii_match),
@@ -243,7 +265,10 @@ impl Replacer {
     }
 
     /// Get the current configuration.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn config(&self) -> &ReplacerConfig {
         &self.config
     }
@@ -252,7 +277,7 @@ impl Replacer {
     // Private replacement methods
     // -------------------------------------------------------------------------
 
-    fn placeholder_replacement(&self, pii_match: &PiiMatch) -> String {
+    fn placeholder_replacement(pii_match: &PiiMatch) -> String {
         // Use pattern-specific placeholders
         match pii_match.pattern_name.as_str() {
             "email" => "<EMAIL>".to_string(),
@@ -276,7 +301,7 @@ impl Replacer {
         }
     }
 
-    fn mask_replacement(&self, pii_match: &PiiMatch) -> String {
+    fn mask_replacement(pii_match: &PiiMatch) -> String {
         // Preserve structure where possible
         pii_match
             .matched_text
@@ -360,7 +385,7 @@ impl Replacer {
                     self.rng.random::<u16>(),
                     self.rng.random::<u16>(),
                     self.rng.random::<u16>(),
-                    self.rng.random::<u64>() & 0xFFFFFFFFFFFF
+                    self.rng.random::<u64>() & 0xFFFF_FFFF_FFFF
                 );
                 if let Some(ref session) = self.session_id {
                     format!("{uuid}-{session}")
@@ -427,15 +452,14 @@ impl Replacer {
                 let original = &pii_match.matched_text;
 
                 // Extract country code (e.g., +49, +44, +1)
-                let country_code = if original.starts_with('+') {
+                let country_code = if let Some(rest) = original.strip_prefix('+') {
                     // Find where digits end for country code (1-3 digits after +)
-                    let code_end = original[1..]
+                    let digit_len = rest
                         .char_indices()
                         .take_while(|(i, c)| c.is_ascii_digit() && *i < 3)
                         .last()
-                        .map(|(i, _)| i + 2)
-                        .unwrap_or(1);
-                    &original[..code_end]
+                        .map_or(0, |(i, _)| i + 1);
+                    &original[..=digit_len] // +1 for the '+' prefix
                 } else {
                     "+1" // Default to US if no country code
                 };
@@ -445,13 +469,13 @@ impl Replacer {
                     "+49" => {
                         // German format: +49 XXX XXXXXXX (mobile) or +49 XX XXXXXXXX (landline)
                         let prefix: u32 = self.rng.random_range(150..179); // German mobile prefixes
-                        let number: u32 = self.rng.random_range(1000000..9999999);
+                        let number: u32 = self.rng.random_range(1_000_000..9_999_999);
                         format!("+49 {prefix} {number}")
                     }
                     "+44" => {
                         // UK format: +44 XXXX XXXXXX
                         let area: u32 = self.rng.random_range(1000..9999);
-                        let number: u32 = self.rng.random_range(100000..999999);
+                        let number: u32 = self.rng.random_range(100_000..999_999);
                         format!("+44 {area} {number}")
                     }
                     "+33" => {
@@ -472,7 +496,7 @@ impl Replacer {
                     "+43" => {
                         // Austrian format: +43 XXX XXXXXXX
                         let prefix: u32 = self.rng.random_range(600..699);
-                        let number: u32 = self.rng.random_range(1000000..9999999);
+                        let number: u32 = self.rng.random_range(1_000_000..9_999_999);
                         format!("+43 {prefix} {number}")
                     }
                     "+41" => {
@@ -485,7 +509,7 @@ impl Replacer {
                     }
                     _ => {
                         // Generic international format: preserve country code + random digits
-                        let number: u64 = self.rng.random_range(100000000..999999999);
+                        let number: u64 = self.rng.random_range(100_000_000..999_999_999);
                         format!("{country_code} {number}")
                     }
                 }
@@ -534,7 +558,7 @@ impl Replacer {
             "ipv4" => {
                 let ip: String = IPv4().fake_with_rng(&mut self.rng);
                 // Use private range (10.x.x.x)
-                format!("10.{}", &ip[ip.find('.').map(|i| i + 1).unwrap_or(0)..])
+                format!("10.{}", &ip[ip.find('.').map_or(0, |i| i + 1)..])
             }
             "ipv6" => {
                 let ip: String = IPv6().fake_with_rng(&mut self.rng);
@@ -552,7 +576,7 @@ impl Replacer {
                     self.rng.random::<u16>(),
                     self.rng.random::<u16>() & 0x0FFF,
                     (self.rng.random::<u16>() & 0x3FFF) | 0x8000,
-                    self.rng.random::<u64>() & 0xFFFFFFFFFFFF
+                    self.rng.random::<u64>() & 0xFFFF_FFFF_FFFF
                 );
                 uuid
             }
@@ -587,7 +611,7 @@ impl Replacer {
             }
             "passport_us" => {
                 // Generate fake passport number
-                let num: u32 = self.rng.random_range(10000000..99999999);
+                let num: u32 = self.rng.random_range(10_000_000..99_999_999);
                 format!("X{num}")
             }
             "social_handle" | "twitter_handle" | "instagram_handle" => {
@@ -755,8 +779,8 @@ impl Replacer {
                 // Generate a fake country name
                 // Using a list of fictional/common countries for consistency
                 let countries = [
-                    "Atlantis", "Narnia", "Wakanda", "Genovia", "Zamunda",
-                    "Florin", "Guilder", "Latveria", "Sokovia", "Kahndaq",
+                    "Atlantis", "Narnia", "Wakanda", "Genovia", "Zamunda", "Florin", "Guilder",
+                    "Latveria", "Sokovia", "Kahndaq",
                 ];
                 let idx = self.rng.random_range(0..countries.len());
                 let country = countries[idx].to_string();
@@ -923,8 +947,7 @@ impl Replacer {
                         break;
                     }
                     let expansion_len = match c.to_lowercase().next().unwrap_or(c) {
-                        'ä' | 'ö' | 'ü' => 2,
-                        'ß' => 2,
+                        'ä' | 'ö' | 'ü' | 'ß' => 2,
                         _ => 1,
                     };
                     norm_count += expansion_len;
@@ -939,8 +962,7 @@ impl Replacer {
                         break;
                     }
                     let expansion_len = match c.to_lowercase().next().unwrap_or(c) {
-                        'ä' | 'ö' | 'ü' => 2,
-                        'ß' => 2,
+                        'ä' | 'ö' | 'ü' | 'ß' => 2,
                         _ => 1,
                     };
                     matched_norm_len += expansion_len;
@@ -951,7 +973,12 @@ impl Replacer {
                 let original_part = &result[orig_pos..end_pos];
                 let replacement = Self::match_case_pattern(original_part, repl);
 
-                result = format!("{}{}{}", &result[..orig_pos], replacement, &result[end_pos..]);
+                result = format!(
+                    "{}{}{}",
+                    &result[..orig_pos],
+                    replacement,
+                    &result[end_pos..]
+                );
                 modified = true;
             }
         }
@@ -1024,18 +1051,26 @@ impl Replacer {
         let orig_chars: Vec<char> = original.chars().collect();
 
         // Check if all uppercase
-        if orig_chars.iter().all(|c| c.is_uppercase() || !c.is_alphabetic()) {
+        if orig_chars
+            .iter()
+            .all(|c| c.is_uppercase() || !c.is_alphabetic())
+        {
             return replacement.to_uppercase();
         }
 
         // Check if all lowercase
-        if orig_chars.iter().all(|c| c.is_lowercase() || !c.is_alphabetic()) {
+        if orig_chars
+            .iter()
+            .all(|c| c.is_lowercase() || !c.is_alphabetic())
+        {
             return replacement.to_lowercase();
         }
 
         // Check if title case (first letter upper, rest lower)
         if orig_chars[0].is_uppercase()
-            && orig_chars[1..].iter().all(|c| c.is_lowercase() || !c.is_alphabetic())
+            && orig_chars[1..]
+                .iter()
+                .all(|c| c.is_lowercase() || !c.is_alphabetic())
         {
             let mut result: String = replacement.to_lowercase();
             if let Some(first) = result.chars().next() {
@@ -1101,14 +1136,13 @@ impl Replacer {
                     component_type: "initial".to_string(),
                 });
                 return (fake_initial, components);
-            } else {
-                components.push(ComponentMapping {
-                    original: part.to_string(),
-                    replacement: fake_first.to_string(),
-                    component_type: "name".to_string(),
-                });
-                return (fake_first.to_string(), components);
             }
+            components.push(ComponentMapping {
+                original: part.to_string(),
+                replacement: fake_first.to_string(),
+                component_type: "name".to_string(),
+            });
+            return (fake_first.to_string(), components);
         }
 
         // Track which fake names we've used
@@ -1289,10 +1323,10 @@ impl Replacer {
             "street_address" => {
                 // Parse address components
                 let original = &pii_match.matched_text;
-                
+
                 // First try to replace using known address components
                 let (replaced, was_linked) = self.replace_with_components(original);
-                
+
                 if was_linked {
                     // Some parts were linked to known components
                     (replaced, components)
@@ -1462,32 +1496,31 @@ impl Replacer {
                 };
 
                 // Extract and link username from URL
-                let (fake_username, orig_username) =
-                    if let Some(last_slash) = original.rfind('/') {
-                        let user_part = &original[last_slash + 1..];
-                        let user_part = user_part
-                            .trim_start_matches('@')
-                            .split('?')
-                            .next()
-                            .unwrap_or(user_part);
+                let (fake_username, orig_username) = if let Some(last_slash) = original.rfind('/') {
+                    let user_part = &original[last_slash + 1..];
+                    let user_part = user_part
+                        .trim_start_matches('@')
+                        .split('?')
+                        .next()
+                        .unwrap_or(user_part);
 
-                        let (replaced, was_linked) = self.replace_with_components(user_part);
-                        let fake = if was_linked {
-                            replaced
-                                .to_lowercase()
-                                .replace(' ', "_")
-                                .chars()
-                                .filter(|c| c.is_alphanumeric() || *c == '_')
-                                .collect::<String>()
-                        } else {
-                            let username: String = Username().fake_with_rng(&mut self.rng);
-                            username
-                        };
-                        (fake, user_part.to_string())
+                    let (replaced, was_linked) = self.replace_with_components(user_part);
+                    let fake = if was_linked {
+                        replaced
+                            .to_lowercase()
+                            .replace(' ', "_")
+                            .chars()
+                            .filter(|c| c.is_alphanumeric() || *c == '_')
+                            .collect::<String>()
                     } else {
                         let username: String = Username().fake_with_rng(&mut self.rng);
-                        (username, String::new())
+                        username
                     };
+                    (fake, user_part.to_string())
+                } else {
+                    let username: String = Username().fake_with_rng(&mut self.rng);
+                    (username, String::new())
+                };
 
                 let fake_url = format!("https://{platform}/{fake_username}");
 
@@ -1756,7 +1789,10 @@ mod tests {
 
         // Extract the fake first and last names
         let fake_parts: Vec<&str> = name_result.replacement.split_whitespace().collect();
-        assert!(fake_parts.len() >= 2, "Should have at least first and last name");
+        assert!(
+            fake_parts.len() >= 2,
+            "Should have at least first and last name"
+        );
         let fake_first = fake_parts[0].to_lowercase();
         let fake_last = fake_parts[fake_parts.len() - 1].to_lowercase();
 
@@ -1867,7 +1903,10 @@ mod tests {
 
         // The full address should contain the linked fake city
         assert!(
-            full_addr_result.replacement.to_lowercase().contains(&fake_city.to_lowercase()),
+            full_addr_result
+                .replacement
+                .to_lowercase()
+                .contains(&fake_city.to_lowercase()),
             "Full address '{}' should contain fake city '{}' (original: San Francisco)",
             full_addr_result.replacement,
             fake_city

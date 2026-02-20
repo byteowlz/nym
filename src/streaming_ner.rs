@@ -415,7 +415,10 @@ mod tests {
         assert_eq!(detect_format("# Header"), InputFormat::Markdown);
         assert_eq!(detect_format("## Sub Header"), InputFormat::Markdown);
         assert_eq!(detect_format("name: John"), InputFormat::KeyValue);
-        assert_eq!(detect_format("email: test@example.com"), InputFormat::KeyValue);
+        assert_eq!(
+            detect_format("email: test@example.com"),
+            InputFormat::KeyValue
+        );
         assert_eq!(detect_format("This is a sentence."), InputFormat::Prose);
         assert_eq!(
             detect_format("A very long key that is definitely not a real key: value"),

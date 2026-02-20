@@ -79,6 +79,10 @@ pub fn detect_json(
     Ok(matches)
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "Recursive function builds path strings"
+)]
 fn detect_json_value(
     value: &JsonValue,
     detector: &Detector,

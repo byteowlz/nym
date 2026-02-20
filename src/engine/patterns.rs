@@ -3,9 +3,21 @@
 //! This module defines all built-in regex patterns for detecting
 //! personally identifiable information (PII).
 
-use once_cell::sync::Lazy;
+use std::sync::LazyLock;
+
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+
+/// Compile a static regex from a string literal.
+///
+/// This wraps `Regex::new(...).unwrap()` for use in `LazyLock` static initializers.
+/// The unwrap is safe because all patterns are compile-time string literals
+/// that have been validated by tests. Any failure here would be a programmer
+/// error caught at first use.
+#[expect(clippy::unwrap_used, reason = "Static regex literals are infallible")]
+fn regex(pattern: &str) -> Regex {
+    Regex::new(pattern).unwrap()
+}
 
 /// Confidence level for a PII pattern match.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
@@ -47,7 +59,7 @@ pub struct PiiPattern {
     /// Human-readable description
     pub description: &'static str,
     /// The compiled regex pattern
-    pub regex: &'static Lazy<Regex>,
+    pub regex: &'static LazyLock<Regex>,
     /// Confidence level
     pub confidence: Confidence,
     /// Category of PII
@@ -56,7 +68,10 @@ pub struct PiiPattern {
     pub example: &'static str,
     /// Default replacement placeholder for this pattern type.
     /// Used by the placeholder replacement strategy.
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub replacement_template: &'static str,
 }
 
@@ -65,32 +80,30 @@ pub struct PiiPattern {
 // =============================================================================
 
 // Email pattern
-static EMAIL_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b").unwrap());
+static EMAIL_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?i)\b[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}\b"));
 
 // US Phone number patterns
-static PHONE_US_REGEX: Lazy<Regex> = Lazy::new(|| {
+static PHONE_US_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     // Matches: (555) 123-4567, 555-123-4567, 555.123.4567, 5551234567, +1 555 123 4567
-    Regex::new(r"(?:\+?1[-.\s]?)?\(?[2-9]\d{2}\)?[-.\s]?[2-9]\d{2}[-.\s]?\d{4}").unwrap()
+    regex(r"(?:\+?1[-.\s]?)?\(?[2-9]\d{2}\)?[-.\s]?[2-9]\d{2}[-.\s]?\d{4}")
 });
 
 // International phone (E.164 format, with optional spaces/separators)
-static PHONE_INTL_REGEX: Lazy<Regex> = Lazy::new(|| {
+static PHONE_INTL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     // Matches: +49192836418, +49 192836418, +49 192 836 418, +49-192-836-418
-    Regex::new(r"\+[1-9][\d\s\-]{6,17}\d\b").unwrap()
+    regex(r"\+[1-9][\d\s\-]{6,17}\d\b")
 });
 
 // US Social Security Number (with dashes, dots, or spaces)
-static SSN_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b\d{3}[-.\s]\d{2,3}[-.\s]\d{4}\b").unwrap()
-});
+static SSN_REGEX: LazyLock<Regex> = LazyLock::new(|| regex(r"\b\d{3}[-.\s]\d{2,3}[-.\s]\d{4}\b"));
 
 // SSN without dashes (9 consecutive digits with word boundary)
-static SSN_NODASH_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b\d{9}\b").unwrap());
+static SSN_NODASH_REGEX: LazyLock<Regex> = LazyLock::new(|| regex(r"\b\d{9}\b"));
 
 // Credit card numbers (major brands)
-static CREDIT_CARD_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
+static CREDIT_CARD_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(
         r"(?x)
         \b
         (?:
@@ -104,17 +117,15 @@ static CREDIT_CARD_REGEX: Lazy<Regex> = Lazy::new(|| {
         \b
         ",
     )
-    .unwrap()
 });
 
 // Credit card without separators
-static CREDIT_CARD_NODASH_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b(?:4\d{15}|5[1-5]\d{14}|3[47]\d{13}|6(?:011|5\d{2})\d{12})\b").unwrap()
-});
+static CREDIT_CARD_NODASH_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"\b(?:4\d{15}|5[1-5]\d{14}|3[47]\d{13}|6(?:011|5\d{2})\d{12})\b"));
 
 // IPv4 address
-static IPV4_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
+static IPV4_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(
         r"(?x)
         \b
         (?:
@@ -124,47 +135,44 @@ static IPV4_REGEX: Lazy<Regex> = Lazy::new(|| {
         \b
         ",
     )
-    .unwrap()
 });
 
 // IPv6 address (simplified - matches common formats)
-static IPV6_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\b(?:[a-f0-9]{1,4}:){7}[a-f0-9]{1,4}\b").unwrap());
+static IPV6_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?i)\b(?:[a-f0-9]{1,4}:){7}[a-f0-9]{1,4}\b"));
 
 // MAC address
-static MAC_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b").unwrap());
+static MAC_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?i)\b(?:[0-9a-f]{2}[:-]){5}[0-9a-f]{2}\b"));
 
 // UUID
-static UUID_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b").unwrap()
+static UUID_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(r"(?i)\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b")
 });
 
 // JWT token
-static JWT_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*").unwrap());
+static JWT_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"eyJ[a-zA-Z0-9_-]*\.eyJ[a-zA-Z0-9_-]*\.[a-zA-Z0-9_-]*"));
 
 // AWS Access Key ID
-static AWS_KEY_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?:A3T[A-Z0-9]|AKIA|AGPA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}").unwrap()
-});
+static AWS_KEY_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?:A3T[A-Z0-9]|AKIA|AGPA|AROA|AIPA|ANPA|ANVA|ASIA)[A-Z0-9]{16}"));
 
 // Generic API key pattern (40+ char alphanumeric)
-static API_KEY_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b(?:sk|pk|api|key|token)[-_]?(?:live|test|prod)?[-_]?[a-zA-Z0-9]{32,}\b").unwrap()
+static API_KEY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(r"\b(?:sk|pk|api|key|token)[-_]?(?:live|test|prod)?[-_]?[a-zA-Z0-9]{32,}\b")
 });
 
 // IBAN (International Bank Account Number)
-static IBAN_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b").unwrap());
+static IBAN_REGEX: LazyLock<Regex> = LazyLock::new(|| regex(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b"));
 
 // US Passport
-static PASSPORT_US_REGEX: Lazy<Regex> = Lazy::new(|| Regex::new(r"\b[A-Z]\d{8}\b").unwrap());
+static PASSPORT_US_REGEX: LazyLock<Regex> = LazyLock::new(|| regex(r"\b[A-Z]\d{8}\b"));
 
 // Date patterns (various formats)
 // ISO: 2024-12-25, US: 12/25/2024, EU: 25.12.2024, etc.
-static DATE_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
+static DATE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(
         r"(?x)
         \b
         (?:
@@ -179,12 +187,11 @@ static DATE_REGEX: Lazy<Regex> = Lazy::new(|| {
         \b
         ",
     )
-    .unwrap()
 });
 
 // Time patterns: 14:30, 2:30 PM, 10:20am, 7 o'clock, quarter past 13, etc.
-static TIME_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
+static TIME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(
         r"(?ix)
         \b
         (?:
@@ -201,41 +208,39 @@ static TIME_REGEX: Lazy<Regex> = Lazy::new(|| {
         \b
         ",
     )
-    .unwrap()
 });
 
 // Username (without @, for matching dataset usernames)
-static USERNAME_REGEX: Lazy<Regex> = Lazy::new(|| {
+static USERNAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     // Common username patterns: user123, john_doe, etc.
     // Only match if it looks like a username (has numbers or underscores, or is in a context)
-    Regex::new(r"\b[a-zA-Z][a-zA-Z0-9_]{2,20}\d+[a-zA-Z0-9_]*\b|\b[a-zA-Z][a-zA-Z0-9]*_[a-zA-Z0-9_]+\b").unwrap()
+    regex(r"\b[a-zA-Z][a-zA-Z0-9_]{2,20}\d+[a-zA-Z0-9_]*\b|\b[a-zA-Z][a-zA-Z0-9]*_[a-zA-Z0-9_]+\b")
 });
 
 // Social media handles
 // Twitter/X handle: @username (1-15 chars, alphanumeric + underscore)
 // Note: We exclude emails by requiring @ to NOT be preceded by alphanumeric
 // This is handled in post-processing since regex crate doesn't support look-behind
-static TWITTER_HANDLE_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"@[a-zA-Z_][a-zA-Z0-9_]{0,14}\b").unwrap());
+static TWITTER_HANDLE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"@[a-zA-Z_][a-zA-Z0-9_]{0,14}\b"));
 
 // Generic social handle (covers most platforms): @username
 // More permissive than platform-specific patterns
-static SOCIAL_HANDLE_REGEX: Lazy<Regex> =
-    Lazy::new(|| Regex::new(r"@[a-zA-Z][a-zA-Z0-9_.]{1,30}\b").unwrap());
+static SOCIAL_HANDLE_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"@[a-zA-Z][a-zA-Z0-9_.]{1,30}\b"));
 
 // URL with username path (e.g., twitter.com/username, github.com/username)
-static SOCIAL_URL_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
+static SOCIAL_URL_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(
         r"(?i)https?://(?:www\.)?(?:twitter|x|instagram|facebook|fb|linkedin|github|tiktok|youtube|reddit)\.com/@?[a-zA-Z0-9_.-]{1,39}(?:\?|/|$)",
     )
-    .unwrap()
 });
 
 // GPS coordinates (latitude, longitude)
 // Must have decimal points to differentiate from other number pairs
 // Matches: 40.7128,-74.0060, 40.7128, -74.0060, (40.7128, -74.0060)
-static GEOCOORD_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
+static GEOCOORD_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(
         r"(?x)
         \(?
         [-+]?(?:[1-8]?\d\.\d{2,}|90\.0+)  # Latitude: -90 to 90, MUST have decimal with 2+ digits
@@ -244,54 +249,49 @@ static GEOCOORD_REGEX: Lazy<Regex> = Lazy::new(|| {
         \)?
         ",
     )
-    .unwrap()
 });
 
 // European Social/Tax ID patterns
 // German Tax ID (Steueridentifikationsnummer): 11 digits
 // Note: Not added to BUILTIN_PATTERNS due to high false positive rate with generic 11-digit numbers
-#[allow(dead_code)]
-static DE_TAX_ID_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b\d{11}\b").unwrap()
-});
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Public API - used by consumers")
+)]
+static DE_TAX_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| regex(r"\b\d{11}\b"));
 
 // UK National Insurance Number: 2 letters, 6 digits, 1 letter
-static UK_NINO_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b[A-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b").unwrap()
-});
+static UK_NINO_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?i)\b[A-Z]{2}\s?\d{2}\s?\d{2}\s?\d{2}\s?[A-D]\b"));
 
 // French Social Security Number (NIR): 13 digits + 2 digit key
-static FR_NIR_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b[12]\s?\d{2}\s?\d{2}\s?\d{2}\s?\d{3}\s?\d{3}\s?\d{2}\b").unwrap()
-});
+static FR_NIR_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"\b[12]\s?\d{2}\s?\d{2}\s?\d{2}\s?\d{3}\s?\d{3}\s?\d{2}\b"));
 
 // Italian Fiscal Code (Codice Fiscale): 16 alphanumeric chars
-static IT_CF_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b[A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z]\b").unwrap()
-});
+static IT_CF_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?i)\b[A-Z]{6}\d{2}[A-Z]\d{2}[A-Z]\d{3}[A-Z]\b"));
 
 // Spanish DNI/NIE: 8 digits + letter or X/Y/Z + 7 digits + letter
-static ES_DNI_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b(?:\d{8}[A-Z]|[XYZ]\d{7}[A-Z])\b").unwrap()
-});
+static ES_DNI_REGEX: LazyLock<Regex> =
+    LazyLock::new(|| regex(r"(?i)\b(?:\d{8}[A-Z]|[XYZ]\d{7}[A-Z])\b"));
 
 // Dutch BSN (Burgerservicenummer): 9 digits
 // Note: Not added to BUILTIN_PATTERNS - overlaps with ssn_nodash pattern
-#[allow(dead_code)]
-static NL_BSN_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"\b\d{9}\b").unwrap()
-});
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Public API - used by consumers")
+)]
+static NL_BSN_REGEX: LazyLock<Regex> = LazyLock::new(|| regex(r"\b\d{9}\b"));
 
 // Generic European ID pattern (covers many formats)
 // Matches patterns like: XX-123456, XX123456789, etc.
-static EU_ID_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(r"(?i)\b[A-Z]{1,3}[-\s]?\d{6,12}\b").unwrap()
-});
+static EU_ID_REGEX: LazyLock<Regex> = LazyLock::new(|| regex(r"(?i)\b[A-Z]{1,3}[-\s]?\d{6,12}\b"));
 
 // Driver's license patterns (various formats)
 // Covers: LOUMA.657200.9.504, MASCU910077MV815, HERNA-607199-HK-599, etc.
-static DRIVERS_LICENSE_REGEX: Lazy<Regex> = Lazy::new(|| {
-    Regex::new(
+static DRIVERS_LICENSE_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(
         r"(?xi)
         \b
         (?:
@@ -309,7 +309,6 @@ static DRIVERS_LICENSE_REGEX: Lazy<Regex> = Lazy::new(|| {
         \b
         ",
     )
-    .unwrap()
 });
 
 // =============================================================================
@@ -587,28 +586,31 @@ pub fn get_pattern(name: &str) -> Option<&'static PiiPattern> {
 }
 
 /// Get all pattern names.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Public API - used by consumers")
+)]
 pub fn pattern_names() -> impl Iterator<Item = &'static str> {
     BUILTIN_PATTERNS.iter().map(|p| p.name)
 }
 
 /// Get patterns filtered by confidence level.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Public API - used by consumers")
+)]
 pub fn patterns_by_confidence(min_confidence: Confidence) -> Vec<&'static PiiPattern> {
     BUILTIN_PATTERNS
         .iter()
-        .filter(|p| match (min_confidence, p.confidence) {
-            (Confidence::Low, _) => true,
-            (Confidence::Medium, Confidence::Low) => false,
-            (Confidence::Medium, _) => true,
-            (Confidence::High, Confidence::High) => true,
-            (Confidence::High, _) => false,
-        })
+        .filter(|p| p.confidence >= min_confidence)
         .collect()
 }
 
 /// Get patterns filtered by category.
-#[allow(dead_code)]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Public API - used by consumers")
+)]
 pub fn patterns_by_category(category: PiiCategory) -> Vec<&'static PiiPattern> {
     BUILTIN_PATTERNS
         .iter()

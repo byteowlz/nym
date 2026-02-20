@@ -1,0 +1,59 @@
+{
+  "todos": [
+    {
+      "id": "1",
+      "content": "Fix src/main.rs - println!/eprintln!/unwrap/allow",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "2",
+      "content": "Fix src/engine/patterns.rs - LazyLock migration + allow attrs",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "3",
+      "content": "Fix src/engine/replacer.rs - unwrap/allow",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "4",
+      "content": "Fix src/engine/detector.rs - unwrap/allow",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "5",
+      "content": "Fix src/config.rs - unwrap/allow",
+      "status": "completed",
+      "priority": "high"
+    },
+    {
+      "id": "6",
+      "content": "Fix src/streaming.rs",
+      "status": "completed",
+      "priority": "medium"
+    },
+    {
+      "id": "7",
+      "content": "Fix src/engine/ner.rs",
+      "status": "completed",
+      "priority": "medium"
+    },
+    {
+      "id": "8",
+      "content": "Fix remaining files (session, mod, formats)",
+      "status": "completed",
+      "priority": "medium"
+    },
+    {
+      "id": "9",
+      "content": "Run final cargo clippy - verify zero errors",
+      "status": "completed",
+      "priority": "high"
+    }
+  ],
+  "updated_at": "2026-02-20T07:58:29.081Z"
+}

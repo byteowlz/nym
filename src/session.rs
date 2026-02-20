@@ -191,7 +191,10 @@ impl Session {
     }
 
     /// Generate a session with a specific seed (for deterministic testing).
-    #[allow(dead_code)]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn with_seed(seed: u64, source: Option<&str>) -> Self {
         let mut rng = StdRng::seed_from_u64(seed);
         let id = generate_id(&mut rng);

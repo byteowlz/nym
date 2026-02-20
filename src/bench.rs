@@ -302,14 +302,17 @@ impl BenchConfig {
         m.insert("SOCIALNUM".to_string(), "ssn".to_string());
         m.insert("TAXNUM".to_string(), "ssn".to_string());
         m.insert("IDCARDNUM".to_string(), "eu_id".to_string());
-        m.insert("DRIVERLICENSENUM".to_string(), "drivers_license".to_string());
+        m.insert(
+            "DRIVERLICENSENUM".to_string(),
+            "drivers_license".to_string(),
+        );
         m.insert("PASSPORTNUM".to_string(), "passport_us".to_string());
         m.insert("ACCOUNTNUM".to_string(), "iban".to_string());
         m.insert("BUILDINGNUM".to_string(), "street_address".to_string());
 
         m
     }
-    
+
     /// Create reverse mapping (our pattern -> dataset labels) for matching.
     pub fn reverse_label_mapping(&self) -> HashMap<String, Vec<String>> {
         let mut reverse: HashMap<String, Vec<String>> = HashMap::new();
@@ -379,23 +382,28 @@ pub fn download_huggingface_dataset(
     // Download from HuggingFace with pagination
     // HuggingFace API has a max of 100 rows per request
     const PAGE_SIZE: usize = 100;
-    
-    log::info!("Downloading dataset {} (split: {}, limit: {})...", dataset_name, split, limit);
-    
+
+    log::info!(
+        "Downloading dataset {} (split: {}, limit: {})...",
+        dataset_name,
+        split,
+        limit
+    );
+
     let mut all_examples = Vec::new();
     let mut offset = 0;
-    
+
     while all_examples.len() < limit {
         let remaining = limit - all_examples.len();
         let fetch_count = remaining.min(PAGE_SIZE);
-        
+
         let url = format!(
             "https://datasets-server.huggingface.co/rows?dataset={}&config=default&split={}&offset={}&length={}",
             dataset_name, split, offset, fetch_count
         );
 
         log::debug!("Fetching {} rows from offset {}...", fetch_count, offset);
-        
+
         let response = ureq::get(&url)
             .call()
             .map_err(|e| anyhow!("Failed to download dataset: {}", e))?;
@@ -415,26 +423,26 @@ pub fn download_huggingface_dataset(
 
         // Parse the response based on dataset format
         let page_examples = parse_huggingface_response(dataset_name, &body)?;
-        
+
         if page_examples.is_empty() {
             // No more data available
             break;
         }
-        
+
         let fetched = page_examples.len();
         all_examples.extend(page_examples);
         offset += fetched;
-        
+
         // If we got fewer than requested, we've reached the end
         if fetched < fetch_count {
             break;
         }
-        
+
         // Progress indicator
         eprint!("\rFetched {} examples...", all_examples.len());
     }
     eprintln!(); // New line after progress
-    
+
     let examples = all_examples;
 
     if examples.is_empty() {
@@ -518,11 +526,11 @@ fn parse_conll_row(row: &serde_json::Value) -> Result<Option<Example>> {
     // CoNLL NER tag mapping (BIO scheme)
     let tag_to_label = |tag: i64| -> Option<&'static str> {
         match tag {
-            1 | 2 => Some("PER"),    // B-PER, I-PER
-            3 | 4 => Some("ORG"),    // B-ORG, I-ORG
-            5 | 6 => Some("LOC"),    // B-LOC, I-LOC
-            7 | 8 => Some("MISC"),   // B-MISC, I-MISC
-            _ => None,               // O (outside)
+            1 | 2 => Some("PER"),  // B-PER, I-PER
+            3 | 4 => Some("ORG"),  // B-ORG, I-ORG
+            5 | 6 => Some("LOC"),  // B-LOC, I-LOC
+            7 | 8 => Some("MISC"), // B-MISC, I-MISC
+            _ => None,             // O (outside)
         }
     };
 
@@ -719,17 +727,18 @@ pub fn run_benchmark(examples: &[Example], config: &BenchConfig) -> Result<Bench
 
         // Match entities
         for (gt_start, gt_end, gt_label) in &ground_truth_set {
-            let label_entry = results
-                .by_label
-                .entry(gt_label.clone())
-                .or_insert_with(|| LabelResults {
-                    true_positives: 0,
-                    false_positives: 0,
-                    false_negatives: 0,
-                    precision: 0.0,
-                    recall: 0.0,
-                    f1: 0.0,
-                });
+            let label_entry =
+                results
+                    .by_label
+                    .entry(gt_label.clone())
+                    .or_insert_with(|| LabelResults {
+                        true_positives: 0,
+                        false_positives: 0,
+                        false_negatives: 0,
+                        precision: 0.0,
+                        recall: 0.0,
+                        f1: 0.0,
+                    });
 
             // Find matching detection
             // gt_label is already mapped (e.g., "person" from "GIVENNAME1")
@@ -760,9 +769,9 @@ pub fn run_benchmark(examples: &[Example], config: &BenchConfig) -> Result<Bench
 
                 // Track missed detection if requested
                 if config.track_misses_for.as_ref() == Some(gt_label) {
-                    let missed_text = if *gt_end <= example.text.len() 
-                        && example.text.is_char_boundary(*gt_start) 
-                        && example.text.is_char_boundary(*gt_end) 
+                    let missed_text = if *gt_end <= example.text.len()
+                        && example.text.is_char_boundary(*gt_start)
+                        && example.text.is_char_boundary(*gt_end)
                     {
                         example.text[*gt_start..*gt_end].to_string()
                     } else {
@@ -774,14 +783,28 @@ pub fn run_benchmark(examples: &[Example], config: &BenchConfig) -> Result<Bench
                         .rev()
                         .take(30)
                         .last()
-                        .map(|i| if example.text.is_char_boundary(i) { i } else { *gt_start })
+                        .map(|i| {
+                            if example.text.is_char_boundary(i) {
+                                i
+                            } else {
+                                *gt_start
+                            }
+                        })
                         .unwrap_or(*gt_start);
                     let ctx_end = (*gt_end..example.text.len())
                         .take(30)
                         .last()
-                        .map(|i| if example.text.is_char_boundary(i + 1) { i + 1 } else { *gt_end })
+                        .map(|i| {
+                            if example.text.is_char_boundary(i + 1) {
+                                i + 1
+                            } else {
+                                *gt_end
+                            }
+                        })
                         .unwrap_or(*gt_end);
-                    let context = example.text.get(ctx_start..ctx_end)
+                    let context = example
+                        .text
+                        .get(ctx_start..ctx_end)
                         .unwrap_or("[context unavailable]")
                         .to_string();
 
@@ -797,17 +820,18 @@ pub fn run_benchmark(examples: &[Example], config: &BenchConfig) -> Result<Bench
         // Remaining detections are false positives
         results.false_positives += detected_set.len();
         for (d_start, d_end, d_label) in detected_set {
-            let label_entry = results
-                .by_label
-                .entry(d_label.clone())
-                .or_insert_with(|| LabelResults {
-                    true_positives: 0,
-                    false_positives: 0,
-                    false_negatives: 0,
-                    precision: 0.0,
-                    recall: 0.0,
-                    f1: 0.0,
-                });
+            let label_entry =
+                results
+                    .by_label
+                    .entry(d_label.clone())
+                    .or_insert_with(|| LabelResults {
+                        true_positives: 0,
+                        false_positives: 0,
+                        false_negatives: 0,
+                        precision: 0.0,
+                        recall: 0.0,
+                        f1: 0.0,
+                    });
             label_entry.false_positives += 1;
 
             // Track false positive if requested
@@ -826,14 +850,28 @@ pub fn run_benchmark(examples: &[Example], config: &BenchConfig) -> Result<Bench
                     .rev()
                     .take(30)
                     .last()
-                    .map(|i| if example.text.is_char_boundary(i) { i } else { d_start })
+                    .map(|i| {
+                        if example.text.is_char_boundary(i) {
+                            i
+                        } else {
+                            d_start
+                        }
+                    })
                     .unwrap_or(d_start);
                 let ctx_end = (d_end..example.text.len())
                     .take(30)
                     .last()
-                    .map(|i| if example.text.is_char_boundary(i + 1) { i + 1 } else { d_end })
+                    .map(|i| {
+                        if example.text.is_char_boundary(i + 1) {
+                            i + 1
+                        } else {
+                            d_end
+                        }
+                    })
                     .unwrap_or(d_end);
-                let context = example.text.get(ctx_start..ctx_end)
+                let context = example
+                    .text
+                    .get(ctx_start..ctx_end)
                     .unwrap_or("[context unavailable]")
                     .to_string();
 

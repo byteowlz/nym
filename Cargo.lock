@@ -1455,7 +1455,6 @@ dependencies = [
  "indicatif",
  "libc",
  "log",
- "once_cell",
  "orp",
  "ort",
  "regex",

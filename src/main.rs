@@ -3,6 +3,12 @@
 //! A command-line tool for detecting and anonymizing personally identifiable
 //! information (PII) in text files with optional reversibility.
 
+#![expect(clippy::print_stdout, reason = "CLI binary communicates via stdout")]
+#![expect(
+    clippy::print_stderr,
+    reason = "CLI binary communicates errors via stderr"
+)]
+
 use std::env;
 use std::fs;
 use std::io::{self, BufRead, IsTerminal, Read, Write};
@@ -14,6 +20,8 @@ use clap_complete::Shell;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 
+#[cfg(feature = "bench")]
+mod bench;
 mod config;
 mod engine;
 mod session;
@@ -21,8 +29,6 @@ mod session;
 mod streaming;
 #[cfg(all(feature = "streaming", feature = "ner"))]
 mod streaming_ner;
-#[cfg(feature = "bench")]
-mod bench;
 
 use config::Config;
 use engine::{
@@ -74,8 +80,19 @@ fn load_config(common: &CommonOpts) -> Result<Config> {
     }
 }
 
+/// Resolved ruleset: (enabled_patterns, disabled_patterns, min_confidence, ner_mode).
+type ResolvedRuleset = (
+    Vec<String>,
+    Vec<String>,
+    Option<Confidence>,
+    Option<config::NerMode>,
+);
+
 /// Resolve ruleset name or quick flags to a list of patterns and NER mode.
-/// Returns (enabled_patterns, disabled_patterns, min_confidence, ner_mode).
+#[expect(
+    clippy::fn_params_excessive_bools,
+    reason = "Quick-select flags from CLI"
+)]
 fn resolve_ruleset(
     config: &Config,
     ruleset_name: Option<&str>,
@@ -83,7 +100,7 @@ fn resolve_ruleset(
     only_keys: bool,
     only_contact: bool,
     only_financial: bool,
-) -> (Vec<String>, Vec<String>, Option<Confidence>, Option<config::NerMode>) {
+) -> ResolvedRuleset {
     use config::NerMode;
 
     // Quick flags take precedence
@@ -146,16 +163,16 @@ fn resolve_ruleset(
     }
 
     // Check for named ruleset
-    if let Some(name) = ruleset_name {
-        if let Some(ruleset) = config.get_ruleset(name) {
-            let confidence = ruleset.min_confidence.map(|c| c.into());
-            return (
-                ruleset.enabled_patterns,
-                ruleset.disabled_patterns,
-                confidence,
-                Some(ruleset.ner),
-            );
-        }
+    if let Some(name) = ruleset_name
+        && let Some(ruleset) = config.get_ruleset(name)
+    {
+        let confidence = ruleset.min_confidence.map(std::convert::Into::into);
+        return (
+            ruleset.enabled_patterns,
+            ruleset.disabled_patterns,
+            confidence,
+            Some(ruleset.ner),
+        );
     }
 
     // No ruleset specified, return empty (will use defaults)
@@ -184,6 +201,7 @@ struct Cli {
 }
 
 #[derive(Debug, Clone, Args)]
+#[expect(clippy::struct_excessive_bools, reason = "CLI flags from clap")]
 struct CommonOpts {
     /// Path to config file
     #[arg(short, long, global = true, value_name = "FILE")]
@@ -275,6 +293,7 @@ enum SessionsAction {
 // -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Args)]
+#[expect(clippy::struct_excessive_bools, reason = "CLI flags from clap")]
 struct AnonCommand {
     /// Input file (reads from stdin if not specified)
     #[arg(value_name = "INPUT")]
@@ -432,6 +451,7 @@ struct DeanonCommand {
 // -----------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Args)]
+#[expect(clippy::struct_excessive_bools, reason = "CLI flags from clap")]
 struct DetectCommand {
     /// Input file (reads from stdin if not specified)
     #[arg(value_name = "INPUT")]
@@ -631,10 +651,12 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
     }
 
     // Read input
-    let input_text = read_input(&cmd.input)?;
+    let input_text = read_input(cmd.input.as_ref())?;
 
     // Determine format (explicit or auto-detect from file extension)
-    let format = cmd.format.unwrap_or_else(|| detect_format(&cmd.input));
+    let format = cmd
+        .format
+        .unwrap_or_else(|| detect_format(cmd.input.as_ref()));
 
     // Generate session ID
     let source_filename = cmd
@@ -649,14 +671,15 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
     };
 
     // Resolve ruleset or quick flags first
-    let (ruleset_patterns, ruleset_excluded, ruleset_confidence, ruleset_ner_mode) = resolve_ruleset(
-        config,
-        cmd.ruleset.as_deref(),
-        cmd.only_names,
-        cmd.only_keys,
-        cmd.only_contact,
-        cmd.only_financial,
-    );
+    let (ruleset_patterns, ruleset_excluded, ruleset_confidence, ruleset_ner_mode) =
+        resolve_ruleset(
+            config,
+            cmd.ruleset.as_deref(),
+            cmd.only_names,
+            cmd.only_keys,
+            cmd.only_contact,
+            cmd.only_financial,
+        );
 
     // Configure detector: CLI args > ruleset > config
     let min_confidence: Confidence = if cmd.min_confidence != ConfidenceArg::High {
@@ -760,7 +783,7 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
 
             if matches.is_empty() {
                 // No PII found, output unchanged
-                write_output(&cmd.output, &input_text)?;
+                write_output(cmd.output.as_ref(), &input_text)?;
                 if !common.quiet {
                     eprintln!("No PII detected in input");
                 }
@@ -772,7 +795,7 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
     };
 
     if replacements.is_empty() {
-        write_output(&cmd.output, &input_text)?;
+        write_output(cmd.output.as_ref(), &input_text)?;
         if !common.quiet {
             eprintln!("No PII detected in input");
         }
@@ -791,7 +814,7 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
     }
 
     // Write output
-    write_output(&cmd.output, &anonymized)?;
+    write_output(cmd.output.as_ref(), &anonymized)?;
 
     if !common.quiet {
         eprintln!("Anonymized {} PII occurrences", replacements.len());
@@ -802,6 +825,10 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
 
 /// Handle anonymization in streaming mode.
 #[cfg(feature = "streaming")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "CLI command struct consumed by handler"
+)]
 fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result<()> {
     use streaming::StreamConfig;
     use tokio::fs::File;
@@ -915,11 +942,15 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
     Ok(())
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "CLI command struct consumed by handler"
+)]
 fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
     use std::io::BufRead;
 
     // Read input
-    let mut input_text = read_input(&cmd.input)?;
+    let mut input_text = read_input(cmd.input.as_ref())?;
 
     // Read and parse key file
     let key_file = fs::File::open(&cmd.key_file)
@@ -927,12 +958,10 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
     let reader = io::BufReader::new(key_file);
 
     let mut replacements: Vec<engine::Replacement> = Vec::new();
-    let mut line_num = 0;
 
-    for line in reader.lines() {
-        line_num += 1;
-        let line =
-            line.with_context(|| format!("Failed to read line {line_num} from key file"))?;
+    for (line_num, line) in reader.lines().enumerate() {
+        let line_num = line_num + 1;
+        let line = line.with_context(|| format!("Failed to read line {line_num} from key file"))?;
 
         if line.trim().is_empty() {
             continue;
@@ -1000,7 +1029,7 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
     }
 
     // Write output
-    write_output(&cmd.output, &input_text)?;
+    write_output(cmd.output.as_ref(), &input_text)?;
 
     if !common.quiet {
         eprintln!("Restored {restored_count} PII values");
@@ -1025,20 +1054,23 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
     }
 
     // Read input
-    let input_text = read_input(&cmd.input)?;
+    let input_text = read_input(cmd.input.as_ref())?;
 
     // Determine format (explicit or auto-detect from file extension)
-    let format = cmd.format.unwrap_or_else(|| detect_format(&cmd.input));
+    let format = cmd
+        .format
+        .unwrap_or_else(|| detect_format(cmd.input.as_ref()));
 
     // Resolve ruleset or quick flags first
-    let (ruleset_patterns, ruleset_excluded, ruleset_confidence, ruleset_ner_mode) = resolve_ruleset(
-        config,
-        cmd.ruleset.as_deref(),
-        cmd.only_names,
-        cmd.only_keys,
-        cmd.only_contact,
-        cmd.only_financial,
-    );
+    let (ruleset_patterns, ruleset_excluded, ruleset_confidence, ruleset_ner_mode) =
+        resolve_ruleset(
+            config,
+            cmd.ruleset.as_deref(),
+            cmd.only_names,
+            cmd.only_keys,
+            cmd.only_contact,
+            cmd.only_financial,
+        );
 
     // Configure detector: CLI args > ruleset > config
     let min_confidence: Confidence = if cmd.min_confidence != ConfidenceArg::High {
@@ -1163,6 +1195,10 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
 
 /// Handle detection in streaming mode.
 #[cfg(feature = "streaming")]
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "CLI command struct consumed by handler"
+)]
 fn handle_detect_streaming(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Result<()> {
     use streaming::StreamConfig;
 
@@ -1402,7 +1438,7 @@ fn handle_patterns(common: &CommonOpts, cmd: PatternsCommand) -> Result<()> {
                 names.sort();
                 for name in names {
                     let rs = &rulesets[name];
-                    println!("  {}", name);
+                    println!("  {name}");
                     println!("    {}", rs.description);
                     println!("    Patterns: {}", rs.enabled_patterns.join(", "));
                     println!("    NER: {:?}", rs.ner);
@@ -1422,9 +1458,9 @@ fn handle_patterns(common: &CommonOpts, cmd: PatternsCommand) -> Result<()> {
                     "description": ruleset.description,
                     "enabled_patterns": ruleset.enabled_patterns,
                     "disabled_patterns": ruleset.disabled_patterns,
-                    "min_confidence": ruleset.min_confidence.map(|c| format!("{:?}", c)),
+                    "min_confidence": ruleset.min_confidence.map(|c| format!("{c:?}")),
                     "ner": format!("{:?}", ruleset.ner),
-                    "strategy": ruleset.strategy.map(|s| format!("{:?}", s)),
+                    "strategy": ruleset.strategy.map(|s| format!("{s:?}")),
                 });
                 println!("{}", serde_json::to_string_pretty(&info)?);
             } else if common.yaml {
@@ -1433,24 +1469,27 @@ fn handle_patterns(common: &CommonOpts, cmd: PatternsCommand) -> Result<()> {
                     "description": ruleset.description,
                     "enabled_patterns": ruleset.enabled_patterns,
                     "disabled_patterns": ruleset.disabled_patterns,
-                    "min_confidence": ruleset.min_confidence.map(|c| format!("{:?}", c)),
+                    "min_confidence": ruleset.min_confidence.map(|c| format!("{c:?}")),
                     "ner": format!("{:?}", ruleset.ner),
-                    "strategy": ruleset.strategy.map(|s| format!("{:?}", s)),
+                    "strategy": ruleset.strategy.map(|s| format!("{s:?}")),
                 });
                 println!("{}", serde_yaml::to_string(&info)?);
             } else {
-                println!("Ruleset: {}", name);
+                println!("Ruleset: {name}");
                 println!("Description: {}", ruleset.description);
                 println!("Enabled patterns: {}", ruleset.enabled_patterns.join(", "));
                 if !ruleset.disabled_patterns.is_empty() {
-                    println!("Disabled patterns: {}", ruleset.disabled_patterns.join(", "));
+                    println!(
+                        "Disabled patterns: {}",
+                        ruleset.disabled_patterns.join(", ")
+                    );
                 }
                 if let Some(c) = ruleset.min_confidence {
-                    println!("Min confidence: {:?}", c);
+                    println!("Min confidence: {c:?}");
                 }
                 println!("NER mode: {:?}", ruleset.ner);
                 if let Some(s) = ruleset.strategy {
-                    println!("Strategy: {:?}", s);
+                    println!("Strategy: {s:?}");
                 }
             }
         }
@@ -1522,6 +1561,10 @@ fn handle_sessions(common: &CommonOpts, cmd: SessionsCommand) -> Result<()> {
     }
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "CLI command struct consumed by handler"
+)]
 fn list_sessions(common: &CommonOpts, search_dir: Option<PathBuf>) -> Result<()> {
     let mut sessions = Vec::new();
 
@@ -1540,15 +1583,15 @@ fn list_sessions(common: &CommonOpts, search_dir: Option<PathBuf>) -> Result<()>
     }
 
     for dir in &search_dirs {
-        if dir.exists() {
-            if let Ok(entries) = fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                        if let Ok(session_info) = parse_key_file_header(&path) {
-                            sessions.push((path, session_info));
-                        }
-                    }
+        if dir.exists()
+            && let Ok(entries) = fs::read_dir(dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("jsonl")
+                    && let Ok(session_info) = parse_key_file_header(&path)
+                {
+                    sessions.push((path, session_info));
                 }
             }
         }
@@ -1580,6 +1623,10 @@ fn list_sessions(common: &CommonOpts, search_dir: Option<PathBuf>) -> Result<()>
     Ok(())
 }
 
+#[expect(
+    clippy::needless_pass_by_value,
+    reason = "CLI command struct consumed by handler"
+)]
 fn search_sessions(
     common: &CommonOpts,
     search_id: &str,
@@ -1602,17 +1649,16 @@ fn search_sessions(
     }
 
     for dir in &search_dirs {
-        if dir.exists() {
-            if let Ok(entries) = fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                        if let Ok(session_info) = parse_key_file_header(&path) {
-                            if session_info.session.contains(search_id) {
-                                matches.push((path, session_info));
-                            }
-                        }
-                    }
+        if dir.exists()
+            && let Ok(entries) = fs::read_dir(dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("jsonl")
+                    && let Ok(session_info) = parse_key_file_header(&path)
+                    && session_info.session.contains(search_id)
+                {
+                    matches.push((path, session_info));
                 }
             }
         }
@@ -1621,7 +1667,7 @@ fn search_sessions(
     if matches.is_empty() {
         eprintln!("No sessions found with ID: {search_id}");
         eprintln!("Available session IDs:");
-        for info in list_session_ids_only(&search_dirs)? {
+        for info in list_session_ids_only(&search_dirs) {
             println!("  {}", info.session);
         }
         return Ok(());
@@ -1704,10 +1750,10 @@ fn count_replacements(path: &PathBuf) -> Result<usize> {
         line_num += 1;
         if line_num > 1 {
             // Skip header line
-            if let Ok(line_str) = line {
-                if serde_json::from_str::<engine::Replacement>(&line_str).is_ok() {
-                    count += 1;
-                }
+            if let Ok(line_str) = line
+                && serde_json::from_str::<engine::Replacement>(&line_str).is_ok()
+            {
+                count += 1;
             }
             // Skip malformed lines
         }
@@ -1716,19 +1762,19 @@ fn count_replacements(path: &PathBuf) -> Result<usize> {
     Ok(count)
 }
 
-fn list_session_ids_only(search_dirs: &[PathBuf]) -> Result<Vec<SessionInfo>> {
+fn list_session_ids_only(search_dirs: &[PathBuf]) -> Vec<SessionInfo> {
     let mut sessions = Vec::new();
 
     for dir in search_dirs {
-        if dir.exists() {
-            if let Ok(entries) = fs::read_dir(dir) {
-                for entry in entries.flatten() {
-                    let path = entry.path();
-                    if path.extension().and_then(|s| s.to_str()) == Some("jsonl") {
-                        if let Ok(info) = parse_key_file_header(&path) {
-                            sessions.push(info);
-                        }
-                    }
+        if dir.exists()
+            && let Ok(entries) = fs::read_dir(dir)
+        {
+            for entry in entries.flatten() {
+                let path = entry.path();
+                if path.extension().and_then(|s| s.to_str()) == Some("jsonl")
+                    && let Ok(info) = parse_key_file_header(&path)
+                {
+                    sessions.push(info);
                 }
             }
         }
@@ -1736,9 +1782,10 @@ fn list_session_ids_only(search_dirs: &[PathBuf]) -> Result<Vec<SessionInfo>> {
 
     // Sort by creation time
     sessions.sort_by(|a, b| b.created.cmp(&a.created));
-    Ok(sessions)
+    sessions
 }
 
+#[expect(clippy::unnecessary_wraps, reason = "Consistent handler return type")]
 fn handle_completions(shell: Shell) -> Result<()> {
     let mut cmd = Cli::command();
     clap_complete::generate(shell, &mut cmd, APP_NAME, &mut io::stdout());
@@ -1771,7 +1818,12 @@ fn handle_bench(common: &CommonOpts, config: &Config, cmd: BenchCommand) -> Resu
 
     // Load examples
     let source_path = Path::new(&cmd.source);
-    let examples = if source_path.exists() && source_path.extension().map(|e| e == "jsonl").unwrap_or(false) {
+    let examples = if source_path.exists()
+        && source_path
+            .extension()
+            .map(|e| e == "jsonl")
+            .unwrap_or(false)
+    {
         // Load from local JSONL file
         if !common.quiet {
             eprintln!("Loading dataset from {}...", source_path.display());
@@ -1782,7 +1834,10 @@ fn handle_bench(common: &CommonOpts, config: &Config, cmd: BenchCommand) -> Resu
         #[cfg(feature = "bench")]
         {
             if !common.quiet {
-                eprintln!("Fetching {} examples from {} (split: {})...", cmd.fetch_limit, cmd.source, cmd.split);
+                eprintln!(
+                    "Fetching {} examples from {} (split: {})...",
+                    cmd.fetch_limit, cmd.source, cmd.split
+                );
             }
             bench::download_huggingface_dataset(
                 &cmd.source,
@@ -1793,7 +1848,9 @@ fn handle_bench(common: &CommonOpts, config: &Config, cmd: BenchCommand) -> Resu
         }
         #[cfg(not(feature = "bench"))]
         {
-            return Err(anyhow!("HuggingFace dataset download requires the 'bench' feature"));
+            return Err(anyhow!(
+                "HuggingFace dataset download requires the 'bench' feature"
+            ));
         }
     };
 
@@ -1877,7 +1934,10 @@ fn handle_bench(common: &CommonOpts, config: &Config, cmd: BenchCommand) -> Resu
         // Show missed detections if requested
         if !results.missed_detections.is_empty() {
             println!();
-            println!("Missed Detections ({}):", cmd.show_misses.as_deref().unwrap_or(""));
+            println!(
+                "Missed Detections ({}):",
+                cmd.show_misses.as_deref().unwrap_or("")
+            );
             println!("-----------------------");
             for miss in &results.missed_detections {
                 println!("  Text: {:?}", miss.text);
@@ -1889,7 +1949,10 @@ fn handle_bench(common: &CommonOpts, config: &Config, cmd: BenchCommand) -> Resu
         // Show false positives if requested
         if !results.false_positive_detections.is_empty() {
             println!();
-            println!("False Positives ({}):", cmd.show_false_positives.as_deref().unwrap_or(""));
+            println!(
+                "False Positives ({}):",
+                cmd.show_false_positives.as_deref().unwrap_or("")
+            );
             println!("---------------------");
             for fp in &results.false_positive_detections {
                 println!("  Text: {:?}", fp.text);
@@ -1906,6 +1969,10 @@ fn handle_bench(common: &CommonOpts, config: &Config, cmd: BenchCommand) -> Resu
 // Helper Functions
 // =============================================================================
 
+#[expect(
+    clippy::unnecessary_wraps,
+    reason = "May return errors in future logging backends"
+)]
 fn init_logging(common: &CommonOpts) -> Result<()> {
     if common.quiet {
         return Ok(());
@@ -1926,31 +1993,28 @@ fn init_logging(common: &CommonOpts) -> Result<()> {
     Ok(())
 }
 
-fn read_input(path: &Option<PathBuf>) -> Result<String> {
-    match path {
-        Some(p) => fs::read_to_string(p)
-            .with_context(|| format!("Failed to read input file: {}", p.display())),
-        None => {
-            let stdin = io::stdin();
-            if stdin.is_terminal() {
-                eprintln!("Reading from stdin (Ctrl+D to finish)...");
-            }
-            let mut buffer = String::new();
-            stdin.lock().read_to_string(&mut buffer)?;
-            Ok(buffer)
+fn read_input(path: Option<&PathBuf>) -> Result<String> {
+    if let Some(p) = path {
+        fs::read_to_string(p).with_context(|| format!("Failed to read input file: {}", p.display()))
+    } else {
+        let stdin = io::stdin();
+        if stdin.is_terminal() {
+            eprintln!("Reading from stdin (Ctrl+D to finish)...");
         }
+        let mut buffer = String::new();
+        stdin.lock().read_to_string(&mut buffer)?;
+        Ok(buffer)
     }
 }
 
-fn write_output(path: &Option<PathBuf>, content: &str) -> Result<()> {
-    match path {
-        Some(p) => fs::write(p, content)
-            .with_context(|| format!("Failed to write output file: {}", p.display())),
-        None => {
-            print!("{content}");
-            io::stdout().flush()?;
-            Ok(())
-        }
+fn write_output(path: Option<&PathBuf>, content: &str) -> Result<()> {
+    if let Some(p) = path {
+        fs::write(p, content)
+            .with_context(|| format!("Failed to write output file: {}", p.display()))
+    } else {
+        print!("{content}");
+        io::stdout().flush()?;
+        Ok(())
     }
 }
 
@@ -2015,7 +2079,7 @@ fn create_json_summary(matches: &[JsonPiiMatch]) -> DetectionSummary {
 }
 
 /// Detect format from file extension.
-fn detect_format(path: &Option<PathBuf>) -> FormatArg {
+fn detect_format(path: Option<&PathBuf>) -> FormatArg {
     match path {
         Some(p) => match p.extension().and_then(|e| e.to_str()) {
             Some("json") => FormatArg::Json,
