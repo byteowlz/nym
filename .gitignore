@@ -3,6 +3,7 @@
 # === macos ===
 # macOS
 # General
+/.pi/todos/
 .DS_Store
 .AppleDouble
 .LSOverride
