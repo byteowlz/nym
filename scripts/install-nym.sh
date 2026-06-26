@@ -156,7 +156,15 @@ if [[ "${ENABLE_NER}" == "true" ]]; then
     echo "  nym detect --ner file.txt"
     echo "  nym anon --ner file.txt"
     echo ""
-    echo "The NER model will be downloaded on first use (~50MB)."
+    echo "Two NER backends are available (set [ner] backend in your config):"
+    echo "  gliner  - zero-shot GLiNER model, auto-downloaded on first use (~50MB)"
+    echo "  openmed - OpenMed clinical/HIPAA PII model (DeBERTa token classifier)"
+    echo "  both    - run both and merge results"
+    echo ""
+    echo "OpenMed has no published ONNX, so convert one first:"
+    echo "  scripts/convert_openmed_onnx.sh        # -> models/<name>-onnx/"
+    echo "then set [ner] backend = \"openmed\" and openmed_model = <that dir>."
+    echo "See docs/openmed-ner.md for details."
     echo ""
 fi
 

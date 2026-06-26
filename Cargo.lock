@@ -1465,6 +1465,7 @@ dependencies = [
  "shellexpand",
  "tempfile",
  "thiserror 1.0.69",
+ "tokenizers",
  "tokio",
  "toml 0.8.23",
  "unicode-segmentation",

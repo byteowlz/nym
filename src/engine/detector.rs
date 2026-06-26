@@ -17,6 +17,27 @@ static TLD_REGEX: LazyLock<Regex> =
 
 #[cfg(feature = "ner")]
 use super::ner::{NerDetector, NerModelConfig};
+#[cfg(feature = "ner")]
+use super::ner_openmed::OpenMedDetector;
+
+/// Which NER backend(s) to run.
+///
+/// nym supports two NER backends in parallel:
+/// - [`NerBackend::Gliner`] — zero-shot span model via `gline-rs` (the default).
+/// - [`NerBackend::OpenMed`] — OpenMed DeBERTa-v2 token classification via ONNX
+///   Runtime, with a fixed 106-label PII taxonomy.
+/// - [`NerBackend::Both`] — run both and merge results.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum NerBackend {
+    /// GLiNER zero-shot span model (default).
+    #[default]
+    Gliner,
+    /// OpenMed token-classification model.
+    OpenMed,
+    /// Run both backends and merge their matches.
+    Both,
+}
 
 /// A detected PII match.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,6 +91,11 @@ pub struct DetectorConfig {
     pub ner_labels: Option<Vec<String>>,
     /// NER cache directory for model files
     pub ner_cache_dir: Option<std::path::PathBuf>,
+    /// Which NER backend(s) to run.
+    pub ner_backend: NerBackend,
+    /// Path to a converted OpenMed model directory (model.onnx + tokenizer.json
+    /// + config.json), used when the backend is OpenMed or Both.
+    pub ner_openmed_model: Option<std::path::PathBuf>,
 }
 
 impl Default for DetectorConfig {
@@ -83,6 +109,8 @@ impl Default for DetectorConfig {
             ner_threshold: None,
             ner_labels: None,
             ner_cache_dir: None,
+            ner_backend: NerBackend::default(),
+            ner_openmed_model: None,
         }
     }
 }
@@ -159,6 +187,18 @@ impl DetectorConfig {
         self.ner_cache_dir = Some(cache_dir.into());
         self
     }
+
+    /// Select which NER backend(s) to run.
+    pub fn with_ner_backend(mut self, backend: NerBackend) -> Self {
+        self.ner_backend = backend;
+        self
+    }
+
+    /// Set the converted OpenMed model directory.
+    pub fn with_ner_openmed_model(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
+        self.ner_openmed_model = Some(dir.into());
+        self
+    }
 }
 
 /// The PII detector engine.
@@ -171,9 +211,12 @@ pub struct Detector {
     regex_set: RegexSet,
     /// Ordered list of patterns corresponding to regex set indices
     patterns: Vec<&'static PiiPattern>,
-    /// Optional NER detector for name/address detection
+    /// Optional GLiNER detector for name/address detection
     #[cfg(feature = "ner")]
     ner_detector: Option<NerDetector>,
+    /// Optional OpenMed token-classification detector
+    #[cfg(feature = "ner")]
+    openmed_detector: Option<OpenMedDetector>,
 }
 
 impl Detector {
@@ -213,12 +256,16 @@ impl Detector {
         let regex_set =
             RegexSet::new(&regex_patterns).expect("built-in patterns must be valid regexes");
 
-        // Initialize NER detector if enabled
+        // Initialize NER backend(s) if enabled
         #[cfg(feature = "ner")]
-        let ner_detector = if config.ner_enabled {
-            Self::init_ner(config)
+        let (ner_detector, openmed_detector) = if config.ner_enabled {
+            match config.ner_backend {
+                NerBackend::Gliner => (Self::init_ner(config), None),
+                NerBackend::OpenMed => (None, Self::init_openmed(config)),
+                NerBackend::Both => (Self::init_ner(config), Self::init_openmed(config)),
+            }
         } else {
-            None
+            (None, None)
         };
 
         Self {
@@ -226,6 +273,8 @@ impl Detector {
             patterns,
             #[cfg(feature = "ner")]
             ner_detector,
+            #[cfg(feature = "ner")]
+            openmed_detector,
         }
     }
 
@@ -270,6 +319,51 @@ impl Detector {
             Err(e) => {
                 warn!(
                     "Failed to initialize NER detector: {}. NER detection disabled.",
+                    e
+                );
+                None
+            }
+        }
+    }
+
+    /// Initialize the OpenMed token-classification detector from config.
+    #[cfg(feature = "ner")]
+    fn init_openmed(config: &DetectorConfig) -> Option<OpenMedDetector> {
+        use log::{info, warn};
+
+        // A local directory is loaded directly; anything else is treated as a
+        // HuggingFace repo id and downloaded/cached (like the GLiNER backend).
+        // When unset, fall back to the default published OpenMed repo.
+        let result = match config.ner_openmed_model {
+            Some(ref model) if model.is_dir() => {
+                OpenMedDetector::from_dir(model, config.ner_threshold)
+            }
+            Some(ref model) => OpenMedDetector::from_repo(
+                &model.to_string_lossy(),
+                config.ner_cache_dir.as_deref(),
+                config.ner_threshold,
+            ),
+            None => {
+                info!(
+                    "No ner.openmed_model set; using default {}",
+                    super::ner_openmed::DEFAULT_OPENMED_MODEL
+                );
+                OpenMedDetector::from_repo(
+                    super::ner_openmed::DEFAULT_OPENMED_MODEL,
+                    config.ner_cache_dir.as_deref(),
+                    config.ner_threshold,
+                )
+            }
+        };
+
+        match result {
+            Ok(detector) => {
+                info!("OpenMed NER detector ready");
+                Some(detector)
+            }
+            Err(e) => {
+                warn!(
+                    "Failed to initialize OpenMed detector: {}. OpenMed detection disabled.",
                     e
                 );
                 None
@@ -335,6 +429,26 @@ impl Detector {
                 }
                 Err(e) => {
                     log::warn!("NER detection failed: {}", e);
+                }
+            }
+        }
+
+        // OpenMed token-classification detection (runs alongside GLiNER)
+        #[cfg(feature = "ner")]
+        if let Some(ref openmed) = self.openmed_detector {
+            match openmed.detect(text) {
+                Ok(openmed_matches) => {
+                    for nm in openmed_matches {
+                        let overlaps = matches
+                            .iter()
+                            .any(|m| nm.start < m.end && nm.end > m.start);
+                        if !overlaps {
+                            matches.push(nm);
+                        }
+                    }
+                }
+                Err(e) => {
+                    log::warn!("OpenMed NER detection failed: {}", e);
                 }
             }
         }

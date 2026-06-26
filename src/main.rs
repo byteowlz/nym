@@ -39,6 +39,16 @@ use session::Session;
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
 
+/// Apply the configured NER backend selection (`gliner`/`openmed`/`both`) and
+/// the OpenMed model directory onto a detector config.
+fn apply_ner_backend(mut dc: DetectorConfig, ner: &config::NerConfig) -> DetectorConfig {
+    dc = dc.with_ner_backend(ner.backend);
+    if let Some(ref dir) = ner.openmed_model {
+        dc = dc.with_ner_openmed_model(shellexpand::tilde(dir).into_owned());
+    }
+    dc
+}
+
 fn main() {
     if let Err(err) = try_main() {
         let _ = writeln!(io::stderr(), "error: {err:?}");
@@ -606,6 +616,11 @@ struct BenchCommand {
     #[arg(long)]
     strict: bool,
 
+    /// Ignore entity labels when matching (count any span overlap as a hit).
+    /// Fair when comparing NER backends with different label taxonomies.
+    #[arg(long)]
+    ignore_labels: bool,
+
     /// Enable NER-based detection
     #[arg(long)]
     ner: bool,
@@ -753,6 +768,8 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
     if let Some(ref cache_dir) = config.ner.cache_dir {
         detector_config = detector_config.with_ner_cache_dir(cache_dir);
     }
+
+    detector_config = apply_ner_backend(detector_config, &config.ner);
 
     let detector = Detector::new(&detector_config);
     debug!("Active patterns: {:?}", detector.active_patterns());
@@ -1142,6 +1159,8 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
     if let Some(ref cache_dir) = config.ner.cache_dir {
         detector_config = detector_config.with_ner_cache_dir(cache_dir);
     }
+
+    detector_config = apply_ner_backend(detector_config, &config.ner);
 
     let detector = Detector::new(&detector_config);
 
@@ -1816,6 +1835,8 @@ fn handle_bench(common: &CommonOpts, config: &Config, cmd: BenchCommand) -> Resu
         detector_config = detector_config.with_ner_labels(config.ner.labels.clone());
     }
 
+    detector_config = apply_ner_backend(detector_config, &config.ner);
+
     // Load examples
     let source_path = Path::new(&cmd.source);
     let examples = if source_path.exists()
@@ -1867,6 +1888,7 @@ fn handle_bench(common: &CommonOpts, config: &Config, cmd: BenchCommand) -> Resu
     let bench_config = BenchConfig {
         detector_config,
         strict_matching: cmd.strict,
+        ignore_labels: cmd.ignore_labels,
         max_examples,
         track_misses_for: cmd.show_misses.clone(),
         track_false_positives_for: cmd.show_false_positives.clone(),

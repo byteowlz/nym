@@ -236,13 +236,17 @@ fn process_text_unit(
                         let (anonymized_value, replacements) =
                             replacer.replace_all(value, &matches);
 
-                        // Reconstruct the line
-                        let colon_pos = unit.text.find(':').unwrap();
-                        let prefix = &unit.text[..=colon_pos];
-                        let spacing = &unit.text[colon_pos + 1..value_offset];
-                        let result = format!("{}{}{}", prefix, spacing, anonymized_value);
-
-                        results.push((result, replacements));
+                        // Reconstruct the line. The colon is guaranteed to be
+                        // present here (value_offset was derived from it), but we
+                        // handle its absence gracefully rather than panicking.
+                        if let Some(colon_pos) = unit.text.find(':') {
+                            let prefix = &unit.text[..=colon_pos];
+                            let spacing = &unit.text[colon_pos + 1..value_offset];
+                            let result = format!("{prefix}{spacing}{anonymized_value}");
+                            results.push((result, replacements));
+                        } else {
+                            results.push((anonymized_value, replacements));
+                        }
                     }
                 }
             } else {

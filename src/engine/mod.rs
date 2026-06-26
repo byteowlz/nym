@@ -25,6 +25,8 @@
 pub mod detector;
 pub mod formats;
 pub mod ner;
+#[cfg(feature = "ner")]
+pub mod ner_openmed;
 pub mod patterns;
 pub mod replacer;
 

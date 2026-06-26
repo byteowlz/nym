@@ -71,6 +71,8 @@ hf-hub = { version = "0.4", optional = true, default-features = false, features 
 ort = { version = "=2.0.0-rc.9", optional = true }
 # libc for macOS crash workaround (_exit)
 libc = { version = "0.2", optional = true }
+# Tokenizer for the OpenMed token-classification NER backend (HF tokenizer.json)
+tokenizers = { version = "0.21", optional = true, default-features = false, features = ["onig"] }
 
 # HTTP client for downloading datasets
 ureq = { version = "3", optional = true }
@@ -85,7 +87,7 @@ streaming = ["tokio", "futures", "async-stream"]
 bench = ["ureq"]
 
 # NER with GLiNER
-ner = ["gline-rs", "orp", "hf-hub", "ort", "libc", "async-tqsm", "unicode-segmentation"]
+ner = ["gline-rs", "orp", "hf-hub", "ort", "libc", "async-tqsm", "unicode-segmentation", "tokenizers"]
 
 # Dynamic loading of ONNX runtime (recommended for distribution)
 ner-load-dynamic = ["ner", "gline-rs/load-dynamic"]

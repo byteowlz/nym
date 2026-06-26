@@ -13,6 +13,8 @@ use std::path::PathBuf;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 
+use crate::engine::detector::NerBackend;
+
 use crate::engine::{Confidence, ReplacementStrategy};
 
 /// Application configuration.
@@ -207,6 +209,12 @@ pub struct NerConfig {
     /// Entity labels to detect.
     /// Default: `person`, `organization`, `street_address`, `city`, `country`
     pub labels: Vec<String>,
+    /// Which NER backend(s) to run: `gliner` (default), `openmed`, or `both`.
+    pub backend: NerBackend,
+    /// Path to a converted OpenMed model directory (`model.onnx` +
+    /// `tokenizer.json` + `config.json`). Required for the `openmed`/`both`
+    /// backends. Produced by `scripts/convert_openmed_onnx.sh`.
+    pub openmed_model: Option<String>,
 }
 
 impl Default for NerConfig {
@@ -223,6 +231,8 @@ impl Default for NerConfig {
                 "city".to_string(),
                 "country".to_string(),
             ],
+            backend: NerBackend::default(),
+            openmed_model: None,
         }
     }
 }

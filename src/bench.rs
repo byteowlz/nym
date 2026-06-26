@@ -45,7 +45,7 @@ pub struct Example {
 
 /// Result of evaluating a single example.
 #[derive(Debug, Clone, Default)]
-#[allow(dead_code)]
+#[cfg_attr(not(test), expect(dead_code, reason = "Public API - used by consumers"))]
 pub struct ExampleResult {
     /// True positives (correctly detected)
     pub true_positives: usize,
@@ -176,6 +176,10 @@ pub struct BenchConfig {
     pub detector_config: DetectorConfig,
     /// Whether to use strict matching (exact span) or relaxed (overlap)
     pub strict_matching: bool,
+    /// Ignore entity labels when matching — count any span overlap as a hit.
+    /// Useful for fairly comparing NER backends with different label taxonomies
+    /// (e.g. GLiNER's "person" vs OpenMed's "first_name"/"last_name").
+    pub ignore_labels: bool,
     /// Label mapping (dataset label -> our pattern name)
     pub label_mapping: HashMap<String, String>,
     /// Maximum examples to process (None = all)
@@ -191,6 +195,7 @@ impl Default for BenchConfig {
         Self {
             detector_config: DetectorConfig::default(),
             strict_matching: false,
+            ignore_labels: false,
             label_mapping: Self::default_label_mapping(),
             max_examples: None,
             track_misses_for: None,
@@ -744,8 +749,8 @@ pub fn run_benchmark(examples: &[Example], config: &BenchConfig) -> Result<Bench
             // gt_label is already mapped (e.g., "person" from "GIVENNAME1")
             // d_label is our pattern name (e.g., "person")
             let match_idx = detected_set.iter().position(|(d_start, d_end, d_label)| {
-                // Direct match or same category
-                let label_match = d_label == gt_label;
+                // Direct match or same category (skipped in label-agnostic mode)
+                let label_match = config.ignore_labels || d_label == gt_label;
 
                 if !label_match {
                     return false;

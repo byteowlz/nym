@@ -164,3 +164,7 @@ criterion/
 # IDE/Editor specific (Rust)
 .cargo/
 !.cargo/config.toml
+
+# ---- nym: OpenMed NER integration ----
+# Converted ONNX models (large; produced by scripts/convert_openmed_onnx.sh)
+/models/
