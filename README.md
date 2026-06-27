@@ -295,10 +295,11 @@ The default model (`onnx-community/gliner_multi-v2.1`) is Apache-2.0 licensed an
 
 nym ships two NER backends that can run individually or together:
 
-- **`gliner`** (default) — GLiNER zero-shot span model; supply any labels you like.
+- **`gliner`** — GLiNER zero-shot span model; supply any labels you like.
 - **`openmed`** — [OpenMed](https://github.com/maziyarpanahi/openmed) DeBERTa-v2 token-classification models fine-tuned for clinical/HIPAA PII, with a fixed 106-label taxonomy (names, dates of birth, medical record numbers, and more).
+- **`both`** (default) — run both and merge results for best recall.
 
-Select with `[ner] backend = "gliner" | "openmed" | "both"`. The OpenMed ONNX models are auto-downloaded from the Hub on first use (default `Wismut/openmed-onnx/small`; also `/base`, `/large`) — no manual setup. `openmed_model` also accepts a local converted dir. See [docs/openmed-ner.md](docs/openmed-ner.md) for the full guide.
+Select with `[ner] backend = "both" | "gliner" | "openmed"`. The OpenMed ONNX models are auto-downloaded from the Hub on first use (default `Wismut/openmed-onnx/small`; also `/base`, `/large`) — no manual setup. `openmed_model` also accepts a local converted dir. See [docs/openmed-ner.md](docs/openmed-ner.md) for the full guide.
 
 ## Key Files
 

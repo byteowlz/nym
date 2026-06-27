@@ -4,7 +4,7 @@ nym supports **two NER backends in parallel**:
 
 | Backend  | Model kind | Crate / runtime | Labels |
 |----------|------------|-----------------|--------|
-| `gliner` (default) | GLiNER zero-shot **span** model | `gline-rs` | Arbitrary, zero-shot (you supply labels) |
+| `gliner` | GLiNER zero-shot **span** model | `gline-rs` | Arbitrary, zero-shot (you supply labels) |
 | `openmed` | [OpenMed](https://github.com/maziyarpanahi/openmed) DeBERTa-v2 **token classification** | `ort` (ONNX Runtime) directly | Fixed 106-label PII taxonomy (BIO) |
 
 The OpenMed models are fine-tuned specifically for clinical/HIPAA PII and recognise
@@ -43,7 +43,7 @@ Recommended models (all `DebertaV2ForTokenClassification`, 106 BIO labels):
 ```toml
 [ner]
 enabled = true
-backend = "openmed"          # "gliner" (default) | "openmed" | "both"
+backend = "both"             # "both" (default) | "gliner" | "openmed"
 # openmed_model accepts EITHER a local directory OR a HuggingFace repo id.
 # A repo id (optionally with a subfolder) is downloaded + cached automatically:
 openmed_model = "Wismut/openmed-onnx/small"   # also: /base, /large

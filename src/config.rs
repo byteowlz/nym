@@ -209,7 +209,7 @@ pub struct NerConfig {
     /// Entity labels to detect.
     /// Default: `person`, `organization`, `street_address`, `city`, `country`
     pub labels: Vec<String>,
-    /// Which NER backend(s) to run: `gliner` (default), `openmed`, or `both`.
+    /// Which NER backend(s) to run: `both` (default), `gliner`, or `openmed`.
     pub backend: NerBackend,
     /// Path to a converted OpenMed model directory (`model.onnx` +
     /// `tokenizer.json` + `config.json`). Required for the `openmed`/`both`

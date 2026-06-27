@@ -23,19 +23,19 @@ use super::ner_openmed::OpenMedDetector;
 /// Which NER backend(s) to run.
 ///
 /// nym supports two NER backends in parallel:
-/// - [`NerBackend::Gliner`] — zero-shot span model via `gline-rs` (the default).
+/// - [`NerBackend::Gliner`] — zero-shot span model via `gline-rs`.
 /// - [`NerBackend::OpenMed`] — OpenMed DeBERTa-v2 token classification via ONNX
 ///   Runtime, with a fixed 106-label PII taxonomy.
-/// - [`NerBackend::Both`] — run both and merge results.
+/// - [`NerBackend::Both`] — run both and merge results (the default; best recall).
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NerBackend {
-    /// GLiNER zero-shot span model (default).
-    #[default]
+    /// GLiNER zero-shot span model.
     Gliner,
     /// OpenMed token-classification model.
     OpenMed,
-    /// Run both backends and merge their matches.
+    /// Run both backends and merge their matches (default).
+    #[default]
     Both,
 }
 
