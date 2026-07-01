@@ -29,6 +29,24 @@ use tokenizers::Tokenizer;
 use crate::engine::detector::PiiMatch;
 use crate::engine::patterns::{Confidence, PiiCategory};
 
+/// Candidate ONNX model file paths, tried in order (first found wins) when
+/// resolving a model directory or repo. Covers nym's own conversion layout
+/// (`model_int8.onnx` / `model.onnx`) and the optimum / transformers.js
+/// convention (`onnx/model*.onnx`), so third-party PII models load unchanged.
+/// fp32 is preferred over quantized where both exist, since int8 is unreliable
+/// for some architectures (e.g. DeBERTa-v2).
+const MODEL_CANDIDATES: &[&str] = &[
+    "model_int8.onnx",
+    "model.onnx",
+    "onnx/model.onnx",
+    "onnx/model_fp16.onnx",
+    "onnx/model_quantized.onnx",
+    "onnx/model_q4f16.onnx",
+    "onnx/model_q4.onnx",
+    "onnx/model_int8.onnx",
+    "onnx/model_uint8.onnx",
+];
+
 /// Default OpenMed model when the backend is selected but none is configured.
 /// A HuggingFace repo id (with subfolder) that nym downloads + caches on first
 /// use; the small int8 model is the best speed/accuracy/memory trade-off.
@@ -62,6 +80,9 @@ pub struct OpenMedDetector {
     tokenizer: Tokenizer,
     /// Maps a label index to its BIO label string (e.g. `"B-email"`).
     id2label: Vec<String>,
+    /// Whether the ONNX model expects a `token_type_ids` input (BERT-family
+    /// models do; DeBERTa-v2 exports typically don't).
+    needs_token_type_ids: bool,
     threshold: f32,
     chunk_size: usize,
     chunk_overlap: usize,
@@ -71,19 +92,21 @@ impl OpenMedDetector {
     /// Create a detector from a converted model directory.
     ///
     /// The directory must contain `tokenizer.json`, `config.json`, and an ONNX
-    /// model (as produced by `scripts/convert_openmed_onnx.sh`). If a quantized
-    /// `model_int8.onnx` is present it is preferred over the fp32 `model.onnx`.
+    /// model. The model file is resolved from [`MODEL_CANDIDATES`], which covers
+    /// nym's own layout (`model_int8.onnx` / `model.onnx`) as well as the
+    /// optimum / transformers.js convention (`onnx/model*.onnx`).
     pub fn from_dir(
         model_dir: impl AsRef<Path>,
         threshold: Option<f32>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let dir = model_dir.as_ref();
-        let quantized = dir.join("model_int8.onnx");
-        let model_path = if quantized.exists() {
-            quantized
-        } else {
-            dir.join("model.onnx")
-        };
+        let model_path = MODEL_CANDIDATES
+            .iter()
+            .map(|c| dir.join(c))
+            .find(|p| p.exists())
+            .ok_or_else(|| {
+                format!("no ONNX model found in {dir:?} (looked for {MODEL_CANDIDATES:?})")
+            })?;
         Self::build(&model_path, &dir.join("tokenizer.json"), &dir.join("config.json"), threshold)
     }
 
@@ -92,8 +115,10 @@ impl OpenMedDetector {
     ///
     /// `model_ref` is either a repo id (`org/name`) or a repo id with a
     /// subfolder (`org/name/subdir`), so several models can live in one repo.
-    /// The (sub)folder must contain `tokenizer.json`, `config.json`, and
-    /// `model.onnx` (and optionally `model_int8.onnx`, preferred when present).
+    /// The (sub)folder must contain `tokenizer.json` and `config.json`; the ONNX
+    /// model is resolved from [`MODEL_CANDIDATES`], which covers both nym's own
+    /// layout and the optimum / transformers.js `onnx/model*.onnx` convention
+    /// (so third-party models like `nationaldesignstudio/rampart` work directly).
     /// Respects `HF_HOME`/`HF_ENDPOINT`; `cache_dir` overrides the cache location.
     pub fn from_repo(
         model_ref: &str,
@@ -118,11 +143,12 @@ impl OpenMedDetector {
 
         let config_path = model.get(&format!("{prefix}config.json"))?;
         let tokenizer_path = model.get(&format!("{prefix}tokenizer.json"))?;
-        // Prefer the quantized model if the (sub)folder publishes one.
-        let model_path = match model.get(&format!("{prefix}model_int8.onnx")) {
-            Ok(p) => p,
-            Err(_) => model.get(&format!("{prefix}model.onnx"))?,
-        };
+        let model_path = MODEL_CANDIDATES
+            .iter()
+            .find_map(|c| model.get(&format!("{prefix}{c}")).ok())
+            .ok_or_else(|| {
+                format!("no ONNX model in repo (looked for {MODEL_CANDIDATES:?})")
+            })?;
 
         Self::build(&model_path, &tokenizer_path, &config_path, threshold)
     }
@@ -138,10 +164,16 @@ impl OpenMedDetector {
         let tokenizer = Tokenizer::from_file(tokenizer_path)?;
         let session = Session::builder()?.commit_from_file(model_path)?;
 
+        let needs_token_type_ids = session
+            .inputs
+            .iter()
+            .any(|i| i.name == "token_type_ids");
+
         Ok(Self {
             session: std::mem::ManuallyDrop::new(session),
             tokenizer,
             id2label,
+            needs_token_type_ids,
             threshold: threshold.unwrap_or(0.5),
             chunk_size: DEFAULT_CHUNK_SIZE,
             chunk_overlap: DEFAULT_CHUNK_OVERLAP,
@@ -197,12 +229,23 @@ impl OpenMedDetector {
 
         let shape = vec![1_i64, seq_len as i64];
         let ids_tensor = Tensor::from_array((shape.clone(), input_ids))?;
-        let mask_tensor = Tensor::from_array((shape, attention_mask))?;
+        let mask_tensor = Tensor::from_array((shape.clone(), attention_mask))?;
 
-        let outputs = self.session.run(ort::inputs![
-            "input_ids" => ids_tensor,
-            "attention_mask" => mask_tensor,
-        ]?)?;
+        // BERT-family models require token_type_ids (all zeros for single
+        // sequences); DeBERTa-v2 exports usually don't accept it.
+        let outputs = if self.needs_token_type_ids {
+            let type_ids = Tensor::from_array((shape, vec![0_i64; seq_len]))?;
+            self.session.run(ort::inputs![
+                "input_ids" => ids_tensor,
+                "attention_mask" => mask_tensor,
+                "token_type_ids" => type_ids,
+            ]?)?
+        } else {
+            self.session.run(ort::inputs![
+                "input_ids" => ids_tensor,
+                "attention_mask" => mask_tensor,
+            ]?)?
+        };
 
         let (_, logits) = outputs["logits"].try_extract_raw_tensor::<f32>()?;
         if logits.len() != seq_len * num_labels {
@@ -217,6 +260,7 @@ impl OpenMedDetector {
         let offsets = encoding.get_offsets();
         let special_mask = encoding.get_special_tokens_mask();
         let spans = self.decode_bio(logits, num_labels, offsets, special_mask);
+        let spans = merge_fragments(spans, text);
 
         let mut matches = Vec::new();
         for span in spans {
@@ -400,6 +444,34 @@ fn split_bio(label: &str) -> (BioPrefix, &str) {
     }
 }
 
+/// Merge consecutive decoded spans of the same base label that are contiguous
+/// (separated only by whitespace, or nothing) in `text`.
+///
+/// Token-classification models often fragment a single entity — emitting a fresh
+/// `B-` mid-entity (e.g. an email split into `john` `.` `smith` `@` `example`),
+/// which BIO decoding turns into several adjacent spans. Stitching contiguous
+/// same-type spans back together avoids both fragmented output and the resulting
+/// false positives. Distinct types stay separate (e.g. `CITY` next to `STATE`).
+fn merge_fragments(spans: Vec<DecodedSpan>, text: &str) -> Vec<DecodedSpan> {
+    let mut out: Vec<DecodedSpan> = Vec::with_capacity(spans.len());
+    for span in spans {
+        if let Some(last) = out.last_mut() {
+            let gap_is_blank = span.start >= last.end
+                && text
+                    .get(last.end..span.start)
+                    .is_some_and(|g| g.chars().all(char::is_whitespace));
+            if last.base_label == span.base_label && gap_is_blank {
+                last.end = span.end;
+                last.prob_sum += span.prob_sum;
+                last.token_count += span.token_count;
+                continue;
+            }
+        }
+        out.push(span);
+    }
+    out
+}
+
 /// Numerically stable softmax over `row`, returning `(argmax_index, max_prob)`.
 fn argmax_softmax(row: &[f32]) -> (usize, f32) {
     let mut best_idx = 0;
@@ -452,15 +524,17 @@ fn is_valid_entity(base_label: &str, text: &str) -> bool {
     }
 }
 
-/// Map an OpenMed entity base label to a nym pattern name and category.
+/// Map a token-classification entity base label to a nym pattern name and
+/// category. Case-insensitive, and covers both OpenMed's labels and other PII
+/// models' naming (e.g. rampart's `GIVEN_NAME`, `SURNAME`, `ZIP_CODE`).
 ///
-/// Where an OpenMed label overlaps a built-in nym pattern, the canonical nym
-/// name is used so existing placeholder/fake replacement logic applies.
+/// Where a label overlaps a built-in nym pattern, the canonical nym name is used
+/// so existing placeholder/fake replacement logic applies.
 fn label_to_pattern(base: &str) -> (&'static str, PiiCategory) {
-    match base {
+    match base.to_ascii_lowercase().as_str() {
         // Names / identity
-        "first_name" => ("first_name", PiiCategory::Identity),
-        "last_name" => ("last_name", PiiCategory::Identity),
+        "first_name" | "given_name" => ("first_name", PiiCategory::Identity),
+        "last_name" | "surname" => ("last_name", PiiCategory::Identity),
         "user_name" => ("username", PiiCategory::Social),
         "age" => ("age", PiiCategory::Identity),
         "gender" => ("gender", PiiCategory::Identity),
@@ -472,29 +546,37 @@ fn label_to_pattern(base: &str) -> (&'static str, PiiCategory) {
         "health_plan_beneficiary_number" => {
             ("health_plan_beneficiary_number", PiiCategory::Identity)
         }
-        "certificate_license_number" => ("certificate_license_number", PiiCategory::Identity),
-        "account_number" => ("account_number", PiiCategory::Identity),
+        "certificate_license_number" | "drivers_license" => {
+            ("certificate_license_number", PiiCategory::Identity)
+        }
+        "passport" => ("passport_us", PiiCategory::Identity),
+        "government_id" => ("government_id", PiiCategory::Identity),
+        "account_number" | "bank_account" => ("account_number", PiiCategory::Identity),
         "customer_id" | "employee_id" | "unique_id" | "device_identifier" => {
             ("unique_id", PiiCategory::Identity)
         }
         "biometric_identifier" => ("biometric_identifier", PiiCategory::Identity),
         // Contact
         "email" => ("email", PiiCategory::Contact),
-        "phone_number" => ("phone_ner", PiiCategory::Contact),
+        "phone_number" | "phone" => ("phone_ner", PiiCategory::Contact),
         "fax_number" => ("fax_number", PiiCategory::Contact),
         // Location
-        "street_address" => ("street_address", PiiCategory::Contact),
+        "street_address" | "street_name" | "building_number" | "secondary_address" => {
+            ("street_address", PiiCategory::Contact)
+        }
         "city" => ("city", PiiCategory::Contact),
         "county" => ("county", PiiCategory::Contact),
         "state" => ("state", PiiCategory::Contact),
         "country" => ("country", PiiCategory::Contact),
-        "postcode" => ("postcode", PiiCategory::Contact),
+        "postcode" | "zip_code" => ("postcode", PiiCategory::Contact),
         "coordinate" => ("coordinate", PiiCategory::Network),
         // Financial
         "credit_debit_card" => ("credit_card", PiiCategory::Financial),
         "cvv" => ("cvv", PiiCategory::Financial),
         "pin" => ("pin", PiiCategory::Financial),
-        "bank_routing_number" => ("bank_routing_number", PiiCategory::Financial),
+        "bank_routing_number" | "routing_number" => {
+            ("bank_routing_number", PiiCategory::Financial)
+        }
         "swift_bic" => ("swift_bic", PiiCategory::Financial),
         // Network / technical
         "ipv4" => ("ipv4", PiiCategory::Network),
@@ -570,6 +652,22 @@ mod tests {
     }
 
     #[test]
+    fn test_merge_fragments() {
+        let text = "john.smith Chicago";
+        let spans = vec![
+            DecodedSpan { base_label: "EMAIL".into(), start: 0, end: 4, prob_sum: 0.9, token_count: 1 },
+            DecodedSpan { base_label: "EMAIL".into(), start: 4, end: 10, prob_sum: 0.9, token_count: 2 },
+            DecodedSpan { base_label: "CITY".into(), start: 11, end: 18, prob_sum: 0.9, token_count: 1 },
+        ];
+        let merged = merge_fragments(spans, text);
+        // The two contiguous EMAIL fragments merge; CITY stays separate.
+        assert_eq!(merged.len(), 2);
+        assert_eq!(merged[0].base_label, "EMAIL");
+        assert_eq!((merged[0].start, merged[0].end), (0, 10));
+        assert_eq!(merged[1].base_label, "CITY");
+    }
+
+    #[test]
     fn test_trim_span() {
         let text = "  John  ";
         let (s, e) = trim_span(text, 0, text.len());
@@ -582,6 +680,11 @@ mod tests {
         assert_eq!(label_to_pattern("credit_debit_card").0, "credit_card");
         assert_eq!(label_to_pattern("phone_number").0, "phone_ner");
         assert_eq!(label_to_pattern("unknown_thing").0, "openmed_entity");
+        // Case-insensitive + third-party (rampart) label names.
+        assert_eq!(label_to_pattern("GIVEN_NAME").0, "first_name");
+        assert_eq!(label_to_pattern("SURNAME").0, "last_name");
+        assert_eq!(label_to_pattern("ZIP_CODE").0, "postcode");
+        assert_eq!(label_to_pattern("STREET_NAME").0, "street_address");
     }
 
     #[test]

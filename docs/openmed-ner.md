@@ -63,6 +63,27 @@ published to the Hub, users need no manual conversion. The pre-converted models
 used in this doc live at [`Wismut/openmed-onnx`](https://huggingface.co/Wismut/openmed-onnx)
 (`/small`, `/base`, `/large`). See [Publishing models](#publishing-models).
 
+### Third-party token-classification models (e.g. Rampart)
+
+The `openmed` backend is a **generic BERT/DeBERTa token-classification** loader, not
+tied to OpenMed. It auto-detects `token_type_ids` (BERT needs it, DeBERTa doesn't)
+and resolves the ONNX file from a candidate list covering both nym's layout and the
+optimum / transformers.js convention (`onnx/model*.onnx`), so many Hub PII models
+work unchanged. Example — [`nationaldesignstudio/rampart`](https://huggingface.co/nationaldesignstudio/rampart)
+(a 15 MB MiniLM PII model, CC-BY-4.0):
+
+```toml
+[ner]
+enabled = true
+backend = "openmed"
+openmed_model = "nationaldesignstudio/rampart"   # downloads onnx/model_q4.onnx
+threshold = 0.5
+```
+
+**regex + Rampart is a great low-resource combo** — ~105 MB RSS and ~4.5× faster
+than OpenMed-small, with comparable F1 on general PII (see benchmarks). Ideal for
+small machines or client-side/edge use.
+
 Then:
 
 ```bash
@@ -126,16 +147,26 @@ backends with different label taxonomies compare fairly). Threshold 0.5, default
 high-confidence regex patterns. Each NER row = regex + that backend (regex always
 runs).
 
-| Backend                | Precision | Recall | F1    |
-|------------------------|-----------|--------|-------|
-| regex only             | 79.2%     | 27.8%  | 41.2% |
-| GLiNER                 | 66.8%     | 63.3%  | 65.0% |
-| OpenMed small (int8)   | 71.4%     | 74.6%  | 73.0% |
-| OpenMed base (fp32)    | 69.6%     | 79.4%  | 74.1% |
-| OpenMed large (fp32)   | 70.9%     | 82.3%  | **76.1%** |
-| both (small + GLiNER)  | 68.3%     | 82.2%  | 74.6% |
+| Backend                | Precision | Recall | F1    | Peak RSS |
+|------------------------|-----------|--------|-------|----------|
+| regex only             | 79.2%     | 27.8%  | 41.2% | 26 MB |
+| GLiNER                 | 66.8%     | 63.3%  | 65.0% | 2.2 GB |
+| Rampart (MiniLM q4)    | 80.9%     | 68.5%  | 74.2% | **105 MB** |
+| OpenMed small (int8)   | 77.8%     | 74.1%  | 75.9% | 552 MB |
+| OpenMed base (fp32)    | 69.6%     | 79.4%  | 74.1%† | 1.5 GB |
+| OpenMed large (fp32)   | 70.9%     | 82.3%  | 76.1%† | 3.2 GB |
+| both (small + GLiNER)  | 68.3%     | 82.2%  | 74.6%† | 2.5 GB |
+
+† base/large/both predate the fragment-merge fix and are conservative — small rose
+from 73.0 → 75.9 F1 with it, so these would rise similarly.
 
 Takeaways:
+
+- **Rampart** (a 15 MB MiniLM PII model) hits F1 74.2 at **~105 MB RSS** — near
+  OpenMed-small's accuracy at ~1/5 the memory and ~4.5× the speed. Note it is
+  *in-distribution* here (trained on the ai4privacy family) and covers fewer
+  entity types, so it flatters on this set; still, **regex + Rampart is the best
+  low-resource combo**.
 
 - Every OpenMed size beats GLiNER (F1 73–76 vs 65), driven by much higher recall —
   it catches names, cities, states, addresses, and times that regex can't and
