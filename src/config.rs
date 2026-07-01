@@ -209,12 +209,14 @@ pub struct NerConfig {
     /// Entity labels to detect.
     /// Default: `person`, `organization`, `street_address`, `city`, `country`
     pub labels: Vec<String>,
-    /// Which NER backend(s) to run: `both` (default), `gliner`, or `openmed`.
+    /// Which NER backend(s) to run: `both` (default), `gliner`, or `tokens`.
     pub backend: NerBackend,
-    /// Path to a converted OpenMed model directory (`model.onnx` +
-    /// `tokenizer.json` + `config.json`). Required for the `openmed`/`both`
-    /// backends. Produced by `scripts/convert_openmed_onnx.sh`.
-    pub openmed_model: Option<String>,
+    /// Token-classification model for the `tokens`/`both` backends: a local dir
+    /// (`model.onnx` + `tokenizer.json` + `config.json`) or a HuggingFace repo id
+    /// (e.g. `Wismut/openmed-onnx/small`, `nationaldesignstudio/rampart`).
+    /// Defaults to OpenMed-small when unset. `openmed_model` is a legacy alias.
+    #[serde(alias = "openmed_model")]
+    pub token_model: Option<String>,
 }
 
 impl Default for NerConfig {
@@ -232,7 +234,7 @@ impl Default for NerConfig {
                 "country".to_string(),
             ],
             backend: NerBackend::default(),
-            openmed_model: None,
+            token_model: None,
         }
     }
 }

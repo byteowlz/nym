@@ -158,12 +158,13 @@ if [[ "${ENABLE_NER}" == "true" ]]; then
     echo ""
     echo "By default nym runs BOTH NER backends and merges results:"
     echo "  gliner  - zero-shot GLiNER span model"
-    echo "  openmed - OpenMed clinical/HIPAA PII model (DeBERTa token classifier)"
+    echo "  tokens  - token-classification PII model (OpenMed, Rampart, any HF model)"
     echo "Both auto-download from the Hub on first use - no setup needed."
     echo ""
-    echo "Pick a single backend with [ner] backend = \"gliner\" | \"openmed\" | \"both\"."
-    echo "Choose the OpenMed size via openmed_model = \"Wismut/openmed-onnx/{small,base,large}\"."
-    echo "See docs/openmed-ner.md for details."
+    echo "Pick a single backend with [ner] backend = \"gliner\" | \"tokens\" | \"both\"."
+    echo "Set the model via token_model, e.g. \"Wismut/openmed-onnx/small\" (also"
+    echo "/base, /large) or \"nationaldesignstudio/rampart\" (tiny, low-RAM)."
+    echo "See docs/ner-backends.md for details."
     echo ""
 fi
 

@@ -39,12 +39,12 @@ use session::Session;
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
 
-/// Apply the configured NER backend selection (`gliner`/`openmed`/`both`) and
-/// the OpenMed model directory onto a detector config.
+/// Apply the configured NER backend selection (`gliner`/`tokens`/`both`) and
+/// the token-classification model onto a detector config.
 fn apply_ner_backend(mut dc: DetectorConfig, ner: &config::NerConfig) -> DetectorConfig {
     dc = dc.with_ner_backend(ner.backend);
-    if let Some(ref dir) = ner.openmed_model {
-        dc = dc.with_ner_openmed_model(shellexpand::tilde(dir).into_owned());
+    if let Some(ref model) = ner.token_model {
+        dc = dc.with_ner_token_model(shellexpand::tilde(model).into_owned());
     }
     dc
 }

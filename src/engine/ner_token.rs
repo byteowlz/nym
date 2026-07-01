@@ -1,22 +1,26 @@
-//! OpenMed token-classification NER backend.
+//! Token-classification NER backend (BERT / DeBERTa family).
 //!
 //! This module provides a second, parallel NER backend alongside the GLiNER
 //! span model in [`super::ner`]. Where GLiNER is a zero-shot *span* model loaded
-//! through the `gline-rs` crate, OpenMed ships fine-tuned **token classification**
-//! models (DeBERTa-v2) with a fixed, rich PII taxonomy (106 BIO labels covering
-//! names, emails, SSNs, credit cards, medical record numbers, API keys, and more).
+//! through the `gline-rs` crate, this backend runs fine-tuned **token
+//! classification** models with a fixed BIO PII taxonomy. It is model-agnostic:
+//! it loads any HuggingFace token-classification PII model exported to ONNX —
+//! e.g. OpenMed (DeBERTa-v2, 106 labels) or Rampart (MiniLM/BERT) — reading the
+//! label set from the model's own `config.json`.
 //!
 //! Because `gline-rs` only understands GLiNER span models, this backend talks to
 //! ONNX Runtime (`ort`) directly:
 //!
 //! 1. Tokenize with the HF `tokenizers` crate (offsets enabled).
-//! 2. Run `input_ids` + `attention_mask` through the ONNX session.
+//! 2. Run `input_ids` + `attention_mask` (+ `token_type_ids` for BERT) through
+//!    the ONNX session.
 //! 3. Argmax + softmax over the per-token label logits.
-//! 4. BIO-decode contiguous tokens into entity spans.
+//! 4. BIO-decode contiguous tokens into entity spans, merging fragments.
 //! 5. Map sub-word offsets back to byte offsets in the original text.
 //!
-//! A converted model directory is produced by `scripts/convert_openmed_onnx.sh`
-//! and must contain `model.onnx`, `tokenizer.json`, and `config.json`.
+//! Models load from a local directory or a HuggingFace repo (see
+//! [`TokenClassDetector::from_repo`]); nym's own OpenMed exports are produced by
+//! `scripts/convert_openmed_onnx.sh`.
 
 #![cfg(feature = "ner")]
 
@@ -47,10 +51,11 @@ const MODEL_CANDIDATES: &[&str] = &[
     "onnx/model_uint8.onnx",
 ];
 
-/// Default OpenMed model when the backend is selected but none is configured.
-/// A HuggingFace repo id (with subfolder) that nym downloads + caches on first
-/// use; the small int8 model is the best speed/accuracy/memory trade-off.
-pub const DEFAULT_OPENMED_MODEL: &str = "Wismut/openmed-onnx/small";
+/// Default model when the token-classification backend is selected but none is
+/// configured. A HuggingFace repo id (with subfolder) that nym downloads +
+/// caches on first use; OpenMed-small (int8) is the best speed/accuracy/memory
+/// trade-off. Override with `[ner] token_model` (e.g. a Rampart repo).
+pub const DEFAULT_TOKEN_MODEL: &str = "Wismut/openmed-onnx/small";
 
 /// Default chunk size in words. The model has a 512-token limit; this keeps a
 /// conservative margin for sub-word expansion plus special tokens.
@@ -71,8 +76,8 @@ struct DecodedSpan {
     token_count: usize,
 }
 
-/// OpenMed DeBERTa-v2 token-classification NER backend.
-pub struct OpenMedDetector {
+/// Token-classification NER detector (loads any BERT/DeBERTa PII model).
+pub struct TokenClassDetector {
     /// ONNX Runtime session. Wrapped in `ManuallyDrop` to match the GLiNER
     /// backend's workaround for the ONNX Runtime macOS exit crash.
     /// See [`super::ner`] for details.
@@ -88,7 +93,7 @@ pub struct OpenMedDetector {
     chunk_overlap: usize,
 }
 
-impl OpenMedDetector {
+impl TokenClassDetector {
     /// Create a detector from a converted model directory.
     ///
     /// The directory must contain `tokenizer.json`, `config.json`, and an ONNX
@@ -596,7 +601,7 @@ fn label_to_pattern(base: &str) -> (&'static str, PiiCategory) {
         "license_plate" => ("license_plate", PiiCategory::Other),
         "vehicle_identifier" => ("vehicle_identifier", PiiCategory::Other),
         // Sensitive demographics and free-form fields
-        _ => ("openmed_entity", PiiCategory::Other),
+        _ => ("ner_entity", PiiCategory::Other),
     }
 }
 
@@ -679,7 +684,7 @@ mod tests {
         assert_eq!(label_to_pattern("email").0, "email");
         assert_eq!(label_to_pattern("credit_debit_card").0, "credit_card");
         assert_eq!(label_to_pattern("phone_number").0, "phone_ner");
-        assert_eq!(label_to_pattern("unknown_thing").0, "openmed_entity");
+        assert_eq!(label_to_pattern("unknown_thing").0, "ner_entity");
         // Case-insensitive + third-party (rampart) label names.
         assert_eq!(label_to_pattern("GIVEN_NAME").0, "first_name");
         assert_eq!(label_to_pattern("SURNAME").0, "last_name");

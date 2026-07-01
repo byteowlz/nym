@@ -46,9 +46,9 @@ enabled = true
 backend = "both"             # "both" (default) | "gliner" | "openmed"
 # openmed_model accepts EITHER a local directory OR a HuggingFace repo id.
 # A repo id (optionally with a subfolder) is downloaded + cached automatically:
-openmed_model = "Wismut/openmed-onnx/small"   # also: /base, /large
+token_model = "Wismut/openmed-onnx/small"   # also: /base, /large
 # ...or a local converted dir:
-# openmed_model = "/abs/path/to/models/OpenMed-PII-SuperClinical-Small-44M-v1-onnx"
+# token_model = "/abs/path/to/models/OpenMed-PII-SuperClinical-Small-44M-v1-onnx"
 threshold = 0.5
 
 # For backend = "both", also set the GLiNER repo (defaults shown):
@@ -75,8 +75,8 @@ work unchanged. Example — [`nationaldesignstudio/rampart`](https://huggingface
 ```toml
 [ner]
 enabled = true
-backend = "openmed"
-openmed_model = "nationaldesignstudio/rampart"   # downloads onnx/model_q4.onnx
+backend = "tokens"
+token_model = "nationaldesignstudio/rampart"   # downloads onnx/model_q4.onnx
 threshold = 0.5
 ```
 
@@ -306,8 +306,8 @@ scripts/convert_openmed_onnx.sh                 # small 44M -> models/...-onnx/
 # 3. Write a config per backend, e.g. openmed.toml:
 #    [ner]
 #    enabled = true
-#    backend = "openmed"
-#    openmed_model = "/abs/path/to/models/<name>-onnx"
+#    backend = "tokens"
+#    token_model = "/abs/path/to/models/<name>-onnx"
 #    threshold = 0.5
 
 # 4. Generate a big input and run the harness
