@@ -5,18 +5,31 @@ for training your own nym token-classification model (BERT/DeBERTa).
 
 ## How it works
 
-1. **Templates** with `[LABEL]` placeholders come from a **local LLM** (any
-   OpenAI-compatible endpoint — LM Studio, Ollama, llama.cpp) and/or the built-in
-   [seed bank](seeds.py). The LLM only supplies linguistic diversity; it never
-   handles data or offsets.
-2. **Faker fills** each placeholder with a realistic, format-correct, locale-aware
-   value ([labels.py](labels.py)), building the string incrementally so every
-   value's character span is recorded exactly — no search-and-replace, no offset
-   drift.
-3. **Negatives** (PII-free text) are mixed in to curb false positives.
-4. Output is **char-offset JSONL** (`{"text", "entities":[{start,end,label}]}`),
-   split into train/val/test, with a label-distribution report. Optionally also
-   emits **HF BIO** token/tag pairs ready for `AutoModelForTokenClassification`.
+1. **Rubric sweep** ([rubric.py](rubric.py)) — enumerate `(language × topic ×
+   style)` cells across ~23 languages, 20 domains, 8 registers. For each cell a
+   **local LLM** (any OpenAI-compatible endpoint — LM Studio, Ollama, vLLM) writes
+   `[LABEL]`-placeholder templates *in that language and register*. This gives
+   systematic breadth instead of whatever the model gravitates to. A [seed
+   bank](seeds.py) works offline (`--no-llm`). The LLM only supplies prose; it
+   never handles data or offsets.
+2. **Faker fills** each placeholder with a realistic, format-correct value in the
+   cell's **matching locale** ([labels.py](labels.py)) — a Korean template gets
+   Korean names, a German one German IBANs. The string is built as segments so
+   every value's character span is recorded exactly.
+3. **Noise** ([noise.py](noise.py)) — a configurable fraction of examples is
+   corrupted with **label-preserving** OCR confusions (`o→0`, `rn→m`, …), keyboard
+   typos, spacing glitches, and case flips. Corruption is applied per-segment and
+   offsets recomputed, so spans stay exact even when a name becomes `MMiren0` or
+   an address is smudged — teaching the model to tag messy real-world text.
+4. **Negatives** (PII-free text) curb false positives.
+5. Output is **char-offset JSONL** (`{"text", "entities":[{start,end,label}]}`),
+   split train/val/test, with a label-distribution report. Optionally also emits
+   **HF BIO** token/tag pairs ready for `AutoModelForTokenClassification` (use a
+   *multilingual* tokenizer for the non-Latin languages).
+
+Key flags: `--cells` / `--per-cell` (rubric breadth), `--noise-ratio` /
+`--noise-level` (light|medium|heavy), `--fills-per-template`, `--neg-ratio`,
+`--split`, `--seed`, `--to-bio <tokenizer>`, `--dump-templates`.
 
 > **Why not DSPy?** The correctness-critical work (offsets, BIO alignment, label
 > validity) is deterministic Python, and "template diversity" has no clean metric
@@ -28,22 +41,20 @@ for training your own nym token-classification model (BERT/DeBERTa).
 ## Usage
 
 ```bash
-# Offline — seeds only (good for a smoke test / no GPU):
+# Offline — seeds only (smoke test / no GPU), with 20% noisy examples:
 uv run --with faker scripts/datagen/generate.py --no-llm -n 500 -o data/pii.jsonl
 
-# With a local model (LM Studio default port shown; Ollama = :11434):
-uv run --with faker --with openai scripts/datagen/generate.py \
+# Full multilingual rubric sweep on a local model, 20% noisy + BIO:
+uv run --with faker --with openai --with transformers scripts/datagen/generate.py \
     -n 20000 -o data/pii.jsonl \
-    --base-url http://localhost:1234/v1 --model your-local-model \
-    --locales en_US,en_GB,de_DE,fr_FR,es_ES --fills-per-template 10
-
-# Also emit BIO for training:
-uv run --with faker --with transformers scripts/datagen/generate.py \
-    -n 20000 -o data/pii.jsonl --to-bio bert-base-cased
+    --base-url http://hp-z8:8080/v1 --model step-3.7-flash \
+    --cells 300 --per-cell 12 --noise-ratio 0.2 --noise-level medium \
+    --to-bio bert-base-multilingual-cased
 ```
 
-Key flags: `--num`, `--fills-per-template`, `--locales`, `--neg-ratio`,
-`--split`, `--seed` (reproducible), `--to-bio <tokenizer>`.
+`--cells` × `--per-cell` sets template breadth (300 cells × 12 ≈ 3,600 templates
+spanning many languages/domains); each template is then filled `--fills-per-template`
+times. `--seed` makes everything reproducible.
 
 ## Labels
 
