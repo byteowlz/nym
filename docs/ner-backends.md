@@ -332,6 +332,17 @@ through CoreML (Neural Engine / GPU). Expect markedly lower latency than these
 CPU-only numbers, especially for the base/large fp32 models; peak RSS will be
 similar since the weights still load into memory.
 
+## Train your own model
+
+`scripts/datagen/` synthesizes labeled token-classification data with exact,
+noise-free labels: a local LLM emits `[LABEL]`-placeholder templates, Faker fills
+them with realistic locale-aware values, and offsets are recorded by construction.
+Output is char-offset JSONL (`{"text","entities":[{start,end,label}]}`) plus
+optional HF BIO — ready for `AutoModelForTokenClassification`. The label set
+matches this backend's mapping, so a trained model integrates cleanly; export it
+with `scripts/convert_openmed_onnx.sh` and point `token_model` at it. See
+[`scripts/datagen/README.md`](../scripts/datagen/README.md).
+
 ## Notes & follow-ups
 
 - int8 quantization is opt-in and only reliable for the small model (see caveat
