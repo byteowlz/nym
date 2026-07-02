@@ -98,18 +98,25 @@ def valid(text, ents):
 
 
 # ---------------------------------------------------------------------------- llm
-def llm_sweep(base_url, model, api_key, n_cells, per_cell, seed):
-    """Query the rubric cells; return list of (template, faker_locale)."""
+def llm_sweep(base_url, model, api_key, n_cells, per_cell, seed, timeout, max_tokens, concurrency):
+    """Query the rubric cells concurrently; return list of (template, locale).
+
+    Requests run in a thread pool (vLLM batches them server-side), each with a
+    hard timeout and bounded output so one stalled/runaway generation can't
+    freeze the sweep — a failing cell is logged and skipped."""
     try:
         from openai import OpenAI
     except ImportError:
         sys.stderr.write("openai not installed; add --with openai (or use --no-llm)\n")
         return []
-    client = OpenAI(base_url=base_url, api_key=api_key or "not-needed")
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    client = OpenAI(base_url=base_url, api_key=api_key or "not-needed",
+                    timeout=timeout, max_retries=2)
     labels_str = ", ".join(ALLOWED_LABELS)
-    out = []
     cells = rubric_cells(n_cells, seed)
-    for i, cell in enumerate(cells):
+
+    def one(cell):
         sys_prompt = (
             f"You write synthetic training templates for a multilingual PII detector. "
             f"Write the natural language in {cell.language.name}. Domain: {cell.topic}. "
@@ -117,24 +124,35 @@ def llm_sweep(base_url, model, api_key, n_cells, per_cell, seed):
             f"piece of personal data, using ONLY these English label names: {labels_str}. "
             f"Example placeholder use: 'Patient [GIVEN_NAME] [SURNAME], DOB [DATE_OF_BIRTH]'. "
             f"Put NO real data in the text — only placeholders and surrounding prose in "
-            f"{cell.language.name}. Vary sentence length and which labels appear (some short, "
-            f"some with several). Return ONLY a JSON array of template strings."
+            f"{cell.language.name}. Vary sentence length and which labels appear. "
+            f"Return ONLY a JSON array of template strings."
         )
-        try:
-            resp = client.chat.completions.create(
-                model=model,
-                messages=[
-                    {"role": "system", "content": sys_prompt},
-                    {"role": "user", "content": f"Generate {per_cell} templates."},
-                ],
-                temperature=1.0,
-            )
-            for t in _parse_json_array(resp.choices[0].message.content or ""):
-                out.append((t, cell.language.faker))
-        except Exception as exc:  # noqa: BLE001
-            sys.stderr.write(f"cell {i + 1}/{len(cells)} ({cell.language.name}/{cell.topic}) failed: {exc}\n")
-        if (i + 1) % 25 == 0:
-            sys.stderr.write(f"  ...{i + 1}/{len(cells)} cells, {len(out)} templates\n")
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[
+                {"role": "system", "content": sys_prompt},
+                {"role": "user", "content": f"Generate {per_cell} templates."},
+            ],
+            temperature=1.0, max_tokens=max_tokens, timeout=timeout,
+        )
+        return [(t, cell.language.faker) for t in _parse_json_array(resp.choices[0].message.content or "")]
+
+    out = []
+    done = failed = 0
+    with ThreadPoolExecutor(max_workers=concurrency) as ex:
+        futs = {ex.submit(one, c): c for c in cells}
+        for fut in as_completed(futs):
+            done += 1
+            try:
+                out.extend(fut.result())
+            except Exception as exc:  # noqa: BLE001
+                failed += 1
+                cell = futs[fut]
+                if failed <= 10:
+                    sys.stderr.write(f"cell failed ({cell.language.name}/{cell.topic}): {exc}\n")
+            if done % 25 == 0:
+                sys.stderr.write(f"  ...{done}/{len(cells)} cells, {len(out)} templates, {failed} failed\n")
+    sys.stderr.write(f"sweep done: {len(out)} templates from {len(cells)} cells ({failed} failed)\n")
     return out
 
 
@@ -179,6 +197,9 @@ def main():
     ap.add_argument("--api-key", default="")
     ap.add_argument("--cells", type=int, default=120, help="rubric cells to query")
     ap.add_argument("--per-cell", type=int, default=12, help="templates per cell")
+    ap.add_argument("--request-timeout", type=float, default=180.0, help="per-LLM-request timeout (s)")
+    ap.add_argument("--max-tokens", type=int, default=16384, help="max tokens per LLM response (reasoning models need headroom)")
+    ap.add_argument("--concurrency", type=int, default=8, help="parallel LLM requests")
     ap.add_argument("--fills-per-template", type=int, default=8)
     ap.add_argument("--noise-ratio", type=float, default=0.2, help="fraction of examples to corrupt")
     ap.add_argument("--noise-level", choices=["light", "medium", "heavy"], default="medium")
@@ -194,7 +215,8 @@ def main():
     # (template, faker_locale) pairs: seeds are English; LLM cells carry their locale.
     templates = [(t, "en_US") for t in SEED_TEMPLATES]
     if not args.no_llm:
-        got = llm_sweep(args.base_url, args.model, args.api_key, args.cells, args.per_cell, args.seed)
+        got = llm_sweep(args.base_url, args.model, args.api_key, args.cells, args.per_cell,
+                        args.seed, args.request_timeout, args.max_tokens, args.concurrency)
         sys.stderr.write(f"LLM produced {len(got)} templates across the rubric\n")
         templates.extend(got)
     # dedup on template text, keep first locale.
