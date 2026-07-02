@@ -168,3 +168,6 @@ criterion/
 # ---- nym: OpenMed NER integration ----
 # Converted ONNX models (large; produced by scripts/convert_openmed_onnx.sh)
 /models/
+
+# Generated training datasets
+/data/
