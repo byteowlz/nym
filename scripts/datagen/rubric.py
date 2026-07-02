@@ -71,7 +71,6 @@ TOPICS: List[str] = [
 ]
 
 STYLES: List[str] = [
-    "a formal letter or document",
     "a casual chat / SMS message",
     "a structured form with 'Field: value' lines",
     "an email with a greeting and signature",
@@ -79,6 +78,34 @@ STYLES: List[str] = [
     "a terse log line or database row",
     "a handwritten-style note with abbreviations",
     "a bulleted list of details",
+    # Long-form / multi-sentence — matches the 200-word inference window.
+    "a multi-paragraph formal letter or report spanning several sentences",
+    "a detailed case / incident report with labeled sections",
+    "a two-person message thread (several turns)",
+    "a narrative paragraph telling a short story",
+    "a full clinical / official note with history and details",
+]
+
+# A fourth axis: rotating persona / tone / length / ADVERSARIAL twists. Same
+# (language, topic, style) cell produces different output per flavor, and the
+# adversarial ones inject the hard cases a detector must handle.
+FLAVORS: List[str] = [
+    "first-person perspective",
+    "third-person, written by an agent about someone else",
+    "terse shorthand with abbreviations",
+    "verbose, formal and bureaucratic",
+    "an emotional complaint tone",
+    "casual and conversational",
+    "span multiple sentences across at least two paragraphs",
+    "very short: one or two lines with only 1-2 PII items",
+    "dense: pack in 5 to 8 different PII items",
+    "put at least one PII value glued to punctuation, inside a URL, or in an email",
+    "place two entities of the SAME type adjacent (e.g. two people, or two dates)",
+    "also include a realistic NON-PII lookalike (order number, SKU, tracking or model number) and do NOT bracket it",
+    "use an unusual or region-specific format for a date, phone number, or ID",
+    "include quoted speech or a signature block",
+    "mix 'Field: value' lines together with running prose",
+    "include an abbreviation or acronym next to a name or place",
 ]
 
 
@@ -87,18 +114,26 @@ class Cell:
     language: Language
     topic: str
     style: str
+    flavor: str
 
 
 def cells(n: int, seed: int = 0) -> List[Cell]:
-    """Return `n` distinct (language, topic, style) cells, shuffled but
-    deterministic for a given seed, cycling so every language recurs."""
+    """Return `n` distinct (language, topic, style, flavor) cells, shuffled but
+    deterministic for a given seed. The full space is ~90k combinations, so we
+    build cells lazily by sampling each axis rather than materializing it."""
     rng = random.Random(seed)
-    full = [Cell(l, t, s) for l in LANGUAGES for t in TOPICS for s in STYLES]
-    rng.shuffle(full)
-    if n <= len(full):
-        return full[:n]
-    # Repeat the shuffled space if more cells are requested than exist.
     out: List[Cell] = []
-    while len(out) < n:
-        out.extend(full)
-    return out[:n]
+    seen = set()
+    # Sample distinct combos; fall back to allowing repeats if n is very large.
+    attempts = 0
+    while len(out) < n and attempts < n * 20:
+        attempts += 1
+        c = Cell(rng.choice(LANGUAGES), rng.choice(TOPICS), rng.choice(STYLES), rng.choice(FLAVORS))
+        key = (c.language.faker, c.topic, c.style, c.flavor)
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(c)
+    while len(out) < n:  # only if the space is exhausted
+        out.append(Cell(rng.choice(LANGUAGES), rng.choice(TOPICS), rng.choice(STYLES), rng.choice(FLAVORS)))
+    return out

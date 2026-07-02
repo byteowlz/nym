@@ -120,12 +120,14 @@ def llm_sweep(base_url, model, api_key, n_cells, per_cell, seed, timeout, max_to
         sys_prompt = (
             f"You write synthetic training templates for a multilingual PII detector. "
             f"Write the natural language in {cell.language.name}. Domain: {cell.topic}. "
-            f"Format: {cell.style}. Insert PLACEHOLDERS in square brackets for every "
-            f"piece of personal data, using ONLY these English label names: {labels_str}. "
+            f"Format: {cell.style}. Additional twist: {cell.flavor}. "
+            f"Insert PLACEHOLDERS in square brackets for every piece of personal data, "
+            f"using ONLY these English label names: {labels_str}. "
             f"Example placeholder use: 'Patient [GIVEN_NAME] [SURNAME], DOB [DATE_OF_BIRTH]'. "
             f"Put NO real data in the text — only placeholders and surrounding prose in "
-            f"{cell.language.name}. Vary sentence length and which labels appear. "
-            f"Return ONLY a JSON array of template strings."
+            f"{cell.language.name}. Make every template structurally DISTINCT: do not reuse "
+            f"the same opening phrase, vary the count of PII items (from 1 to 8) and the "
+            f"sentence structure. Return ONLY a JSON array of template strings."
         )
         resp = client.chat.completions.create(
             model=model,
@@ -186,7 +188,10 @@ def llm_negatives(base_url, model, api_key, n_cells, per_cell, seed, timeout, ma
             f"Write {per_cell} short, realistic texts in {cell.language.name} about "
             f"{cell.topic}, as {cell.style}. They must contain absolutely NO personal "
             f"data — no names, dates, emails, phone numbers, IDs, or addresses, and NO "
-            f"square-bracket placeholders. Return ONLY a JSON array of strings."
+            f"square-bracket placeholders. Some may include realistic NON-personal "
+            f"identifiers (order numbers, SKUs, tracking codes, model numbers) as hard "
+            f"negatives. Vary tone, length and structure; avoid repeating openings. "
+            f"Return ONLY a JSON array of strings."
         )
         resp = client.chat.completions.create(
             model=model,
