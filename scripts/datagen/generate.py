@@ -156,14 +156,58 @@ def llm_sweep(base_url, model, api_key, n_cells, per_cell, seed, timeout, max_to
     return out
 
 
-def _parse_json_array(content):
+def _parse_json_array(content, require_placeholder=True):
     m = re.search(r"\[.*\]", content, re.S)
     if not m:
         return []
     try:
-        return [t for t in json.loads(m.group(0)) if isinstance(t, str) and "[" in t]
+        arr = json.loads(m.group(0))
     except json.JSONDecodeError:
         return []
+    if require_placeholder:
+        return [t for t in arr if isinstance(t, str) and "[" in t]
+    # negatives: strings that carry NO placeholder
+    return [t for t in arr if isinstance(t, str) and t.strip() and "[" not in t]
+
+
+def llm_negatives(base_url, model, api_key, n_cells, per_cell, seed, timeout, max_tokens, concurrency):
+    """Generate diverse PII-FREE texts across the rubric (for hard negatives)."""
+    try:
+        from openai import OpenAI
+    except ImportError:
+        return []
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    client = OpenAI(base_url=base_url, api_key=api_key or "not-needed", timeout=timeout, max_retries=2)
+    cells = rubric_cells(n_cells, seed + 7919)  # different slice than the template sweep
+
+    def one(cell):
+        sysp = (
+            f"Write {per_cell} short, realistic texts in {cell.language.name} about "
+            f"{cell.topic}, as {cell.style}. They must contain absolutely NO personal "
+            f"data — no names, dates, emails, phone numbers, IDs, or addresses, and NO "
+            f"square-bracket placeholders. Return ONLY a JSON array of strings."
+        )
+        resp = client.chat.completions.create(
+            model=model,
+            messages=[{"role": "system", "content": sysp},
+                      {"role": "user", "content": f"Generate {per_cell} texts."}],
+            temperature=1.0, max_tokens=max_tokens, timeout=timeout,
+        )
+        return _parse_json_array(resp.choices[0].message.content or "", require_placeholder=False)
+
+    out = []
+    done = failed = 0
+    with ThreadPoolExecutor(max_workers=concurrency) as ex:
+        futs = {ex.submit(one, c): c for c in cells}
+        for fut in as_completed(futs):
+            done += 1
+            try:
+                out.extend(fut.result())
+            except Exception:  # noqa: BLE001
+                failed += 1
+    sys.stderr.write(f"negatives: {len(out)} PII-free texts from {len(cells)} cells ({failed} failed)\n")
+    return out
 
 
 # ---------------------------------------------------------------------------- bio
@@ -204,6 +248,7 @@ def main():
     ap.add_argument("--noise-ratio", type=float, default=0.2, help="fraction of examples to corrupt")
     ap.add_argument("--noise-level", choices=["light", "medium", "heavy"], default="medium")
     ap.add_argument("--neg-ratio", type=float, default=0.15)
+    ap.add_argument("--neg-cells", type=int, default=40, help="rubric cells for diverse PII-free negatives")
     ap.add_argument("--split", default="0.9,0.05,0.05")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--to-bio", metavar="TOKENIZER", help="also emit *.bio.jsonl (use a multilingual tokenizer)")
@@ -252,8 +297,15 @@ def main():
             if len(records) >= args.num:
                 break
 
+    # Diverse PII-free negatives from the LLM, plus the seed negatives.
+    neg_pool = list(NEGATIVE_TEMPLATES)
+    if not args.no_llm and args.neg_cells > 0:
+        neg_pool.extend(llm_negatives(args.base_url, args.model, args.api_key, args.neg_cells,
+                                      args.per_cell, args.seed, args.request_timeout,
+                                      args.max_tokens, args.concurrency))
+    neg_pool = list(dict.fromkeys(neg_pool))
     for _ in range(int(len(records) * args.neg_ratio)):
-        neg = rng.choice(NEGATIVE_TEMPLATES)
+        neg = rng.choice(neg_pool)
         if rng.random() < args.noise_ratio:
             neg = corrupt_text(neg, rng, args.noise_level)
         records.append({"text": neg, "entities": []})
