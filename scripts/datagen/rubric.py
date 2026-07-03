@@ -78,7 +78,13 @@ STYLES: List[str] = [
     "a terse log line or database row",
     "a handwritten-style note with abbreviations",
     "a bulleted list of details",
-    # Long-form / multi-sentence — matches the 200-word inference window.
+    # Long-form / multi-sentence — matches the 200-word inference window. Listed
+    # twice so they're sampled ~2x as often (models should see more long context).
+    "a multi-paragraph formal letter or report spanning several sentences",
+    "a detailed case / incident report with labeled sections",
+    "a two-person message thread (several turns)",
+    "a narrative paragraph telling a short story",
+    "a full clinical / official note with history and details",
     "a multi-paragraph formal letter or report spanning several sentences",
     "a detailed case / incident report with labeled sections",
     "a two-person message thread (several turns)",
@@ -97,7 +103,7 @@ FLAVORS: List[str] = [
     "an emotional complaint tone",
     "casual and conversational",
     "span multiple sentences across at least two paragraphs",
-    "very short: one or two lines with only 1-2 PII items",
+    "several sentences of surrounding context around each PII item",
     "dense: pack in 5 to 8 different PII items",
     "put at least one PII value glued to punctuation, inside a URL, or in an email",
     "place two entities of the SAME type adjacent (e.g. two people, or two dates)",
