@@ -40,7 +40,7 @@ uv run --no-project \
   optimum-cli export onnx \
     --model "$MODEL_ID" \
     --task token-classification \
-    --opset 17 \
+    --opset 18 \
     "$OUT_DIR"
 
 if [[ "$QUANTIZE" == "1" ]]; then
