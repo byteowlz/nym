@@ -665,8 +665,17 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         ));
     }
 
-    // Read input
-    let input_text = read_input(cmd.input.as_ref())?;
+    // Read input. Office documents (docx/xlsx/pptx/odt/...) are binary ZIP
+    // archives and are redacted in place further down.
+    let office_fmt = cmd
+        .input
+        .as_ref()
+        .and_then(|p| engine::office::sniff_path(p));
+    let input_text = if office_fmt.is_some() {
+        String::new()
+    } else {
+        read_input(cmd.input.as_ref())?
+    };
 
     // Determine format (explicit or auto-detect from file extension)
     let format = cmd
@@ -789,6 +798,50 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
     };
 
     let mut replacer = Replacer::new(replacer_config).with_session_id(session.id.clone());
+
+    // Office documents: in-place redaction of the archive's text nodes.
+    if let Some(fmt) = office_fmt {
+        let path = cmd
+            .input
+            .as_ref()
+            .ok_or_else(|| anyhow!("office document input requires a file path"))?;
+        let bytes = fs::read(path)
+            .with_context(|| format!("Failed to read input file: {}", path.display()))?;
+        let (out_bytes, replacements) =
+            engine::office::anonymize(&bytes, fmt, &detector, &mut replacer)
+                .map_err(|e| anyhow!("Failed to redact office document: {e}"))?;
+
+        let out_path = cmd
+            .output
+            .clone()
+            .unwrap_or_else(|| derive_document_output(path, "anon"));
+        fs::write(&out_path, &out_bytes)
+            .with_context(|| format!("Failed to write output: {}", out_path.display()))?;
+
+        if replacements.is_empty() {
+            if !common.quiet {
+                eprintln!("No PII detected; unmodified copy written to: {}", out_path.display());
+            }
+            return Ok(());
+        }
+        if let Some(ref key_path) = cmd.key_file {
+            write_key_file(key_path, &replacements, &session)?;
+            if !common.quiet {
+                eprintln!("Key file written to: {}", key_path.display());
+                eprintln!("Session: {}", session.full_reference());
+            }
+        } else if !common.quiet {
+            eprintln!("Session: {}", session.full_reference());
+        }
+        if !common.quiet {
+            eprintln!(
+                "Anonymized {} PII occurrences -> {}",
+                replacements.len(),
+                out_path.display()
+            );
+        }
+        return Ok(());
+    }
 
     // Process based on format
     let (anonymized, replacements) = match format {
@@ -966,8 +1019,18 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
 fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
     use std::io::BufRead;
 
+    // Office documents are restored in place further down.
+    let office_fmt = cmd
+        .input
+        .as_ref()
+        .and_then(|p| engine::office::sniff_path(p));
+
     // Read input
-    let mut input_text = read_input(cmd.input.as_ref())?;
+    let mut input_text = if office_fmt.is_some() {
+        String::new()
+    } else {
+        read_input(cmd.input.as_ref())?
+    };
 
     // Read and parse key file
     let key_file = fs::File::open(&cmd.key_file)
@@ -1023,6 +1086,32 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
         all_mappings.len()
     );
 
+    // Office documents: restore text nodes inside the archive.
+    if let Some(fmt) = office_fmt {
+        let path = cmd
+            .input
+            .as_ref()
+            .ok_or_else(|| anyhow!("office document input requires a file path"))?;
+        let bytes = fs::read(path)
+            .with_context(|| format!("Failed to read input file: {}", path.display()))?;
+        let owned: Vec<(String, String)> = all_mappings
+            .iter()
+            .map(|(r, o)| ((*r).to_string(), (*o).to_string()))
+            .collect();
+        let (out_bytes, restored) = engine::office::deanonymize(&bytes, fmt, &owned)
+            .map_err(|e| anyhow!("Failed to restore office document: {e}"))?;
+        let out_path = cmd
+            .output
+            .clone()
+            .unwrap_or_else(|| derive_document_output(path, "restored"));
+        fs::write(&out_path, &out_bytes)
+            .with_context(|| format!("Failed to write output: {}", out_path.display()))?;
+        if !common.quiet {
+            eprintln!("Restored {restored} PII values -> {}", out_path.display());
+        }
+        return Ok(());
+    }
+
     // Apply replacements in reverse (replace anonymized values with originals)
     let mut restored_count = 0;
     for (replacement, original) in &all_mappings {
@@ -1070,13 +1159,33 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
         ));
     }
 
-    // Read input
-    let input_text = read_input(cmd.input.as_ref())?;
+    // Read input. Office documents (docx/xlsx/pptx/odt/...) get their text
+    // extracted (body, headers, notes, comments, metadata) and run through the
+    // normal text pipeline.
+    let office_fmt = cmd
+        .input
+        .as_ref()
+        .and_then(|p| engine::office::sniff_path(p));
+    let input_text = if let Some(fmt) = office_fmt {
+        let path = cmd
+            .input
+            .as_ref()
+            .ok_or_else(|| anyhow!("office document input requires a file path"))?;
+        let bytes = fs::read(path)
+            .with_context(|| format!("Failed to read input file: {}", path.display()))?;
+        engine::office::extract_text(&bytes, fmt)
+            .map_err(|e| anyhow!("Failed to parse office document: {e}"))?
+    } else {
+        read_input(cmd.input.as_ref())?
+    };
 
     // Determine format (explicit or auto-detect from file extension)
-    let format = cmd
-        .format
-        .unwrap_or_else(|| detect_format(cmd.input.as_ref()));
+    let format = if office_fmt.is_some() {
+        FormatArg::Text
+    } else {
+        cmd.format
+            .unwrap_or_else(|| detect_format(cmd.input.as_ref()))
+    };
 
     // Resolve ruleset or quick flags first
     let (ruleset_patterns, ruleset_excluded, ruleset_confidence, ruleset_ner_mode) =
@@ -2013,6 +2122,20 @@ fn init_logging(common: &CommonOpts) -> Result<()> {
         .ok();
 
     Ok(())
+}
+
+/// Default output path for in-place document redaction:
+/// `report.docx` -> `report.anon.docx` / `report.restored.docx`.
+fn derive_document_output(path: &std::path::Path, tag: &str) -> PathBuf {
+    let stem = path
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or("output");
+    let ext = path
+        .extension()
+        .and_then(|s| s.to_str())
+        .unwrap_or("bin");
+    path.with_file_name(format!("{stem}.{tag}.{ext}"))
 }
 
 fn read_input(path: Option<&PathBuf>) -> Result<String> {
