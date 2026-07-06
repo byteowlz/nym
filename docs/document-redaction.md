@@ -74,3 +74,48 @@ Honest limitations (reported, not hidden):
 Verified against PDFs from fpdf2 (core fonts and embedded TTF subsets with
 ToUnicode CMaps) and reportlab (compressed streams), with independent
 extraction via pypdf confirming removal.
+
+## OCR: images and scanned PDFs
+
+nym also redacts **raster PII** — standalone images and scanned PDF pages —
+using an **external OCR engine** (pluggable; engine churn stays out of nym)
+while the safety-critical work stays inside nym: mapping matches to pixel
+regions, painting, re-encoding, and verification.
+
+```bash
+nym detect scan.png                  # OCR the image, scan the recognized text
+nym anon scan.png                    # paint PII regions -> scan.anon.png
+nym anon scanned-contract.pdf --ocr  # also OCR+redact images inside the PDF
+```
+
+**Engines** (`[ocr] engine` in config, default `auto`):
+
+- **`nym-ocr`** (recommended) — PP-OCR companion binary in this repo:
+  `cargo install --path tools/nym-ocr`. Ships as a separate process because it
+  uses a newer ONNX Runtime than nym's GLiNER backend allows; models
+  auto-download to `~/.oar` on first use. Detection boxes are pixel-true
+  DBNet regions.
+- **`tesseract`** — used automatically if installed and nym-ocr is not.
+- **Custom** — any command template with `{input}` that prints nym's OCR JSON
+  contract: `{"words":[{"text":..,"conf":..,"x":..,"y":..,"w":..,"h":..}]}`.
+
+**How redaction works**: recognize → detect PII on the assembled text → paint
+black boxes over the matched regions (proportional sub-boxes with margin) →
+**re-OCR the painted image**; if any redacted value is still recognized,
+painting escalates to the full text regions and re-verifies — and if it still
+survives, nym refuses to write the output. Like PDF text redaction this is
+destructive: `deanon` refuses images, keep the original.
+
+Notes:
+
+- OCR noise is expected (`DOB` read as `D0B`) — pair with the `tokens` NER
+  backend, whose training data includes OCR-style corruption, to catch
+  mangled PII that exact regex misses.
+- Scanned-PDF support currently covers **JPEG (DCTDecode) images** — what
+  consumer scanners produce. CCITT/JBIG2 fax codecs are counted, reported,
+  and refused in strict mode.
+- Only the *values* found by detection are painted; surrounding text (form
+  labels, headings) stays readable.
+
+Verified end-to-end: PP-OCR recognition → painting → pikepdf-extracted image
+from the redacted PDF re-OCR'd independently with no PII recognizable.

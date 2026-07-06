@@ -29,6 +29,7 @@ pub struct Config {
     pub runtime: RuntimeConfig,
     pub paths: PathsConfig,
     pub ner: NerConfig,
+    pub ocr: OcrConfig,
     /// Named rulesets for common use cases
     #[serde(default)]
     pub rulesets: HashMap<String, RulesetConfig>,
@@ -190,6 +191,31 @@ pub struct PathsConfig {
     pub data_dir: Option<String>,
     /// State directory
     pub state_dir: Option<String>,
+}
+
+/// OCR configuration for raster redaction (images, scanned PDF pages).
+/// The engine runs as an external process — see docs/document-redaction.md.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct OcrConfig {
+    /// Scan raster images inside PDFs during detect/anon (`--ocr` overrides).
+    pub enabled: bool,
+    /// `auto` (nym-ocr, then tesseract), `nym-ocr`, `tesseract`,
+    /// or a custom command template containing `{input}` that prints nym's
+    /// OCR JSON contract.
+    pub engine: String,
+    /// Words below this recognition confidence are ignored (0.0-1.0).
+    pub min_confidence: f32,
+}
+
+impl Default for OcrConfig {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            engine: "auto".to_string(),
+            min_confidence: 0.3,
+        }
+    }
 }
 
 /// NER (Named Entity Recognition) configuration.

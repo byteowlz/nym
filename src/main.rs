@@ -322,6 +322,11 @@ struct AnonCommand {
     #[arg(long = "no-strict-pdf")]
     no_strict_pdf: bool,
 
+    /// OCR raster images inside PDFs and redact recognized PII (requires an
+    /// external OCR engine; see docs/document-redaction.md)
+    #[arg(long)]
+    ocr: bool,
+
     /// Replacement strategy
     #[arg(long, value_enum, default_value_t = StrategyArg::Fake)]
     strategy: StrategyArg,
@@ -471,6 +476,11 @@ struct DetectCommand {
     /// Input file (reads from stdin if not specified)
     #[arg(value_name = "INPUT")]
     input: Option<PathBuf>,
+
+    /// OCR raster images inside PDFs and scan the recognized text (requires
+    /// an external OCR engine; see docs/document-redaction.md)
+    #[arg(long)]
+    ocr: bool,
 
     /// Input format (auto-detected from extension if not specified)
     #[arg(short = 'f', long, value_enum)]
@@ -680,7 +690,11 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         .input
         .as_ref()
         .is_some_and(|p| engine::pdf::is_pdf_path(p));
-    let input_text = if office_fmt.is_some() || is_pdf {
+    #[cfg(feature = "ocr")]
+    let img_fmt = sniff_image(cmd.input.as_ref());
+    #[cfg(not(feature = "ocr"))]
+    let img_fmt: Option<()> = None;
+    let input_text = if office_fmt.is_some() || is_pdf || img_fmt.is_some() {
         String::new()
     } else {
         read_input(cmd.input.as_ref())?
@@ -852,6 +866,54 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         return Ok(());
     }
 
+    // Raster images: OCR-based redaction — paint, re-encode, re-OCR verify.
+    #[cfg(feature = "ocr")]
+    if let Some(fmt) = img_fmt {
+        let path = cmd
+            .input
+            .as_ref()
+            .ok_or_else(|| anyhow!("image input requires a file path"))?;
+        let bytes = fs::read(path)
+            .with_context(|| format!("Failed to read input file: {}", path.display()))?;
+        let ocr_engine = build_ocr_engine(config)?;
+        let out_path = cmd
+            .output
+            .clone()
+            .unwrap_or_else(|| derive_document_output(path, "anon"));
+        match engine::ocr::redact_image(&bytes, fmt, &ocr_engine, &detector, &mut replacer)
+            .map_err(|e| anyhow!("image redaction failed: {e}"))?
+        {
+            None => {
+                fs::write(&out_path, &bytes)
+                    .with_context(|| format!("Failed to write output: {}", out_path.display()))?;
+                if !common.quiet {
+                    eprintln!("No PII recognized; unmodified copy written to: {}", out_path.display());
+                }
+            }
+            Some(red) => {
+                fs::write(&out_path, &red.bytes)
+                    .with_context(|| format!("Failed to write output: {}", out_path.display()))?;
+                if let Some(ref key_path) = cmd.key_file {
+                    write_key_file(key_path, &red.replacements, &session)?;
+                    if !common.quiet {
+                        eprintln!("Key file written to: {}", key_path.display());
+                    }
+                }
+                if !common.quiet {
+                    if red.escalated {
+                        eprintln!("Note: verification escalated painting to full text regions.");
+                    }
+                    eprintln!(
+                        "Redacted {} PII occurrences (re-OCR verified) -> {}",
+                        red.replacements.len(),
+                        out_path.display()
+                    );
+                }
+            }
+        }
+        return Ok(());
+    }
+
     // PDFs: true redaction — text removed from content streams and verified gone.
     if is_pdf {
         let path = cmd
@@ -860,9 +922,40 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
             .ok_or_else(|| anyhow!("PDF input requires a file path"))?;
         let bytes = fs::read(path)
             .with_context(|| format!("Failed to read input file: {}", path.display()))?;
-        let (out_bytes, replacements, report) =
+        #[expect(unused_mut, reason = "mutated only with the ocr feature")]
+        let (out_bytes, mut replacements, report) =
             engine::pdf::redact(&bytes, &detector, &mut replacer, !cmd.no_strict_pdf)
                 .map_err(|e| anyhow!("PDF redaction failed: {e}"))?;
+
+        // Optional OCR pass over raster images in the (already text-redacted) PDF.
+        #[expect(unused_mut, reason = "reassigned only with the ocr feature")]
+        let mut out_bytes = out_bytes;
+        #[cfg(feature = "ocr")]
+        if cmd.ocr || config.ocr.enabled {
+            let ocr_engine = build_ocr_engine(config)?;
+            let (b, ocr_log, ocr_report) = engine::ocr::redact_pdf_images(
+                &out_bytes,
+                &ocr_engine,
+                &detector,
+                &mut replacer,
+                !cmd.no_strict_pdf,
+            )
+            .map_err(|e| anyhow!("PDF image OCR redaction failed: {e}"))?;
+            out_bytes = b;
+            replacements.extend(ocr_log);
+            if !common.quiet {
+                eprintln!(
+                    "OCR: scanned {} image(s), redacted {}, {} unsupported codec(s).",
+                    ocr_report.images_scanned,
+                    ocr_report.images_redacted,
+                    ocr_report.images_unsupported
+                );
+            }
+        }
+        #[cfg(not(feature = "ocr"))]
+        if cmd.ocr {
+            return Err(anyhow!("--ocr requires nym to be built with the `ocr` feature"));
+        }
 
         let out_path = cmd
             .output
@@ -871,10 +964,14 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         fs::write(&out_path, &out_bytes)
             .with_context(|| format!("Failed to write output: {}", out_path.display()))?;
 
+        #[cfg(feature = "ocr")]
+        let ocr_active = cmd.ocr || config.ocr.enabled;
+        #[cfg(not(feature = "ocr"))]
+        let ocr_active = false;
         if !common.quiet {
-            if report.images_seen > 0 {
+            if report.images_seen > 0 && !ocr_active {
                 eprintln!(
-                    "Note: {} image(s) present — pixels are not scanned (no OCR).",
+                    "Note: {} image(s) present — pixels are not scanned (pass --ocr).",
                     report.images_seen
                 );
             }
@@ -1090,11 +1187,18 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
 fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
     use std::io::BufRead;
 
-    // PDF redaction is destructive by design; there is nothing to restore.
+    // PDF and raster-image redaction are destructive by design.
     if cmd.input.as_ref().is_some_and(|p| engine::pdf::is_pdf_path(p)) {
         return Err(anyhow!(
             "PDF redaction is destructive (text is removed from the file); \
              deanonymization is not possible. Keep the original PDF instead."
+        ));
+    }
+    #[cfg(feature = "ocr")]
+    if sniff_image(cmd.input.as_ref()).is_some() {
+        return Err(anyhow!(
+            "image redaction is destructive (pixels are painted over); \
+             deanonymization is not possible. Keep the original image instead."
         ));
     }
 
@@ -1265,13 +1369,51 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
             .ok_or_else(|| anyhow!("PDF input requires a file path"))?;
         let bytes = fs::read(path)
             .with_context(|| format!("Failed to read input file: {}", path.display()))?;
-        engine::pdf::extract_text(&bytes).map_err(|e| anyhow!("Failed to parse PDF: {e}"))?
+        #[expect(unused_mut, reason = "mutated only with the ocr feature")]
+        let mut text =
+            engine::pdf::extract_text(&bytes).map_err(|e| anyhow!("Failed to parse PDF: {e}"))?;
+        #[cfg(feature = "ocr")]
+        if cmd.ocr || config.ocr.enabled {
+            let ocr_engine = build_ocr_engine(config)?;
+            let img_text = engine::ocr::extract_pdf_image_text(&bytes, &ocr_engine)
+                .map_err(|e| anyhow!("PDF image OCR failed: {e}"))?;
+            if !img_text.is_empty() {
+                text.push('\n');
+                text.push_str(&img_text);
+            }
+        }
+        #[cfg(not(feature = "ocr"))]
+        if cmd.ocr {
+            return Err(anyhow!("--ocr requires nym to be built with the `ocr` feature"));
+        }
+        text
     } else {
+        #[cfg(feature = "ocr")]
+        if sniff_image(cmd.input.as_ref()).is_some() {
+            // Raster image input: recognize its text and scan that.
+            let path = cmd
+                .input
+                .as_ref()
+                .ok_or_else(|| anyhow!("image input requires a file path"))?;
+            let ocr_engine = build_ocr_engine(config)?;
+            let recognized = ocr_engine
+                .recognize_file(path)
+                .map_err(|e| anyhow!("OCR failed: {e}"))?;
+            engine::ocr::assemble_text(&recognized).text
+        } else {
+            read_input(cmd.input.as_ref())?
+        }
+        #[cfg(not(feature = "ocr"))]
         read_input(cmd.input.as_ref())?
     };
 
+    #[cfg(feature = "ocr")]
+    let is_img_input = sniff_image(cmd.input.as_ref()).is_some();
+    #[cfg(not(feature = "ocr"))]
+    let is_img_input = false;
+
     // Determine format (explicit or auto-detect from file extension)
-    let format = if office_fmt.is_some() || is_pdf {
+    let format = if office_fmt.is_some() || is_pdf || is_img_input {
         FormatArg::Text
     } else {
         cmd.format
@@ -2213,6 +2355,21 @@ fn init_logging(common: &CommonOpts) -> Result<()> {
         .ok();
 
     Ok(())
+}
+
+/// Detect a raster-image input by extension (OCR feature).
+#[cfg(feature = "ocr")]
+fn sniff_image(path: Option<&PathBuf>) -> Option<engine::ocr::RasterFormat> {
+    path.and_then(|p| p.extension())
+        .and_then(|e| e.to_str())
+        .and_then(engine::ocr::RasterFormat::from_ext)
+}
+
+/// Resolve the configured external OCR engine.
+#[cfg(feature = "ocr")]
+fn build_ocr_engine(config: &Config) -> Result<engine::ocr::OcrEngine> {
+    engine::ocr::OcrEngine::resolve(&config.ocr.engine, config.ocr.min_confidence)
+        .map_err(|e| anyhow!("{e}"))
 }
 
 /// Default output path for in-place document redaction:

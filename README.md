@@ -105,6 +105,13 @@ nym anon contract.pdf                        # -> contract.anon.pdf
 Covers hidden PII too: headers/footers, comments, speaker notes, spreadsheet
 shared strings (formulas untouched), document metadata, PDF annotations.
 
+```bash
+# Scans & images: OCR-based redaction with re-OCR verification
+# (engine: cargo install --path tools/nym-ocr, or tesseract)
+nym anon scan.png                    # -> scan.anon.png
+nym anon scanned-contract.pdf --ocr  # also redacts PII inside page images
+```
+
 ### Restore Original Data
 
 ```bash

@@ -76,6 +76,9 @@ tokenizers = { version = "0.21", optional = true, default-features = false, feat
 
 # HTTP client for downloading datasets
 ureq = { version = "3", optional = true }
+
+# Raster decode/encode for OCR-based image redaction (engine is external)
+image = { version = "0.25", optional = true, default-features = false, features = ["png", "jpeg"] }
 zip = { version = "8.6.0", default-features = false, features = ["deflate"] }
 quick-xml = "0.41.0"
 lopdf = "0.43.0"
@@ -84,10 +87,14 @@ lopdf = "0.43.0"
 tempfile = "3"
 
 [features]
-default = ["progress", "streaming"]
+default = ["progress", "streaming", "ocr"]
 progress = ["indicatif"]
 streaming = ["tokio", "futures", "async-stream"]
 bench = ["ureq"]
+
+# OCR-based raster redaction (images + scanned PDF pages). The OCR engine
+# itself runs as an external process (nym-ocr / tesseract / custom command).
+ocr = ["image"]
 
 # NER with GLiNER
 ner = ["gline-rs", "orp", "hf-hub", "ort", "libc", "async-tqsm", "unicode-segmentation", "tokenizers"]

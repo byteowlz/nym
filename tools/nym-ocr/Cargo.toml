@@ -1,0 +1,23 @@
+# Companion OCR engine for nym's raster-redaction path.
+#
+# Deliberately a SEPARATE binary: oar-ocr requires a newer ONNX Runtime than
+# nym's GLiNER backend pins, and the two cannot link into one executable.
+# Running as a subprocess sidesteps that entirely, and keeps OCR engine churn
+# out of nym's dependency graph.
+#
+# Install:  cargo install --path tools/nym-ocr
+[package]
+name = "nym-ocr"
+version = "0.1.0"
+edition = "2021"
+description = "PP-OCR engine (via oar-ocr) emitting nym's OCR JSON contract"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+oar-ocr = { version = "0.7", features = ["auto-download"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+anyhow = "1"
+
+[profile.release]
+strip = true
