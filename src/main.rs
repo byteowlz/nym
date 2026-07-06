@@ -317,6 +317,11 @@ struct AnonCommand {
     #[arg(short = 'k', long = "key-file", value_name = "FILE")]
     key_file: Option<PathBuf>,
 
+    /// PDF only: proceed even when some fonts cannot be decoded (their text
+    /// cannot be inspected for PII)
+    #[arg(long = "no-strict-pdf")]
+    no_strict_pdf: bool,
+
     /// Replacement strategy
     #[arg(long, value_enum, default_value_t = StrategyArg::Fake)]
     strategy: StrategyArg,
@@ -665,13 +670,17 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         ));
     }
 
-    // Read input. Office documents (docx/xlsx/pptx/odt/...) are binary ZIP
-    // archives and are redacted in place further down.
+    // Read input. Office documents (docx/xlsx/pptx/odt/...) and PDFs are
+    // binary and are redacted in place further down.
     let office_fmt = cmd
         .input
         .as_ref()
         .and_then(|p| engine::office::sniff_path(p));
-    let input_text = if office_fmt.is_some() {
+    let is_pdf = cmd
+        .input
+        .as_ref()
+        .is_some_and(|p| engine::pdf::is_pdf_path(p));
+    let input_text = if office_fmt.is_some() || is_pdf {
         String::new()
     } else {
         read_input(cmd.input.as_ref())?
@@ -836,6 +845,68 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         if !common.quiet {
             eprintln!(
                 "Anonymized {} PII occurrences -> {}",
+                replacements.len(),
+                out_path.display()
+            );
+        }
+        return Ok(());
+    }
+
+    // PDFs: true redaction — text removed from content streams and verified gone.
+    if is_pdf {
+        let path = cmd
+            .input
+            .as_ref()
+            .ok_or_else(|| anyhow!("PDF input requires a file path"))?;
+        let bytes = fs::read(path)
+            .with_context(|| format!("Failed to read input file: {}", path.display()))?;
+        let (out_bytes, replacements, report) =
+            engine::pdf::redact(&bytes, &detector, &mut replacer, !cmd.no_strict_pdf)
+                .map_err(|e| anyhow!("PDF redaction failed: {e}"))?;
+
+        let out_path = cmd
+            .output
+            .clone()
+            .unwrap_or_else(|| derive_document_output(path, "anon"));
+        fs::write(&out_path, &out_bytes)
+            .with_context(|| format!("Failed to write output: {}", out_path.display()))?;
+
+        if !common.quiet {
+            if report.images_seen > 0 {
+                eprintln!(
+                    "Note: {} image(s) present — pixels are not scanned (no OCR).",
+                    report.images_seen
+                );
+            }
+            if report.unmapped_text_ops > 0 {
+                eprintln!(
+                    "Warning: {} text operator(s) had no usable font mapping and were not inspected.",
+                    report.unmapped_text_ops
+                );
+            }
+            if report.metadata_scrubbed > 0 {
+                eprintln!("Scrubbed {} metadata/annotation field(s).", report.metadata_scrubbed);
+            }
+        }
+        if replacements.is_empty() {
+            if !common.quiet {
+                eprintln!("No PII detected; document rewritten to: {}", out_path.display());
+            }
+            return Ok(());
+        }
+        if let Some(ref key_path) = cmd.key_file {
+            write_key_file(key_path, &replacements, &session)?;
+            if !common.quiet {
+                eprintln!("Key file written to: {}", key_path.display());
+                eprintln!(
+                    "Note: PDF redaction is destructive — the key file documents what was \
+                     removed, but only the original file can fully restore it."
+                );
+            }
+        }
+        if !common.quiet {
+            eprintln!(
+                "Redacted {} PII occurrences (verified absent from output) -> {}",
                 replacements.len(),
                 out_path.display()
             );
@@ -1019,6 +1090,14 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
 fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
     use std::io::BufRead;
 
+    // PDF redaction is destructive by design; there is nothing to restore.
+    if cmd.input.as_ref().is_some_and(|p| engine::pdf::is_pdf_path(p)) {
+        return Err(anyhow!(
+            "PDF redaction is destructive (text is removed from the file); \
+             deanonymization is not possible. Keep the original PDF instead."
+        ));
+    }
+
     // Office documents are restored in place further down.
     let office_fmt = cmd
         .input
@@ -1166,6 +1245,10 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
         .input
         .as_ref()
         .and_then(|p| engine::office::sniff_path(p));
+    let is_pdf = cmd
+        .input
+        .as_ref()
+        .is_some_and(|p| engine::pdf::is_pdf_path(p));
     let input_text = if let Some(fmt) = office_fmt {
         let path = cmd
             .input
@@ -1175,12 +1258,20 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
             .with_context(|| format!("Failed to read input file: {}", path.display()))?;
         engine::office::extract_text(&bytes, fmt)
             .map_err(|e| anyhow!("Failed to parse office document: {e}"))?
+    } else if is_pdf {
+        let path = cmd
+            .input
+            .as_ref()
+            .ok_or_else(|| anyhow!("PDF input requires a file path"))?;
+        let bytes = fs::read(path)
+            .with_context(|| format!("Failed to read input file: {}", path.display()))?;
+        engine::pdf::extract_text(&bytes).map_err(|e| anyhow!("Failed to parse PDF: {e}"))?
     } else {
         read_input(cmd.input.as_ref())?
     };
 
     // Determine format (explicit or auto-detect from file extension)
-    let format = if office_fmt.is_some() {
+    let format = if office_fmt.is_some() || is_pdf {
         FormatArg::Text
     } else {
         cmd.format

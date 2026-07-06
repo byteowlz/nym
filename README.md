@@ -7,7 +7,7 @@ Fast, reversible PII anonymization CLI. Detect and anonymize personally identifi
 - **Pattern-based detection**: 50+ built-in regex patterns for emails, phone numbers, credit cards, SSNs, API keys, and more
 - **NER integration**: AI-powered named entity recognition for names, organizations, and addresses (optional feature)
 - **Reversible anonymization**: Store key files to restore original data later
-- **Multiple formats**: Plain text and structured JSON support
+- **Multiple formats**: Plain text, structured JSON, and in-place document redaction for docx/xlsx/pptx/ODF and PDF (see [docs/document-redaction.md](docs/document-redaction.md))
 - **Streaming mode**: Process large files line-by-line with minimal memory usage
 - **Flexible strategies**: Placeholder, masking, hashing, random, consistent, or fake replacements
 - **Rulesets**: Predefined pattern groups for GDPR, HIPAA, programming, contact info, and more
@@ -89,6 +89,21 @@ nym anon input.txt --only-contact
 # Use NER for names and addresses (requires ner feature)
 ym anon input.txt --ner
 ```
+
+### Redact documents in place
+
+```bash
+# Office formats: formatting preserved, fully reversible with a key file
+nym anon report.docx -k keys.jsonl          # -> report.anon.docx
+nym deanon report.anon.docx -k keys.jsonl   # restore
+
+# PDF: TRUE redaction - text is removed from content streams and the output
+# is verified to contain none of the redacted values (never a black box overlay)
+nym anon contract.pdf                        # -> contract.anon.pdf
+```
+
+Covers hidden PII too: headers/footers, comments, speaker notes, spreadsheet
+shared strings (formulas untouched), document metadata, PDF annotations.
 
 ### Restore Original Data
 

@@ -28,6 +28,7 @@ pub mod ner;
 #[cfg(feature = "ner")]
 pub mod ner_token;
 pub mod office;
+pub mod pdf;
 pub mod patterns;
 pub mod replacer;
 
