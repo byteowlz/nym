@@ -84,8 +84,12 @@ def main():
     ap.add_argument("--output-dir", default="models/nym-pii-mmbert")
     ap.add_argument("--epochs", type=float, default=3)
     ap.add_argument("--batch-size", type=int, default=16)
+    ap.add_argument("--grad-accum", type=int, default=1, help="gradient accumulation steps")
     ap.add_argument("--lr", type=float, default=3e-5)
     ap.add_argument("--max-length", type=int, default=256)
+    ap.add_argument("--optim", default="adamw_torch", help="e.g. adamw_torch, adamw_bnb_8bit (low-VRAM)")
+    ap.add_argument("--grad-checkpointing", action="store_true", help="trade compute for memory")
+    ap.add_argument("--no-bf16", action="store_true")
     ap.add_argument("--dry-run", action="store_true", help="load+align a sample, print, exit (no training)")
     args = ap.parse_args()
 
@@ -141,18 +145,24 @@ def main():
             "f1": f1_score(true_lab, pred_lab),
         }
 
+    if args.grad_checkpointing:
+        model.config.use_cache = False
     targs = TrainingArguments(
         output_dir=args.output_dir,
         num_train_epochs=args.epochs,
         per_device_train_batch_size=args.batch_size,
         per_device_eval_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        gradient_checkpointing=args.grad_checkpointing,
+        optim=args.optim,
         learning_rate=args.lr,
         eval_strategy="epoch" if val_ds else "no",
         save_strategy="epoch",
+        save_total_limit=1,
         logging_steps=50,
         load_best_model_at_end=bool(val_ds),
         metric_for_best_model="f1",
-        bf16=True,
+        bf16=not args.no_bf16,
         report_to=[],
     )
     trainer = Trainer(model=model, args=targs, train_dataset=train_ds, eval_dataset=val_ds,
