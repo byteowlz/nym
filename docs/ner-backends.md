@@ -43,25 +43,40 @@ Recommended models (all `DebertaV2ForTokenClassification`, 106 BIO labels):
 ```toml
 [ner]
 enabled = true
-backend = "both"             # "both" (default) | "gliner" | "openmed"
-# openmed_model accepts EITHER a local directory OR a HuggingFace repo id.
-# A repo id (optionally with a subfolder) is downloaded + cached automatically:
-token_model = "Wismut/openmed-onnx/small"   # also: /base, /large
-# ...or a local converted dir:
-# token_model = "/abs/path/to/models/OpenMed-PII-SuperClinical-Small-44M-v1-onnx"
+backend = "both"             # "both" (default) | "gliner" | "tokens"
+# token_model accepts EITHER a local directory OR a HuggingFace repo id.
+# A repo id (optionally with a subfolder) is downloaded + cached automatically.
+# Unset = nym's own multilingual model (the default):
+token_model = "Wismut/nym-pii-multilingual"
 threshold = 0.5
 
 # For backend = "both", also set the GLiNER repo (defaults shown):
 # model = "onnx-community/gliner_multi-v2.1"
 ```
 
-`openmed_model` is resolved as a **local directory if one exists at that path**,
+`token_model` is resolved as a **local directory if one exists at that path**,
 otherwise as a **HuggingFace repo id** — optionally with a subfolder
 (`org/name/subdir`) so several models can share one repo — fetched via `hf-hub`
-into the HF cache (`HF_HOME`, or `[ner] cache_dir`). So once the ONNX model is
-published to the Hub, users need no manual conversion. The pre-converted models
-used in this doc live at [`Wismut/openmed-onnx`](https://huggingface.co/Wismut/openmed-onnx)
-(`/small`, `/base`, `/large`). See [Publishing models](#publishing-models).
+into the HF cache (`HF_HOME`, or `[ner] cache_dir`).
+
+### Choosing a model
+
+| `token_model` | Size | ai4privacy F1* | When |
+|---|---|---|---|
+| `Wismut/nym-pii-multilingual` (**default**) | 1.2 GB fp32 | **79.8** | Best accuracy; 40 PII types, ~23 languages, OCR-noise-trained |
+| `Wismut/nym-pii-multilingual/int8` | 309 MB | 76.7 | Same model, 4× smaller / ~3× faster CPU; some recall loss |
+| `Wismut/openmed-onnx/small` | 172 MB | 75.9 | Clinical/HIPAA focus (DeBERTa); also `/base`, `/large` |
+| `nationaldesignstudio/rampart` | 15 MB | 74.2 | Tiny/low-RAM machines (MiniLM; in-distribution on this benchmark) |
+| a local directory | — | — | Your own converted/fine-tuned model |
+
+*span-level, label-agnostic (`nym bench ai4privacy/pii-masking-300k -n 1000
+--ignore-labels`); Rampart was trained on the ai4privacy family, so its number
+is flattered here.
+
+Train your own on the same pipeline: see
+[Train your own model](#train-your-own-model) — the dataset behind the default
+model is published at
+[`Wismut/nym-pii-multilingual-data`](https://huggingface.co/datasets/Wismut/nym-pii-multilingual-data).
 
 ### Third-party token-classification models (e.g. Rampart)
 

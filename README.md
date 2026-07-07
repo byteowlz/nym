@@ -321,7 +321,7 @@ nym ships two NER backends that can run individually or together:
 - **`openmed`** — [OpenMed](https://github.com/maziyarpanahi/openmed) DeBERTa-v2 token-classification models fine-tuned for clinical/HIPAA PII, with a fixed 106-label taxonomy (names, dates of birth, medical record numbers, and more).
 - **`both`** (default) — run both and merge results for best recall.
 
-Select with `[ner] backend = "both" | "gliner" | "tokens"`. Token-classification models auto-download from the Hub (default `Wismut/openmed-onnx/small`; also `/base`, `/large`, or any HF PII model like `nationaldesignstudio/rampart`) — no manual setup. `token_model` also accepts a local dir. See [docs/ner-backends.md](docs/ner-backends.md) for the full guide.
+Select with `[ner] backend = "both" | "gliner" | "tokens"`. Token-classification models auto-download from the Hub — the default is nym's own multilingual model [`Wismut/nym-pii-multilingual`](https://huggingface.co/Wismut/nym-pii-multilingual) (40 PII types, ~23 languages, OCR-noise-trained; `/int8` for a 4× smaller variant). Alternatives: `Wismut/openmed-onnx/{small,base,large}` (clinical), `nationaldesignstudio/rampart` (tiny), or a local dir. See [docs/ner-backends.md](docs/ner-backends.md) for the model-selection guide.
 
 ## Key Files
 

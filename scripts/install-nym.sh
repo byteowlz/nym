@@ -162,8 +162,9 @@ if [[ "${ENABLE_NER}" == "true" ]]; then
     echo "Both auto-download from the Hub on first use - no setup needed."
     echo ""
     echo "Pick a single backend with [ner] backend = \"gliner\" | \"tokens\" | \"both\"."
-    echo "Set the model via token_model, e.g. \"Wismut/openmed-onnx/small\" (also"
-    echo "/base, /large) or \"nationaldesignstudio/rampart\" (tiny, low-RAM)."
+    echo "Default model: Wismut/nym-pii-multilingual (multilingual, 40 PII types)."
+    echo "Alternatives via token_model: Wismut/nym-pii-multilingual/int8 (4x smaller),"
+    echo "Wismut/openmed-onnx/small (clinical), nationaldesignstudio/rampart (tiny)."
     echo "See docs/ner-backends.md for details."
     echo ""
 fi

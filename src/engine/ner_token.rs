@@ -52,10 +52,16 @@ const MODEL_CANDIDATES: &[&str] = &[
 ];
 
 /// Default model when the token-classification backend is selected but none is
-/// configured. A HuggingFace repo id (with subfolder) that nym downloads +
-/// caches on first use; OpenMed-small (int8) is the best speed/accuracy/memory
-/// trade-off. Override with `[ner] token_model` (e.g. a Rampart repo).
-pub const DEFAULT_TOKEN_MODEL: &str = "Wismut/openmed-onnx/small";
+/// configured. A HuggingFace repo id (optionally with subfolder) that nym
+/// downloads + caches on first use.
+///
+/// The default is nym's own multilingual mmBERT fine-tune (40 PII types,
+/// ~23 languages, trained on OCR-noisy synthetic data; ai4privacy F1 79.8 vs
+/// 75.9 for OpenMed-small and 74.2 for Rampart). Alternatives via
+/// `[ner] token_model`: `Wismut/nym-pii-multilingual/int8` (4x smaller/faster,
+/// some accuracy loss), `Wismut/openmed-onnx/{small,base,large}` (clinical),
+/// `nationaldesignstudio/rampart` (tiny), or any local converted dir.
+pub const DEFAULT_TOKEN_MODEL: &str = "Wismut/nym-pii-multilingual";
 
 /// Default chunk size in words. The model has a 512-token limit; this keeps a
 /// conservative margin for sub-word expansion plus special tokens.
