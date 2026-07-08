@@ -98,7 +98,8 @@ def valid(text, ents):
 
 
 # ---------------------------------------------------------------------------- llm
-def llm_sweep(base_url, model, api_key, n_cells, per_cell, seed, timeout, max_tokens, concurrency):
+def llm_sweep(base_url, model, api_key, n_cells, per_cell, seed, timeout, max_tokens, concurrency,
+              checkpoint_path=None, disable_thinking=False):
     """Query the rubric cells concurrently; return list of (template, locale).
 
     Requests run in a thread pool (vLLM batches them server-side), each with a
@@ -129,31 +130,46 @@ def llm_sweep(base_url, model, api_key, n_cells, per_cell, seed, timeout, max_to
             f"the same opening phrase, vary the count of PII items (from 1 to 8) and the "
             f"sentence structure. Return ONLY a JSON array of template strings."
         )
+        extra = {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}} if disable_thinking else {}
         resp = client.chat.completions.create(
             model=model,
             messages=[
                 {"role": "system", "content": sys_prompt},
                 {"role": "user", "content": f"Generate {per_cell} templates."},
             ],
-            temperature=1.0, max_tokens=max_tokens, timeout=timeout,
+            temperature=1.0, max_tokens=max_tokens, timeout=timeout, **extra,
         )
         return [(t, cell.language.faker) for t in _parse_json_array(resp.choices[0].message.content or "")]
 
     out = []
     done = failed = 0
-    with ThreadPoolExecutor(max_workers=concurrency) as ex:
-        futs = {ex.submit(one, c): c for c in cells}
-        for fut in as_completed(futs):
-            done += 1
-            try:
-                out.extend(fut.result())
-            except Exception as exc:  # noqa: BLE001
-                failed += 1
-                cell = futs[fut]
-                if failed <= 10:
-                    sys.stderr.write(f"cell failed ({cell.language.name}/{cell.topic}): {exc}\n")
-            if done % 25 == 0:
-                sys.stderr.write(f"  ...{done}/{len(cells)} cells, {len(out)} templates, {failed} failed\n")
+    # Append each cell's templates as it completes, so a long run is crash-safe and
+    # its progress is visible live (line count grows). The final dump in main() then
+    # rewrites this file cleanly (deduped, incl. any loaded bank).
+    ckpt = checkpoint_path.open("w") if checkpoint_path else None
+    try:
+        with ThreadPoolExecutor(max_workers=concurrency) as ex:
+            futs = {ex.submit(one, c): c for c in cells}
+            for fut in as_completed(futs):
+                done += 1
+                try:
+                    res = fut.result()
+                    out.extend(res)
+                    if ckpt:
+                        for t, loc in res:
+                            ckpt.write(json.dumps({"template": t, "locale": loc},
+                                                  ensure_ascii=False) + "\n")
+                        ckpt.flush()
+                except Exception as exc:  # noqa: BLE001
+                    failed += 1
+                    cell = futs[fut]
+                    if failed <= 10:
+                        sys.stderr.write(f"cell failed ({cell.language.name}/{cell.topic}): {exc}\n")
+                if done % 25 == 0:
+                    sys.stderr.write(f"  ...{done}/{len(cells)} cells, {len(out)} templates, {failed} failed\n")
+    finally:
+        if ckpt:
+            ckpt.close()
     sys.stderr.write(f"sweep done: {len(out)} templates from {len(cells)} cells ({failed} failed)\n")
     return out
 
@@ -250,6 +266,9 @@ def main():
     ap.add_argument("--max-tokens", type=int, default=16384, help="max tokens per LLM response (reasoning models need headroom)")
     ap.add_argument("--concurrency", type=int, default=8, help="parallel LLM requests")
     ap.add_argument("--fills-per-template", type=int, default=8)
+    ap.add_argument("--disable-thinking", action="store_true",
+                    help="pass enable_thinking=False (reasoning models like step-3.7-flash "
+                         "otherwise over-reason and truncate before emitting the JSON array)")
     ap.add_argument("--noise-ratio", type=float, default=0.2, help="fraction of examples to corrupt")
     ap.add_argument("--noise-level", choices=["light", "medium", "heavy"], default="medium")
     ap.add_argument("--neg-ratio", type=float, default=0.15)
@@ -257,16 +276,34 @@ def main():
     ap.add_argument("--split", default="0.9,0.05,0.05")
     ap.add_argument("--seed", type=int, default=0)
     ap.add_argument("--to-bio", metavar="TOKENIZER", help="also emit *.bio.jsonl (use a multilingual tokenizer)")
-    ap.add_argument("--dump-templates", type=Path, help="write the collected templates for inspection")
+    ap.add_argument("--dump-templates", type=Path,
+                    help="write the collected templates as JSONL ({template, locale}) — a reusable bank")
+    ap.add_argument("--templates-file", type=Path, action="append", default=None,
+                    help="load templates from a JSONL bank instead of/in addition to the LLM sweep "
+                         "(repeatable). Implies no LLM sweep unless --cells is also given.")
     args = ap.parse_args()
+    args.cells_explicit = any(a == "--cells" or a.startswith("--cells=") for a in sys.argv)
 
     rng = random.Random(args.seed)
 
     # (template, faker_locale) pairs: seeds are English; LLM cells carry their locale.
     templates = [(t, "en_US") for t in SEED_TEMPLATES]
-    if not args.no_llm:
+    # Load reusable template banks (JSONL: {"template","locale"}).
+    for bank in (args.templates_file or []):
+        n0 = len(templates)
+        for line in bank.read_text().splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            obj = json.loads(line)
+            templates.append((obj["template"], obj.get("locale", "en_US")))
+        sys.stderr.write(f"loaded {len(templates) - n0} templates from {bank}\n")
+    # Run the LLM sweep unless we loaded a bank (then only if --cells explicitly given).
+    run_llm = not args.no_llm and (not args.templates_file or args.cells_explicit)
+    if run_llm:
         got = llm_sweep(args.base_url, args.model, args.api_key, args.cells, args.per_cell,
-                        args.seed, args.request_timeout, args.max_tokens, args.concurrency)
+                        args.seed, args.request_timeout, args.max_tokens, args.concurrency,
+                        checkpoint_path=args.dump_templates, disable_thinking=args.disable_thinking)
         sys.stderr.write(f"LLM produced {len(got)} templates across the rubric\n")
         templates.extend(got)
     # dedup on template text, keep first locale.
@@ -277,8 +314,11 @@ def main():
             seen.add(t)
             uniq.append((t, loc))
     templates = uniq
+    sys.stderr.write(f"{len(templates)} unique templates total\n")
     if args.dump_templates:
-        args.dump_templates.write_text("\n".join(f"[{loc}] {t}" for t, loc in templates))
+        args.dump_templates.write_text(
+            "\n".join(json.dumps({"template": t, "locale": loc}, ensure_ascii=False)
+                      for t, loc in templates))
 
     records = []
     rejected = 0

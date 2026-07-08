@@ -171,3 +171,6 @@ criterion/
 
 # Generated training datasets
 /data/
+
+# Local build sandbox (cargo vendor / [patch] shim; not part of the repo)
+/vendor/
