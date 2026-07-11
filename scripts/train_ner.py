@@ -49,12 +49,17 @@ def build_labels(rows):
     return labels, {l: i for i, l in enumerate(labels)}
 
 
-def align(rows, tokenizer, label2id, max_length):
+def align(rows, tokenizer, label2id, max_length, mask_o_sources=frozenset()):
     """Tokenize each example and assign a label id per token from char spans.
     First token of an entity -> B-, subsequent overlapping tokens -> I-, tokens
-    outside any entity -> O, special/pad tokens -> -100 (ignored in the loss)."""
+    outside any entity -> O, special/pad tokens -> -100 (ignored in the loss).
+
+    mask_o_sources: `source` values with WEAK labels (e.g. teacher-labeled real
+    text, where an undetected entity would otherwise train as a false "O").
+    For those records, O tokens become -100 — only positive spans supervise."""
     def gen():
         for r in rows:
+            weak = r.get("source") in mask_o_sources
             enc = tokenizer(r["text"], truncation=True, max_length=max_length,
                             return_offsets_mapping=True)
             labels = []
@@ -68,7 +73,10 @@ def align(rows, tokenizer, label2id, max_length):
                     if a < e["end"] and b > e["start"]:  # overlap
                         tag = ("B-" if a <= e["start"] else "I-") + e["label"]
                         break
-                labels.append(label2id.get(tag, label2id["O"]))
+                if tag == "O" and weak:
+                    labels.append(-100)
+                else:
+                    labels.append(label2id.get(tag, label2id["O"]))
             enc.pop("offset_mapping")
             enc["labels"] = labels
             yield enc
@@ -90,12 +98,39 @@ def main():
     ap.add_argument("--optim", default="adamw_torch", help="e.g. adamw_torch, adamw_bnb_8bit (low-VRAM)")
     ap.add_argument("--grad-checkpointing", action="store_true", help="trade compute for memory")
     ap.add_argument("--no-bf16", action="store_true")
+    ap.add_argument("--mask-o-sources", default=None,
+                    help="comma list of `source` values whose O tokens are ignored in the "
+                         "loss (weak/teacher labels: only positive spans supervise); "
+                         "their PII-free records are dropped entirely")
+    ap.add_argument("--weak-neg-keep", type=float, default=0.0,
+                    help="fraction of PII-free weak-source records to keep WITH normal O "
+                         "supervision (restores real-prose precision; the poison risk is "
+                         "confined to this fraction). 0 = drop all (recall-max).")
     ap.add_argument("--dry-run", action="store_true", help="load+align a sample, print, exit (no training)")
     args = ap.parse_args()
+    mask_srcs = frozenset(s.strip() for s in args.mask_o_sources.split(",")) if args.mask_o_sources else frozenset()
 
     from transformers import AutoTokenizer
 
     train_rows = load_jsonl(args.train)
+    if mask_srcs:
+        import random as _random
+        rng = _random.Random(11)
+        n0, kept_neg = len(train_rows), 0
+        rows = []
+        for r in train_rows:
+            if r.get("source") in mask_srcs and not r["entities"]:
+                if rng.random() < args.weak_neg_keep:
+                    r = dict(r)
+                    r.pop("source")  # promote: full (unmasked) O supervision
+                    kept_neg += 1
+                    rows.append(r)
+            else:
+                rows.append(r)
+        train_rows = rows
+        sys.stderr.write(f"mask-o-sources {sorted(mask_srcs)}: kept {kept_neg} PII-free weak "
+                         f"records with O supervision (weak-neg-keep={args.weak_neg_keep}), "
+                         f"dropped {n0 - len(train_rows)}; O masked on weak positives\n")
     labels, label2id = build_labels(train_rows)
     id2label = {i: l for l, i in label2id.items()}
     sys.stderr.write(f"{len(labels)} BIO labels over {(len(labels)-1)//2} entity types\n")
@@ -123,9 +158,10 @@ def main():
                               Trainer, TrainingArguments)
 
     model = AutoModelForTokenClassification.from_pretrained(
-        args.base_model, num_labels=len(labels), id2label=id2label, label2id=label2id)
+        args.base_model, num_labels=len(labels), id2label=id2label, label2id=label2id,
+        ignore_mismatched_sizes=True)  # layer-dropped inits may carry a differently-sized head
 
-    train_ds = align(train_rows, tokenizer, label2id, args.max_length)
+    train_ds = align(train_rows, tokenizer, label2id, args.max_length, mask_o_sources=mask_srcs)
     val_ds = align(load_jsonl(args.val), tokenizer, label2id, args.max_length) if args.val else None
 
     collator = DataCollatorForTokenClassification(tokenizer)

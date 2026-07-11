@@ -61,17 +61,25 @@ into the HF cache (`HF_HOME`, or `[ner] cache_dir`).
 
 ### Choosing a model
 
-| `token_model` | Size | ai4privacy F1* | When |
-|---|---|---|---|
-| `Wismut/nym-pii-multilingual` (**default**) | 1.2 GB fp32 | **79.8** | Best accuracy; 40 PII types, ~23 languages, OCR-noise-trained |
-| `Wismut/nym-pii-multilingual/int8` | 309 MB | 76.7 | Same model, 4× smaller / ~3× faster CPU; some recall loss |
-| `Wismut/openmed-onnx/small` | 172 MB | 75.9 | Clinical/HIPAA focus (DeBERTa); also `/base`, `/large` |
-| `nationaldesignstudio/rampart` | 15 MB | 74.2 | Tiny/low-RAM machines (MiniLM; in-distribution on this benchmark) |
-| a local directory | — | — | Your own converted/fine-tuned model |
+| `token_model` | Size | ai4privacy F1* | Non-Latin real text** | When |
+|---|---|---|---|---|
+| `Wismut/nym-pii-multilingual` (**default**) | 1.2 GB fp32 | **79.8** | 50.9 | Best accuracy; 40 PII types, ~23 languages, OCR-noise-trained |
+| `Wismut/nym-pii-multilingual/int8` | 309 MB | 76.7 | — | Same model, 4× smaller / ~3× faster CPU; some recall loss |
+| `Wismut/nym-pii-multilingual-small` | 274 MB fp32 | 75.9 | **59.2** | 16-layer student; **beats the teacher on real-world text** (also trained on teacher-labeled Wikipedia), higher recall / slightly lower precision |
+| `Wismut/nym-pii-multilingual-small/int8` | 70 MB | 72.1 | 57.6 | Same, 4× smaller (needs per-channel int8 — plain dynamic collapses it); best size/accuracy trade |
+| `Wismut/openmed-onnx/small` | 172 MB | 75.9 | — | Clinical/HIPAA focus (DeBERTa); also `/base`, `/large` |
+| `nationaldesignstudio/rampart` | 15 MB | 74.2 | 6.5 | Tiny/low-RAM machines (MiniLM; in-distribution on this benchmark; English WordPiece — cannot represent non-Latin scripts) |
+| a local directory | — | — | — | Your own converted/fine-tuned model |
 
 *span-level, label-agnostic (`nym bench ai4privacy/pii-masking-300k -n 1000
 --ignore-labels`); Rampart was trained on the ai4privacy family, so its number
-is flattered here.
+is flattered here. The `-small` rows were measured with a stricter offline
+harness on the validation split; on the shared scale shown here they are
+estimated from the measured deltas to the default model.
+
+**char-level F1 on WikiANN across ar/zh/ja/ko/ru/hi/el/uk (person/org/location
+detection on real Wikipedia text) — the multilingual robustness measure;
+ai4privacy is Latin-only and cannot see this difference.
 
 Train your own on the same pipeline: see
 [Train your own model](#train-your-own-model) — the dataset behind the default
