@@ -61,20 +61,51 @@ def get_faker(locale: str, seed: int) -> Faker:
 
 
 # ------------------------------------------------------------------ fill / noise
-def fill_segments(template: str, faker: Faker):
+# Types nym's regex layer already catches ~100% (email/phone/IP/IBAN/card/...).
+# The NER model's value on these is only the OCR-mangled/obfuscated/non-Latin
+# cases regex misses — so we keep them but push them toward noised forms.
+REGEX_ABLE = {"EMAIL", "PHONE", "FAX_NUMBER", "MAC_ADDRESS", "IBAN", "SWIFT_BIC",
+              "CREDIT_DEBIT_CARD", "CVV", "ROUTING_NUMBER", "URL"}
+# Context-defined types with no fixed format — NER-only. Diversify surface forms
+# by drawing their value from a *random* locale, not just the cell's (real text
+# mixes names/orgs across cultures; Faker's per-locale pools are narrow).
+CROSS_LOCALE_LABELS = {"GIVEN_NAME", "SURNAME", "COMPANY_NAME"}
+
+
+def fill_segments(template: str, faker: Faker, name_value=None):
     """Return a list of {text, label} segments (label=None for literals), or None
-    if the template uses an unknown placeholder label."""
+    if the template uses an unknown placeholder label. `name_value(label)` may
+    return a name STRING (real-name corpus / cross-locale) or None to fall back
+    to the cell-locale Faker."""
     segs = []
     pos = 0
     for m in PLACEHOLDER_RE.finditer(template):
         label = m.group(1)
         if label not in ALLOWED_LABELS:
             return None
+        val = None
+        if name_value is not None and label in CROSS_LOCALE_LABELS:
+            val = name_value(label)
+        if val is None:
+            val = generate_value(label, faker)
         segs.append({"text": template[pos:m.start()], "label": None})
-        segs.append({"text": generate_value(label, faker), "label": label})
+        segs.append({"text": val, "label": label})
         pos = m.end()
     segs.append({"text": template[pos:], "label": None})
     return segs
+
+
+def load_name_corpus(path):
+    """Load the license-clean name corpus into {given:[...], family:[...]}."""
+    pools = {"given": [], "family": []}
+    for line in open(path):
+        line = line.strip()
+        if not line:
+            continue
+        r = json.loads(line)
+        if r["kind"] in pools:
+            pools[r["kind"]].append(r["name"])
+    return pools
 
 
 def corrupt_segments(segs, rng, level):
@@ -269,6 +300,17 @@ def main():
     ap.add_argument("--disable-thinking", action="store_true",
                     help="pass enable_thinking=False (reasoning models like step-3.7-flash "
                          "otherwise over-reason and truncate before emitting the JSON array)")
+    ap.add_argument("--name-corpus", type=Path, default=None,
+                    help="license-clean real-name corpus JSONL (scripts/datagen/name_corpus.py): "
+                         "long-tail + native-script names Faker lacks")
+    ap.add_argument("--name-corpus-frac", type=float, default=0.5,
+                    help="fraction of GIVEN_NAME/SURNAME fills drawn from --name-corpus")
+    ap.add_argument("--cross-locale-names", type=float, default=0.0,
+                    help="fraction of name/org fills drawn from a RANDOM locale instead of the "
+                         "cell's, for surface-form diversity (targets the OOD name-recall gap)")
+    ap.add_argument("--regex-noise", type=float, default=0.0,
+                    help="per-segment noise prob for regex-able types (email/phone/IP/...); "
+                         "shifts them to the hard forms regex misses, freeing clean-form signal")
     ap.add_argument("--noise-ratio", type=float, default=0.2, help="fraction of examples to corrupt")
     ap.add_argument("--noise-level", choices=["light", "medium", "heavy"], default="medium")
     ap.add_argument("--neg-ratio", type=float, default=0.15)
@@ -320,6 +362,16 @@ def main():
             "\n".join(json.dumps({"template": t, "locale": loc}, ensure_ascii=False)
                       for t, loc in templates))
 
+    # Cross-locale faker pool for name/org diversity.
+    LOCALE_POOL = ["en_US", "de_DE", "fr_FR", "es_ES", "it_IT", "pt_BR", "nl_NL",
+                   "pl_PL", "sv_SE", "cs_CZ", "ro_RO", "tr_TR", "fi_FI", "da_DK",
+                   "el_GR", "ru_RU", "uk_UA", "ja_JP", "zh_CN", "ko_KR", "ar_AA", "hi_IN"]
+    faker_pool = {loc: get_faker(loc, args.seed) for loc in LOCALE_POOL}
+    name_pools = load_name_corpus(args.name_corpus) if args.name_corpus else None
+    if name_pools:
+        sys.stderr.write(f"name corpus: {len(name_pools['given'])} given, "
+                         f"{len(name_pools['family'])} family (real, license-clean)\n")
+
     records = []
     rejected = 0
     guard = 0
@@ -327,11 +379,28 @@ def main():
         guard += 1
         tmpl, locale = rng.choice(templates)
         faker = get_faker(locale, args.seed)
+
+        def name_value(label):
+            # real-name corpus first (long tail + native scripts), else cross-locale Faker
+            if name_pools and rng.random() < args.name_corpus_frac:
+                if label == "GIVEN_NAME" and name_pools["given"]:
+                    return rng.choice(name_pools["given"])
+                if label == "SURNAME" and name_pools["family"]:
+                    return rng.choice(name_pools["family"])
+            if rng.random() < args.cross_locale_names:
+                return generate_value(label, faker_pool[rng.choice(LOCALE_POOL)])
+            return None
+
         for _ in range(args.fills_per_template):
-            segs = fill_segments(tmpl, faker)
+            segs = fill_segments(tmpl, faker, name_value=name_value)
             if segs is None:
                 rejected += 1
                 break
+            # Push regex-able types toward noised forms (regex owns the clean ones).
+            if args.regex_noise:
+                for s in segs:
+                    if s["label"] in REGEX_ABLE and rng.random() < args.regex_noise:
+                        s["text"] = corrupt_text(s["text"], rng, args.noise_level)
             if rng.random() < args.noise_ratio:
                 segs = corrupt_segments(segs, rng, args.noise_level)
             text, ents = assemble(segs)
