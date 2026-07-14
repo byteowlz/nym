@@ -1,6 +1,6 @@
 # Example configuration for nym PII anonymization CLI
 # Copy this file to $XDG_CONFIG_HOME/nym/config.toml and adjust as needed.
-"$schema" = "https://raw.githubusercontent.com/byteowlz/schemas/refs/heads/main/nym/nym.config.schema.json"
+#:schema https://raw.githubusercontent.com/byteowlz/schemas/refs/heads/main/nym/nym.config.schema.json
 
 [detection]
 # Built-in patterns to enable (default: all high-confidence patterns)
