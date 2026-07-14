@@ -162,20 +162,32 @@ def main():
     ap.add_argument("--text-file", type=Path, default=None,
                     help="JSONL with a 'text' field to re-label (e.g. data/real-filtered.jsonl) "
                          "instead of streaming Wikipedia; the source/license is carried through")
+    ap.add_argument("--append", action="store_true",
+                    help="append to an existing out/gemma.jsonl, skipping already-labeled texts")
+    ap.add_argument("--seed", type=int, default=7)
     args = ap.parse_args()
     args.out.mkdir(parents=True, exist_ok=True)
 
     import random
-    rng = random.Random(7)
+    rng = random.Random(args.seed)
+
+    # append mode: load already-labeled texts to skip, strip the DONE marker
+    out_path = args.out / "gemma.jsonl"
+    done_texts = set()
+    if args.append and out_path.exists():
+        keep = [l for l in open(out_path) if l.strip() and not json.loads(l).get("__done__")]
+        done_texts = {json.loads(l)["text"] for l in keep}
+        out_path.write_text("".join(keep))
+        sys.stderr.write(f"append mode: {len(done_texts)} texts already labeled, skipping them\n")
 
     # source A: re-label existing passages from a JSONL (license carried through)
     if args.text_file:
         rows = [json.loads(l) for l in open(args.text_file) if l.strip()]
-        rows = [r for r in rows if not r.get("__done__") and r.get("text")]
+        rows = [r for r in rows if not r.get("__done__") and r.get("text") and r["text"] not in done_texts]
         rng.shuffle(rows)
         passages = [(r["text"], r.get("lang", "?")) for r in rows[:args.max_process]]
-        sys.stderr.write(f"re-labeling {len(passages)} passages from {args.text_file}\n")
-        _run_labeling(args, passages, rng)
+        sys.stderr.write(f"labeling {len(passages)} passages from {args.text_file}\n")
+        _run_labeling(args, passages, rng, mode="a" if args.append else "w")
         return
 
     # source B: stream Wikipedia
@@ -204,11 +216,11 @@ def main():
     _run_labeling(args, passages, rng)
 
 
-def _run_labeling(args, passages, rng):
+def _run_labeling(args, passages, rng, mode="w"):
     out_path = args.out / "gemma.jsonl"
     kept = pos = processed = failed = 0
     BATCH = max(args.concurrency * 4, 32)
-    with out_path.open("w") as f, ThreadPoolExecutor(max_workers=args.concurrency) as ex:
+    with out_path.open(mode) as f, ThreadPoolExecutor(max_workers=args.concurrency) as ex:
         i = 0
         while i < len(passages) and kept < args.n and processed < args.max_process:
             batch = passages[i:i + BATCH]
