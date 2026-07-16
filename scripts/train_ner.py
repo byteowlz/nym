@@ -106,6 +106,16 @@ def main():
                     help="fraction of PII-free weak-source records to keep WITH normal O "
                          "supervision (restores real-prose precision; the poison risk is "
                          "confined to this fraction). 0 = drop all (recall-max).")
+    ap.add_argument("--o-weight", type=float, default=1.0,
+                    help="CE weight of the O class. <1 makes a missed entity cost more "
+                         "than a false flag (recall-tilted training).")
+    ap.add_argument("--distill-from", default=None,
+                    help="teacher checkpoint for online logit distillation. Must share "
+                         "the student's tokenizer and label map. KD covers ALL attended "
+                         "tokens, so the teacher also supervises weak-masked O positions.")
+    ap.add_argument("--distill-alpha", type=float, default=0.5,
+                    help="loss = (1-a)*CE + a*KL(student||teacher)")
+    ap.add_argument("--distill-temp", type=float, default=2.0)
     ap.add_argument("--dry-run", action="store_true", help="load+align a sample, print, exit (no training)")
     args = ap.parse_args()
     mask_srcs = frozenset(s.strip() for s in args.mask_o_sources.split(",")) if args.mask_o_sources else frozenset()
@@ -161,6 +171,15 @@ def main():
         args.base_model, num_labels=len(labels), id2label=id2label, label2id=label2id,
         ignore_mismatched_sizes=True)  # layer-dropped inits may carry a differently-sized head
 
+    teacher = None
+    if args.distill_from:
+        teacher = AutoModelForTokenClassification.from_pretrained(args.distill_from).eval()
+        if teacher.config.label2id != label2id:
+            sys.exit(f"teacher label map differs from student's ({args.distill_from}); "
+                     f"KD logits would supervise the wrong classes")
+        for p in teacher.parameters():
+            p.requires_grad_(False)
+
     train_ds = align(train_rows, tokenizer, label2id, args.max_length, mask_o_sources=mask_srcs)
     val_ds = align(load_jsonl(args.val), tokenizer, label2id, args.max_length) if args.val else None
 
@@ -201,8 +220,44 @@ def main():
         bf16=not args.no_bf16,
         report_to=[],
     )
-    trainer = Trainer(model=model, args=targs, train_dataset=train_ds, eval_dataset=val_ds,
-                      data_collator=collator, compute_metrics=compute_metrics if val_ds else None)
+    import torch
+    import torch.nn.functional as F
+
+    class WeightedKDTrainer(Trainer):
+        """Trainer with (a) class-weighted CE (--o-weight) and (b) online logit
+        distillation (--distill-from). KD's KL runs over every attended token --
+        including weak-masked O positions the hard CE ignores -- so the teacher
+        fills exactly the supervision hole that O-masking opens."""
+
+        def compute_loss(self, model, inputs, return_outputs=False, **kwargs):
+            labels = inputs.pop("labels")
+            outputs = model(**inputs)
+            logits = outputs.logits
+            C = logits.size(-1)
+            w = torch.ones(C, device=logits.device)
+            w[label2id["O"]] = args.o_weight
+            flat_labels = labels.view(-1)
+            if (flat_labels != -100).any():
+                ce = F.cross_entropy(logits.view(-1, C).float(), flat_labels,
+                                     weight=w, ignore_index=-100)
+            else:
+                ce = logits.sum() * 0.0  # keep graph; all-masked batch
+            loss = ce
+            if teacher is not None:
+                if teacher.device != logits.device:
+                    teacher.to(logits.device)
+                with torch.no_grad():
+                    tlogits = teacher(**inputs).logits
+                mask = inputs["attention_mask"].bool()
+                T = args.distill_temp
+                kd = F.kl_div(F.log_softmax(logits[mask].float() / T, dim=-1),
+                              F.softmax(tlogits[mask].float() / T, dim=-1),
+                              reduction="batchmean") * T * T
+                loss = (1 - args.distill_alpha) * ce + args.distill_alpha * kd
+            return (loss, outputs) if return_outputs else loss
+
+    trainer = WeightedKDTrainer(model=model, args=targs, train_dataset=train_ds, eval_dataset=val_ds,
+                                data_collator=collator, compute_metrics=compute_metrics if val_ds else None)
     trainer.train()
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
