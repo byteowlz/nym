@@ -63,12 +63,18 @@ const MODEL_CANDIDATES: &[&str] = &[
 /// `nationaldesignstudio/rampart` (tiny), or any local converted dir.
 pub const DEFAULT_TOKEN_MODEL: &str = "Wismut/nym-pii-multilingual";
 
-/// Default chunk size in words. The model has a 512-token limit; this keeps a
-/// conservative margin for sub-word expansion plus special tokens.
-const DEFAULT_CHUNK_SIZE: usize = 200;
+/// Inference window in TOKENS, not words: scripts without spaces (Japanese,
+/// Chinese) collapse to a single "word", and tokens-per-word ranges from ~1.5
+/// (en) to ~6.6 (ja), so any word-based budget either truncates or wastes.
+///
+/// The models accept 8192, but measured span quality plateaus by ~512
+/// (512 == 1024 == 2048 on every benchmark) while attention cost is quadratic
+/// and inference here is ONNX on CPU. Leaves headroom for special tokens.
+const DEFAULT_WINDOW_TOKENS: usize = 480;
 
-/// Default overlap in words to avoid splitting entities across chunk boundaries.
-const DEFAULT_CHUNK_OVERLAP: usize = 40;
+/// Token overlap between windows, so an entity straddling a boundary is still
+/// seen intact by one of them.
+const DEFAULT_WINDOW_OVERLAP: usize = 64;
 
 /// Minimum text length in characters before attempting inference.
 const MIN_TEXT_LENGTH: usize = 3;
@@ -95,8 +101,8 @@ pub struct TokenClassDetector {
     /// models do; DeBERTa-v2 exports typically don't).
     needs_token_type_ids: bool,
     threshold: f32,
-    chunk_size: usize,
-    chunk_overlap: usize,
+    window_tokens: usize,
+    window_overlap: usize,
 }
 
 impl TokenClassDetector {
@@ -172,7 +178,12 @@ impl TokenClassDetector {
         threshold: Option<f32>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let id2label = load_id2label(config_path)?;
-        let tokenizer = Tokenizer::from_file(tokenizer_path)?;
+        let mut tokenizer = Tokenizer::from_file(tokenizer_path)?;
+        // tokenizer.json ships with truncation baked in at the value used for
+        // training (256 for our models), which would silently drop everything
+        // past that token -- undetectable false negatives on long input. We
+        // window explicitly below, so take full control here.
+        tokenizer.with_truncation(None)?;
         let session = Session::builder()?.commit_from_file(model_path)?;
 
         let needs_token_type_ids = session
@@ -186,8 +197,8 @@ impl TokenClassDetector {
             id2label,
             needs_token_type_ids,
             threshold: threshold.unwrap_or(0.5),
-            chunk_size: DEFAULT_CHUNK_SIZE,
-            chunk_overlap: DEFAULT_CHUNK_OVERLAP,
+            window_tokens: DEFAULT_WINDOW_TOKENS,
+            window_overlap: DEFAULT_WINDOW_OVERLAP,
         })
     }
 
@@ -201,13 +212,13 @@ impl TokenClassDetector {
             return Ok(Vec::new());
         }
 
-        let word_count = trimmed.split_whitespace().count();
-        if word_count <= self.chunk_size {
+        let chunks = self.split_into_chunks(text);
+        if chunks.len() <= 1 {
             return self.detect_chunk(text, 0);
         }
 
         let mut all_matches = Vec::new();
-        for (chunk_text, chunk_offset) in self.split_into_chunks(text) {
+        for (chunk_text, chunk_offset) in chunks {
             let matches = self.detect_chunk(&chunk_text, chunk_offset)?;
             all_matches.extend(matches);
         }
@@ -363,34 +374,54 @@ impl TokenClassDetector {
         spans
     }
 
-    /// Split text into overlapping word chunks, returning `(chunk, byte_offset)`.
+    /// Split text into overlapping windows of at most [`Self::window_tokens`]
+    /// tokens, returning `(chunk, byte_offset)`.
+    ///
+    /// Windows are measured in tokens and cut on token boundaries taken from the
+    /// tokenizer's own offsets, so each chunk is a verbatim slice of `text`.
+    /// Both properties matter: a word-based split silently fails on scripts
+    /// without spaces (a whole Japanese document is one "word"), and rebuilding
+    /// a chunk by re-joining words on single spaces shifts every offset in it
+    /// whenever the original had newlines or runs of spaces.
+    ///
+    /// Returns a single whole-text chunk when the text fits in one window, and
+    /// on tokenizer failure (the caller then runs it unwindowed).
     fn split_into_chunks(&self, text: &str) -> Vec<(String, usize)> {
-        let words: Vec<&str> = text.split_whitespace().collect();
-        let mut chunks = Vec::new();
-        if words.is_empty() {
-            return chunks;
+        let encoding = match self.tokenizer.encode(text, false) {
+            Ok(e) => e,
+            Err(_) => return vec![(text.to_string(), 0)],
+        };
+        let offsets = encoding.get_offsets();
+        if offsets.is_empty() {
+            return Vec::new();
+        }
+        if offsets.len() <= self.window_tokens {
+            return vec![(text.to_string(), 0)];
         }
 
-        let step = self.chunk_size.saturating_sub(self.chunk_overlap).max(1);
-        let mut word_idx = 0;
-        let mut byte_offset = 0;
+        let step = self.window_tokens.saturating_sub(self.window_overlap).max(1);
+        let mut chunks = Vec::new();
+        let mut tok_idx = 0;
 
-        while word_idx < words.len() {
-            let end_idx = (word_idx + self.chunk_size).min(words.len());
-            let chunk_words = &words[word_idx..end_idx];
-            let chunk_text = chunk_words.join(" ");
+        while tok_idx < offsets.len() {
+            let end_idx = (tok_idx + self.window_tokens).min(offsets.len());
+            let start_byte = offsets[tok_idx].0;
+            let end_byte = offsets[end_idx - 1].1;
 
-            if word_idx > 0 {
-                if let Some(pos) = text[byte_offset..].find(chunk_words[0]) {
-                    byte_offset += pos;
-                }
+            // Guard the slice: offsets should already land on char boundaries,
+            // but a panic here would take down the whole run.
+            if start_byte < end_byte
+                && end_byte <= text.len()
+                && text.is_char_boundary(start_byte)
+                && text.is_char_boundary(end_byte)
+            {
+                chunks.push((text[start_byte..end_byte].to_string(), start_byte));
             }
-            chunks.push((chunk_text, byte_offset));
 
-            if end_idx >= words.len() {
+            if end_idx >= offsets.len() {
                 break;
             }
-            word_idx += step;
+            tok_idx += step;
         }
         chunks
     }
