@@ -792,6 +792,7 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
     } else if config.ner.threshold > 0.0 {
         detector_config = detector_config.with_ner_threshold(config.ner.threshold);
     }
+    detector_config = detector_config.with_ner_recall_first(config.ner.recall_first);
 
     if !config.ner.labels.is_empty() {
         detector_config = detector_config.with_ner_labels(config.ner.labels.clone());
@@ -1107,6 +1108,7 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
     if let Some(threshold) = cmd.ner_threshold {
         detector_config = detector_config.with_ner_threshold(threshold);
     }
+    detector_config = detector_config.with_ner_recall_first(config.ner.recall_first);
 
     // Build replacer config
     let strategy: ReplacementStrategy = cmd.strategy.into();
@@ -1493,6 +1495,7 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
     } else if config.ner.threshold > 0.0 {
         detector_config = detector_config.with_ner_threshold(config.ner.threshold);
     }
+    detector_config = detector_config.with_ner_recall_first(config.ner.recall_first);
 
     if !config.ner.labels.is_empty() {
         detector_config = detector_config.with_ner_labels(config.ner.labels.clone());

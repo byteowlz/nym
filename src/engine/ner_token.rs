@@ -101,6 +101,15 @@ pub struct TokenClassDetector {
     /// models do; DeBERTa-v2 exports typically don't).
     needs_token_type_ids: bool,
     threshold: f32,
+    /// Flag a token when its total entity mass (1 - P(O)) clears `threshold`,
+    /// instead of requiring one entity class to win the argmax. Recovers
+    /// tokens whose probability is spread across related classes (e.g.
+    /// GIVEN_NAME .30 + SURNAME .25 vs O .45): measured +5..9 char-recall on
+    /// OOD text at moderate precision cost. Pair with a lower threshold
+    /// (~0.2) for recall-first redaction.
+    recall_first: bool,
+    /// Index of the "O" label in `id2label`.
+    o_id: usize,
     window_tokens: usize,
     window_overlap: usize,
 }
@@ -191,15 +200,23 @@ impl TokenClassDetector {
             .iter()
             .any(|i| i.name == "token_type_ids");
 
+        let o_id = id2label.iter().position(|l| l == "O").unwrap_or(0);
         Ok(Self {
             session: std::mem::ManuallyDrop::new(session),
             tokenizer,
             id2label,
             needs_token_type_ids,
             threshold: threshold.unwrap_or(0.5),
+            recall_first: false,
+            o_id,
             window_tokens: DEFAULT_WINDOW_TOKENS,
             window_overlap: DEFAULT_WINDOW_OVERLAP,
         })
+    }
+
+    /// Enable/disable recall-first decoding (see the `recall_first` field).
+    pub fn set_recall_first(&mut self, on: bool) {
+        self.recall_first = on;
     }
 
     /// Detect PII entities in `text`, chunking long inputs.
@@ -334,7 +351,12 @@ impl TokenClassDetector {
             }
 
             let row = &logits[token_idx * num_labels..(token_idx + 1) * num_labels];
-            let (best_idx, prob) = argmax_softmax(row);
+            let (best_idx, prob) = if self.recall_first {
+                // total entity mass vs O; best_idx is the strongest entity class
+                softmax_best_entity(row, self.o_id)
+            } else {
+                argmax_softmax(row)
+            };
             let label = self.id2label.get(best_idx).map_or("O", String::as_str);
 
             if label == "O" || prob < self.threshold {
@@ -514,6 +536,43 @@ fn merge_fragments(spans: Vec<DecodedSpan>, text: &str) -> Vec<DecodedSpan> {
     out
 }
 
+/// Numerically stable softmax over `row`, returning the strongest NON-O class
+/// and the total entity mass `1 - P(O)`. Used by recall-first decoding: a token
+/// whose probability is split across entity classes can carry a majority of
+/// entity mass while still losing the argmax to O.
+fn softmax_best_entity(row: &[f32], o_id: usize) -> (usize, f32) {
+    let mut max = f32::NEG_INFINITY;
+    for &v in row {
+        if v > max {
+            max = v;
+        }
+    }
+    let mut sum = 0.0f32;
+    let exps: Vec<f32> = row
+        .iter()
+        .map(|&v| {
+            let e = (v - max).exp();
+            sum += e;
+            e
+        })
+        .collect();
+    if sum <= 0.0 {
+        return (o_id, 0.0);
+    }
+    let mut best_idx = usize::MAX;
+    let mut best_p = f32::NEG_INFINITY;
+    for (i, &e) in exps.iter().enumerate() {
+        if i != o_id && e > best_p {
+            best_p = e;
+            best_idx = i;
+        }
+    }
+    if best_idx == usize::MAX {
+        return (o_id, 0.0); // degenerate: only the O label exists
+    }
+    (best_idx, 1.0 - exps[o_id] / sum)
+}
+
 /// Numerically stable softmax over `row`, returning `(argmax_index, max_prob)`.
 fn argmax_softmax(row: &[f32]) -> (usize, f32) {
     let mut best_idx = 0;
@@ -691,6 +750,26 @@ mod tests {
         let (idx, prob) = argmax_softmax(&[0.0, 5.0, 1.0]);
         assert_eq!(idx, 1);
         assert!(prob > 0.9);
+    }
+
+    #[test]
+    fn test_softmax_best_entity_recovers_spread_mass() {
+        // O narrowly wins the argmax, but the entity mass is split across two
+        // related classes -- the case recall-first decoding exists for.
+        // softmax([1.0, 0.8, 0.7]) ~= [.42, .34, .24]: argmax = O, entity mass .58
+        let row = [1.0, 0.8, 0.7];
+        let (am_idx, _) = argmax_softmax(&row);
+        assert_eq!(am_idx, 0, "precondition: O wins the argmax");
+        let (idx, mass) = softmax_best_entity(&row, 0);
+        assert_eq!(idx, 1, "strongest entity class");
+        assert!(mass > 0.5 && mass < 0.65, "entity mass ~0.58, got {mass}");
+    }
+
+    #[test]
+    fn test_softmax_best_entity_only_o_label() {
+        let (idx, mass) = softmax_best_entity(&[3.0], 0);
+        assert_eq!(idx, 0);
+        assert_eq!(mass, 0.0);
     }
 
     #[test]

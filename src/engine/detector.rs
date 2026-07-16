@@ -89,6 +89,9 @@ pub struct DetectorConfig {
     pub ner_model: Option<String>,
     /// NER confidence threshold (0.0-1.0)
     pub ner_threshold: Option<f32>,
+    /// Recall-first decoding for the token backend: flag on total entity mass
+    /// (1 - P(O)) instead of argmax. See `TokenClassDetector::set_recall_first`.
+    pub ner_recall_first: bool,
     /// NER entity labels to detect
     pub ner_labels: Option<Vec<String>>,
     /// NER cache directory for model files
@@ -109,6 +112,7 @@ impl Default for DetectorConfig {
             ner_enabled: false,
             ner_model: None,
             ner_threshold: None,
+            ner_recall_first: false,
             ner_labels: None,
             ner_cache_dir: None,
             ner_backend: NerBackend::default(),
@@ -175,6 +179,12 @@ impl DetectorConfig {
     /// Set NER confidence threshold.
     pub fn with_ner_threshold(mut self, threshold: f32) -> Self {
         self.ner_threshold = Some(threshold);
+        self
+    }
+
+    /// Enable recall-first decoding for the token backend.
+    pub fn with_ner_recall_first(mut self, on: bool) -> Self {
+        self.ner_recall_first = on;
         self
     }
 
@@ -359,7 +369,11 @@ impl Detector {
         };
 
         match result {
-            Ok(detector) => {
+            Ok(mut detector) => {
+                if config.ner_recall_first {
+                    detector.set_recall_first(true);
+                    info!("Token-classification NER: recall-first decoding enabled");
+                }
                 info!("Token-classification NER detector ready");
                 Some(detector)
             }

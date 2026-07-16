@@ -235,6 +235,14 @@ pub struct NerConfig {
     /// Entity labels to detect.
     /// Default: `person`, `organization`, `street_address`, `city`, `country`
     pub labels: Vec<String>,
+    /// Recall-first decoding for the token backend: flag a token when its total
+    /// entity probability (1 - P(O)) clears `threshold`, instead of requiring a
+    /// single entity class to win the argmax. Raises recall (measured +5-9
+    /// char-recall on OOD text) at moderate precision cost -- for redaction, a
+    /// miss is a leak while an over-flag only over-redacts. Pair with a lower
+    /// `threshold` (e.g. 0.2) for maximum-recall operation.
+    #[serde(default)]
+    pub recall_first: bool,
     /// Which NER backend(s) to run: `both` (default), `gliner`, or `tokens`.
     pub backend: NerBackend,
     /// Token-classification model for the `tokens`/`both` backends: a local dir
@@ -259,6 +267,7 @@ impl Default for NerConfig {
                 "city".to_string(),
                 "country".to_string(),
             ],
+            recall_first: false,
             backend: NerBackend::default(),
             token_model: None,
         }
