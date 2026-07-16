@@ -18,6 +18,13 @@
 # Requires `uv`. All Python deps run in an ephemeral uv environment so neither
 # this repo nor the openmed checkout is modified.
 #
+# DO NOT use this for models we trained ourselves: optimum-onnx pins
+# transformers<5, so the ephemeral env can resolve a DIFFERENT transformers
+# than the training env and faithfully export the wrong forward (this cost the
+# v2 student -3.5 ai4 F1, undetected by optimum's validation). For our own
+# checkpoints use scripts/export_onnx.py, run by the training venv's python --
+# it verifies the export against torch at multiple lengths and padded batches.
+#
 # Usage:
 #   scripts/convert_openmed_onnx.sh [MODEL_ID] [OUTPUT_DIR]
 #   NYM_QUANTIZE=1 scripts/convert_openmed_onnx.sh   # also emit int8 (small only)
