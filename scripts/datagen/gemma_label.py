@@ -162,6 +162,12 @@ def main():
     ap.add_argument("--text-file", type=Path, default=None,
                     help="JSONL with a 'text' field to re-label (e.g. data/real-filtered.jsonl) "
                          "instead of streaming Wikipedia; the source/license is carried through")
+    ap.add_argument("--filter-regex", default=None,
+                    help="only label passages matching this regex (case-sensitive). Used for "
+                         "targeted corpora, e.g. org-rich passages via legal-suffix/keyword "
+                         "patterns -- the miss autopsy showed ~47%% of org spans are blind to "
+                         "models trained on the unfiltered mix. Raise --per-lang-articles when "
+                         "filtering: most chunks are discarded.")
     ap.add_argument("--append", action="store_true",
                     help="append to an existing out/gemma.jsonl, skipping already-labeled texts")
     ap.add_argument("--seed", type=int, default=7)
@@ -192,6 +198,7 @@ def main():
 
     # source B: stream Wikipedia
     from datasets import load_dataset
+    flt = re.compile(args.filter_regex) if args.filter_regex else None
     passages = []
     langs = args.langs.split(",")
     per_lang = max(1, args.max_process // max(len(langs), 1))
@@ -205,12 +212,16 @@ def main():
         got, arts = 0, 0
         for art in ds:
             for ch in chunks_from_article(art.get("text") or ""):
+                if flt and not flt.search(ch):
+                    continue
+                if ch in done_texts:
+                    continue
                 passages.append((ch, code))
                 got += 1
             arts += 1
             if got >= per_lang or arts >= args.per_lang_articles:
                 break
-        sys.stderr.write(f"[{code}] {got} passages\n")
+        sys.stderr.write(f"[{code}] {got} passages from {arts} articles\n")
     rng.shuffle(passages)
     sys.stderr.write(f"total candidate passages: {len(passages)}\n")
     _run_labeling(args, passages, rng)

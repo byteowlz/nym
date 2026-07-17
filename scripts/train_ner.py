@@ -167,7 +167,17 @@ def main():
     from transformers import (AutoModelForTokenClassification, DataCollatorForTokenClassification,
                               Trainer, TrainingArguments)
 
-    model = AutoModelForTokenClassification.from_pretrained(
+    from transformers import AutoConfig
+
+    model_cls = AutoModelForTokenClassification
+    if AutoConfig.from_pretrained(args.base_model).__class__.__name__.startswith("Gemma3"):
+        # transformers 5.13 has no Gemma3 token-classification head, and
+        # Auto.register() proved unreliable for it -- load the class directly.
+        sys.path.insert(0, str(Path(__file__).parent))
+        from gemma3_tc import Gemma3ForTokenClassification
+        model_cls = Gemma3ForTokenClassification
+
+    model = model_cls.from_pretrained(
         args.base_model, num_labels=len(labels), id2label=id2label, label2id=label2id,
         ignore_mismatched_sizes=True)  # layer-dropped inits may carry a differently-sized head
 
