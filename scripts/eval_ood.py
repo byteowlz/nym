@@ -52,7 +52,7 @@ class TorchModel:
 
     def __init__(self, path, device, max_len=512, tokenizer=None, tf32=True):
         import torch
-        from transformers import AutoModelForTokenClassification, AutoTokenizer
+        from transformers import AutoConfig, AutoModelForTokenClassification, AutoTokenizer
 
         self.torch = torch
         if not tf32:
@@ -61,7 +61,14 @@ class TorchModel:
         self.tok = AutoTokenizer.from_pretrained(tokenizer or path)
         # the saved tokenizer carries truncation from training (256); override it
         self.tok.model_max_length = max_len
-        self.model = AutoModelForTokenClassification.from_pretrained(path).to(device).eval()
+        model_cls = AutoModelForTokenClassification
+        if AutoConfig.from_pretrained(path).__class__.__name__.startswith("Gemma3"):
+            # no Gemma3 head in transformers 5.13; same direct load as train_ner.py
+            import sys as _sys
+            here = Path(__file__).parent
+            _sys.path[:0] = [str(here), str(here / "scripts")]
+            from gemma3_tc import Gemma3ForTokenClassification as model_cls
+        self.model = model_cls.from_pretrained(path).to(device).eval()
         self.id2label = self.model.config.id2label
         self.max_len = max_len
         self.device = device
