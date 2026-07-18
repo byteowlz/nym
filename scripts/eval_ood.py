@@ -28,6 +28,25 @@ MAP = {"GIVEN_NAME": "PER", "SURNAME": "PER", "COMPANY_NAME": "ORG",
 NON_LATIN = ["ar", "zh", "ja", "ko", "ru", "hi", "el", "uk"]
 
 
+def wiki_map(t):
+    """MAP for our taxonomy, name-heuristic fallback for foreign taxonomies
+    (OpenMed etc.). The fallback reproduces MAP exactly on our 40 labels --
+    scoring 0.0 nonLat for any non-nym label set was a harness bug, not a
+    model property."""
+    if t in MAP:
+        return MAP[t]
+    ll = t.lower()
+    if any(k in ll for k in ("company", "organization", "org")):
+        return "ORG"
+    if any(k in ll for k in ("user", "street", "domain", "host")):
+        return None
+    if any(k in ll for k in ("given", "surname", "name", "person")):
+        return "PER"
+    if any(k in ll for k in ("city", "state", "country", "location")):
+        return "LOC"
+    return None
+
+
 def prf(tp, fp, fn):
     p = tp / (tp + fp) if tp + fp else 0
     r = tp / (tp + fn) if tp + fn else 0
@@ -213,7 +232,8 @@ def wikiann_char_f1(m, rows):
     for lang, rs in by_lang.items():
         ctp = cfp = cfn = 0
         for r in rs:
-            sp = [[MAP[t], s, e] for t, s, e in m.spans(r["text"]) if t in MAP]
+            sp = [[wiki_map(t), s, e] for t, s, e in m.spans(r["text"])
+                  if wiki_map(t) is not None]
             sp.sort(key=lambda x: x[1])
             mg = []
             for t, s, e in sp:
