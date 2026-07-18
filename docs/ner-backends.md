@@ -61,29 +61,27 @@ into the HF cache (`HF_HOME`, or `[ner] cache_dir`).
 
 ### Choosing a model
 
-| `token_model` | Size | ai4privacy F1* | Non-Latin real text** | When |
-|---|---|---|---|---|
-| `Wismut/nym-pii-multilingual` (**default**) | 1.2 GB fp32 | **79.8** | 50.9 | Best accuracy; 40 PII types, ~23 languages, OCR-noise-trained |
-| `Wismut/nym-pii-multilingual/int8` | 309 MB | 76.7 | — | Same model, 4× smaller / ~3× faster CPU; some recall loss |
-| `Wismut/nym-pii-multilingual-small` | 274 MB fp32 | †+3.7 vs default | **68.6** | 16-layer student (v2); **beats the 1.2 GB teacher on real-world text** — LLM-teacher-labeled real text + structured-format synthetic. Recall-first (R 61 / P 81) |
-| `Wismut/nym-pii-multilingual-small/int8` | 70 MB | †+3.7 vs default | 68.6 | Same at 99.9% agreement (needs per-channel int8 — plain dynamic collapses it); **best size/accuracy trade** |
-| `Wismut/openmed-onnx/small` | 172 MB | 75.9 | — | Clinical/HIPAA focus (DeBERTa); also `/base`, `/large` |
-| `nationaldesignstudio/rampart` | 15 MB | 74.2 | 6.5 | Tiny/low-RAM machines (MiniLM; in-distribution on this benchmark; English WordPiece — cannot represent non-Latin scripts) |
-| a local directory | — | — | — | Your own converted/fine-tuned model |
+All rows below are **v3** (2026-07-18) measured on one harness (`scripts/eval_ood.py`:
+real-text span F1 over 4 held-out PII datasets / ai4privacy span-exact OOD /
+WikiANN char-F1 across ar,zh,ja,ko,ru,hi,el,uk — the multilingual robustness
+measure). Every quantized variant was re-benchmarked, not assumed.
 
-*span-level, label-agnostic (`nym bench ai4privacy/pii-masking-300k -n 1000
---ignore-labels`); Rampart was trained on the ai4privacy family, so its number
-is flattered here.
+| `token_model` | Size | Real-text F1 | ai4 OOD | Non-Latin | When |
+|---|---|---|---|---|---|
+| `Wismut/nym-pii-multilingual` (**default**) | 1.2 GB | **79.1** | **69.8** | **73.1** | Best accuracy |
+| `Wismut/nym-pii-multilingual/int8` | 376 MB | 78.9 | 69.9 | 73.0 | **Measured lossless** — the sweet spot |
+| `Wismut/nym-pii-multilingual-small` | 429 MB | 76.4 | 67.7 | 71.8 | Distilled 16-layer student |
+| `Wismut/nym-pii-multilingual-small/int8` | 139 MB | 76.4 | 67.2 | 71.7 | Near-lossless; best size/accuracy trade |
+| `Wismut/nym-pii-multilingual-small/edge-int8` | 108 MB | 75.9 | 63.1 | 70.3 | Smallest; real OOD cost |
+| `OpenMed/…mSuperClinical-Large-279M-v1-onnx-android` | 1.1 GB | 81.4 | 55.0 | 60.4 | Clinical text (their strongest; wins curated F1, loses OOD/non-Latin) |
+| `Wismut/openmed-onnx/small` | 172 MB | 78.1 | 44.6 | 46.3 | Clinical/HIPAA focus (DeBERTa); also `/base`, `/large` |
+| `nationaldesignstudio/rampart` | 15 MB | — | — | — | Tiny/low-RAM machines (English MiniLM; not re-run on this harness) |
+| a local directory | — | — | — | — | Your own converted/fine-tuned model |
 
-†The `-small` rows have **not** been run on this exact harness yet. On a stricter
-offline harness (ai4privacy validation split, char-level) the v2 small model
-measured **55.0 vs the default model's 51.3** — i.e. **+3.7 over the default**.
-Rather than extrapolate that delta onto this table's scale, the relative figure is
-shown; run `nym bench` yourself for a directly comparable number.
-
-**char-level F1 on WikiANN across ar/zh/ja/ko/ru/hi/el/uk (person/org/location
-detection on real Wikipedia text) — the multilingual robustness measure;
-ai4privacy is Latin-only and cannot see this difference.
+On the independent [REDACT benchmark](https://github.com/guneeshvats/REDACT-PII-Benchmark)
+(25 langs / 51 types, their harness): nym base **0.515** / small 0.507 — above
+the OpenAI Privacy Filter (0.512), far above GLiNER-multi (0.320) and Presidio
+(0.195); GPT-4.1 0.597, Claude Sonnet 4.6 0.636.
 
 Train your own on the same pipeline: see
 [Train your own model](#train-your-own-model) — the dataset behind the default
