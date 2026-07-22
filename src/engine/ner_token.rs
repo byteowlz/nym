@@ -37,8 +37,11 @@ use crate::engine::patterns::{Confidence, PiiCategory};
 /// resolving a model directory or repo. Covers nym's own conversion layout
 /// (`model_int8.onnx` / `model.onnx`) and the optimum / transformers.js
 /// convention (`onnx/model*.onnx`), so third-party PII models load unchanged.
-/// fp32 is preferred over quantized where both exist, since int8 is unreliable
-/// for some architectures (e.g. DeBERTa-v2).
+/// Order matters: a `model_int8.onnx` next to an fp32 file is taken first,
+/// because publishers only ship int8 where it's the intended efficient variant
+/// (e.g. OpenMed-small: validated same-accuracy at ~3x smaller). Architectures
+/// where int8 collapses (e.g. OpenMed base/large — DeBERTa-v2 disentangled
+/// attention) simply don't ship an int8 file, so the resolver falls to fp32.
 const MODEL_CANDIDATES: &[&str] = &[
     "model_int8.onnx",
     "model.onnx",
