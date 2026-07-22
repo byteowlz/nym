@@ -40,7 +40,10 @@ echo ""
 if [[ "${OS}" == "Darwin" && "${ARCH}" == "arm64" ]]; then
     DEFAULT_HW="2"
     echo "Recommended for Apple Silicon: CoreML (2)"
-elif [[ "${OS}" == "Linux" ]] && command -v nvidia-smi &> /dev/null; then
+elif [[ "${OS}" == "Linux" ]] && nvidia-smi -L &> /dev/null; then
+    # `nvidia-smi -L` succeeds only when the driver is loaded AND a GPU is
+    # present -- unlike `command -v nvidia-smi`, which just finds the binary
+    # (installed but non-functional on machines with no working NVIDIA GPU).
     DEFAULT_HW="3"
     echo "NVIDIA GPU detected, recommended: CUDA (3)"
 else
