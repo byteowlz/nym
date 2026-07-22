@@ -26,6 +26,8 @@ pub mod detector;
 pub mod formats;
 pub mod ner;
 #[cfg(feature = "ner")]
+pub mod model_catalog;
+#[cfg(feature = "ner")]
 pub mod ner_token;
 pub mod office;
 pub mod ocr;

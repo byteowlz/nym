@@ -1,6 +1,6 @@
 [package]
 name = "nym"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Fast, reversible PII anonymization CLI"
 license = "MIT"
@@ -22,6 +22,7 @@ config = { version = "0.15", features = ["toml"] }
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "0.8"
+toml_edit = "0.22"
 serde_yaml = "0.9"
 
 # Regex (core functionality)
@@ -87,7 +88,10 @@ lopdf = "0.43.0"
 tempfile = "3"
 
 [features]
-default = ["progress", "streaming", "ocr"]
+# NER is on by default: every normal build ships name/address detection.
+# Build with `--no-default-features` (re-adding what you want) for a lean
+# regex-only binary. GPU/NPU acceleration stays opt-in via the `ner-*` flags.
+default = ["progress", "streaming", "ocr", "ner"]
 progress = ["indicatif"]
 streaming = ["tokio", "futures", "async-stream"]
 bench = ["ureq"]
@@ -97,7 +101,7 @@ bench = ["ureq"]
 ocr = ["image"]
 
 # NER with GLiNER
-ner = ["gline-rs", "orp", "hf-hub", "ort", "libc", "async-tqsm", "unicode-segmentation", "tokenizers"]
+ner = ["gline-rs", "orp", "hf-hub", "ort", "libc", "async-tqsm", "unicode-segmentation", "tokenizers", "ureq"]
 
 # Dynamic loading of ONNX runtime (recommended for distribution)
 ner-load-dynamic = ["ner", "gline-rs/load-dynamic"]

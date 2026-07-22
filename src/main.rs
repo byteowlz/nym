@@ -71,6 +71,8 @@ fn try_main() -> Result<()> {
         Command::Patterns(cmd) => handle_patterns(&cli.common, cmd),
         Command::Config(cmd) => handle_config(&cli.common, &config, cmd),
         Command::Sessions(cmd) => handle_sessions(&cli.common, cmd),
+        #[cfg(feature = "ner")]
+        Command::Models(cmd) => handle_models(&cli.common, &config, cmd),
         #[cfg(feature = "bench")]
         Command::Bench(cmd) => handle_bench(&cli.common, &config, cmd),
         Command::Completions { shell } => handle_completions(shell),
@@ -258,6 +260,10 @@ enum Command {
     /// Search for sessions by ID
     Sessions(SessionsCommand),
 
+    /// List, download, and select NER models
+    #[cfg(feature = "ner")]
+    Models(ModelsCommand),
+
     /// Benchmark PII detection accuracy
     #[cfg(feature = "bench")]
     Bench(BenchCommand),
@@ -296,6 +302,38 @@ enum SessionsAction {
         #[arg(short, long, value_name = "DIR")]
         directory: Option<PathBuf>,
     },
+}
+
+// -----------------------------------------------------------------------------
+// Models Command
+// -----------------------------------------------------------------------------
+
+#[cfg(feature = "ner")]
+#[derive(Debug, Clone, Args)]
+struct ModelsCommand {
+    #[command(subcommand)]
+    action: Option<ModelsAction>,
+}
+
+#[cfg(feature = "ner")]
+#[derive(Debug, Clone, Subcommand)]
+enum ModelsAction {
+    /// List catalog models, marking downloaded (✓) and default (*)
+    List,
+    /// Fuzzy-pick a model and download it (exact slug downloads directly)
+    Pull {
+        /// Model slug (or search query to seed the fuzzy picker)
+        #[arg(value_name = "QUERY")]
+        query: Option<String>,
+    },
+    /// Set the default model (fuzzy-pick among downloaded models)
+    Use {
+        /// Model slug (or search query to seed the fuzzy picker)
+        #[arg(value_name = "QUERY")]
+        query: Option<String>,
+    },
+    /// Refresh the model catalog from the byteowlz/nym repository
+    Refresh,
 }
 
 // -----------------------------------------------------------------------------
@@ -1913,6 +1951,297 @@ fn handle_config(common: &CommonOpts, config: &Config, cmd: ConfigCommand) -> Re
     }
 
     Ok(())
+}
+
+// -----------------------------------------------------------------------------
+// Models command
+// -----------------------------------------------------------------------------
+
+#[cfg(feature = "ner")]
+use engine::model_catalog::{self, CatalogModel};
+
+/// Configured NER model cache directory, if any.
+#[cfg(feature = "ner")]
+fn ner_cache_dir(config: &Config) -> Option<PathBuf> {
+    config.ner.cache_dir.as_ref().map(PathBuf::from)
+}
+
+/// The currently-configured default slug for each backend: (tokens, gliner).
+#[cfg(feature = "ner")]
+fn current_defaults(config: &Config) -> (String, String) {
+    let tokens = config
+        .ner
+        .token_model
+        .clone()
+        .unwrap_or_else(|| engine::ner_token::DEFAULT_TOKEN_MODEL.to_string());
+    (tokens, config.ner.model.clone())
+}
+
+#[cfg(feature = "ner")]
+fn handle_models(common: &CommonOpts, config: &Config, cmd: ModelsCommand) -> Result<()> {
+    match cmd.action.unwrap_or(ModelsAction::List) {
+        ModelsAction::List => models_list(common, config),
+        ModelsAction::Pull { query } => models_pull(config, query.as_deref()),
+        ModelsAction::Use { query } => models_use(config, query.as_deref()),
+        ModelsAction::Refresh => {
+            let (url, count) = model_catalog::refresh()?;
+            eprintln!("fetched {url}");
+            println!(
+                "updated catalog: {count} models -> {}",
+                model_catalog::cache_path().display()
+            );
+            Ok(())
+        }
+    }
+}
+
+#[cfg(feature = "ner")]
+fn model_row(m: &CatalogModel) -> String {
+    format!(
+        "{:<42} {:<32} {:<7} {:<19} {:>5}M  {}",
+        m.slug, m.name, m.backend, m.languages, m.size_mb, m.description
+    )
+}
+
+#[cfg(feature = "ner")]
+fn models_list(common: &CommonOpts, config: &Config) -> Result<()> {
+    let models = model_catalog::load();
+    let cache_dir = ner_cache_dir(config);
+    let (tok_default, gli_default) = current_defaults(config);
+
+    if common.json {
+        println!("{}", serde_json::to_string_pretty(&models)?);
+        return Ok(());
+    }
+
+    println!(
+        "   {:<42} {:<32} {:<7} {:<19} {:>6}  {}",
+        "SLUG", "NAME", "BACKEND", "LANGUAGES", "SIZE", "DESCRIPTION"
+    );
+    for m in &models {
+        let is_default =
+            (m.is_tokens() && m.slug == tok_default) || (!m.is_tokens() && m.slug == gli_default);
+        let cached = m.is_cached(cache_dir.as_deref());
+        let mark_default = if is_default { '*' } else { ' ' };
+        let mark_cached = if cached { '✓' } else { ' ' };
+        println!("{mark_default}{mark_cached} {}", model_row(m));
+    }
+    eprintln!();
+    eprintln!("  * = current default   ✓ = downloaded");
+    eprintln!("Download with `nym models pull [query]`, switch with `nym models use [query]`.");
+    Ok(())
+}
+
+#[cfg(feature = "ner")]
+fn download_catalog_model(config: &Config, m: &CatalogModel) -> Result<()> {
+    let cache_dir = ner_cache_dir(config);
+    eprintln!("downloading {} ({}M)...", m.slug, m.size_mb);
+    if m.is_tokens() {
+        engine::ner_token::TokenClassDetector::download(&m.slug, cache_dir.as_deref())
+            .map_err(|e| anyhow!("failed to download {}: {e}", m.slug))?;
+    } else {
+        let mut cfg = engine::ner::NerModelConfig::with_model(m.slug.clone());
+        if let Some(dir) = cache_dir {
+            cfg = cfg.with_cache_dir(dir);
+        }
+        cfg.download()
+            .map_err(|e| anyhow!("failed to download {}: {e}", m.slug))?;
+    }
+    Ok(())
+}
+
+#[cfg(feature = "ner")]
+fn models_pull(config: &Config, query: Option<&str>) -> Result<()> {
+    let models = model_catalog::load();
+
+    // An exact slug downloads directly; otherwise fuzzy-pick from the catalog.
+    let selected = match query {
+        Some(q) if models.iter().any(|m| m.slug == q) => {
+            models.iter().find(|m| m.slug == q).cloned()
+        }
+        // Unknown slug that still looks like an HF repo id: pull it directly.
+        Some(q) if q.contains('/') && !models.iter().any(|m| m.slug == q) => Some(CatalogModel {
+            slug: q.to_string(),
+            name: q.to_string(),
+            backend: "tokens".to_string(),
+            languages: "-".to_string(),
+            size_mb: 0,
+            description: "(not in catalog)".to_string(),
+            recommended: false,
+            default: false,
+        }),
+        other => pick_catalog(&models, other)?,
+    };
+
+    let Some(m) = selected else {
+        eprintln!("nothing selected");
+        return Ok(());
+    };
+
+    download_catalog_model(config, &m)?;
+    println!("{}", m.slug);
+    eprintln!("cached {}", m.slug);
+    eprintln!("activate with: nym models use {}", m.slug);
+    Ok(())
+}
+
+#[cfg(feature = "ner")]
+fn models_use(config: &Config, query: Option<&str>) -> Result<()> {
+    let models = model_catalog::load();
+    let cache_dir = ner_cache_dir(config);
+
+    // Exact slug (catalog or raw HF id): set it directly.
+    if let Some(q) = query {
+        if let Some(m) = models.iter().find(|m| m.slug == q) {
+            return apply_default_model(config, m);
+        }
+        if q.contains('/') {
+            let m = CatalogModel {
+                slug: q.to_string(),
+                name: q.to_string(),
+                backend: "tokens".to_string(),
+                languages: "-".to_string(),
+                size_mb: 0,
+                description: String::new(),
+                recommended: false,
+                default: false,
+            };
+            return apply_default_model(config, &m);
+        }
+    }
+
+    // Otherwise pick among downloaded models.
+    let downloaded: Vec<CatalogModel> = models
+        .iter()
+        .filter(|m| m.is_cached(cache_dir.as_deref()))
+        .cloned()
+        .collect();
+
+    match downloaded.len() {
+        0 => {
+            eprintln!("No models downloaded yet.");
+            eprintln!("Run `nym models pull` to download one, then `nym models use`.");
+            Ok(())
+        }
+        1 => {
+            eprintln!("Only one model downloaded; selecting it.");
+            apply_default_model(config, &downloaded[0])
+        }
+        _ => match pick_catalog(&downloaded, query)? {
+            Some(m) => apply_default_model(config, &m),
+            None => {
+                eprintln!("nothing selected");
+                Ok(())
+            }
+        },
+    }
+}
+
+/// Persist a model as the default for its backend, enabling NER.
+#[cfg(feature = "ner")]
+fn apply_default_model(config: &Config, m: &CatalogModel) -> Result<()> {
+    let cache_dir = ner_cache_dir(config);
+    let path = set_default_model(m)?;
+    let field = if m.is_tokens() { "token_model" } else { "model" };
+    println!("[ner] {field} = \"{}\"", m.slug);
+    eprintln!("[ner] enabled = true");
+    eprintln!("wrote {}", path.display());
+    if !m.is_cached(cache_dir.as_deref()) {
+        eprintln!("(not downloaded yet — it will fetch on first use, or run `nym models pull {}`)", m.slug);
+    }
+    Ok(())
+}
+
+/// Write the model into the global config via a surgical toml edit (comments and
+/// formatting preserved). Seeds from the example config when none exists yet.
+#[cfg(feature = "ner")]
+fn set_default_model(m: &CatalogModel) -> Result<PathBuf> {
+    use toml_edit::{DocumentMut, value};
+
+    let path = config::global_config_path()
+        .ok_or_else(|| anyhow!("Could not determine config directory"))?;
+
+    let mut doc: DocumentMut = if path.exists() {
+        fs::read_to_string(&path)
+            .with_context(|| format!("reading {}", path.display()))?
+            .parse()
+            .with_context(|| format!("parsing {}", path.display()))?
+    } else {
+        include_str!("../examples/config.toml")
+            .parse()
+            .context("parsing bundled example config")?
+    };
+
+    if !doc.contains_key("ner") {
+        doc["ner"] = toml_edit::table();
+    }
+    let ner = doc["ner"]
+        .as_table_mut()
+        .ok_or_else(|| anyhow!("[ner] is not a table in config"))?;
+    ner["enabled"] = value(true);
+    let field = if m.is_tokens() { "token_model" } else { "model" };
+    ner[field] = value(m.slug.clone());
+
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)
+            .with_context(|| format!("creating {}", parent.display()))?;
+    }
+    fs::write(&path, doc.to_string()).with_context(|| format!("writing {}", path.display()))?;
+    Ok(path)
+}
+
+/// Fuzzy-pick a catalog model via fzf, falling back to a numbered prompt.
+/// Returns the chosen model, or `None` if the user cancelled.
+#[cfg(feature = "ner")]
+fn pick_catalog(models: &[CatalogModel], query: Option<&str>) -> Result<Option<CatalogModel>> {
+    use std::io::stdin;
+    use std::process::{Command, Stdio};
+
+    if models.is_empty() {
+        return Ok(None);
+    }
+    let lines: Vec<String> = models.iter().map(model_row).collect();
+
+    let mut cmd = Command::new("fzf");
+    cmd.arg("--prompt=model> ")
+        .arg("--height=40%")
+        .arg("--reverse")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped());
+    if let Some(q) = query {
+        cmd.arg(format!("--query={q}"));
+    }
+    match cmd.spawn() {
+        Ok(mut child) => {
+            if let Some(mut child_stdin) = child.stdin.take() {
+                child_stdin.write_all(lines.join("\n").as_bytes()).ok();
+            }
+            let output = child.wait_with_output().context("running fzf")?;
+            if !output.status.success() {
+                return Ok(None); // cancelled
+            }
+            let selection = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            Ok(models
+                .iter()
+                .zip(lines.iter())
+                .find(|(_, line)| **line == selection)
+                .map(|(m, _)| m.clone()))
+        }
+        Err(_) => {
+            eprintln!("(fzf not found - pick a number)");
+            for (i, line) in lines.iter().enumerate() {
+                eprintln!("{:>3}  {}", i + 1, line);
+            }
+            eprint!("model number: ");
+            io::stderr().flush().ok();
+            let mut buf = String::new();
+            stdin().read_line(&mut buf).context("reading selection")?;
+            let Ok(n) = buf.trim().parse::<usize>() else {
+                return Ok(None);
+            };
+            Ok(n.checked_sub(1).and_then(|i| models.get(i)).cloned())
+        }
+    }
 }
 
 fn handle_sessions(common: &CommonOpts, cmd: SessionsCommand) -> Result<()> {

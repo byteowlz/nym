@@ -1,0 +1,80 @@
+{
+  "models": [
+    {
+      "slug": "Wismut/nym-pii-multilingual",
+      "name": "nym PII Multilingual",
+      "backend": "tokens",
+      "languages": "Multilingual (25+)",
+      "size_mb": 1200,
+      "description": "Best accuracy, 40 PII types (default)",
+      "recommended": true,
+      "default": true
+    },
+    {
+      "slug": "Wismut/nym-pii-multilingual/int8",
+      "name": "nym PII Multilingual int8",
+      "backend": "tokens",
+      "languages": "Multilingual (25+)",
+      "size_mb": 300,
+      "description": "4x smaller, small accuracy cost"
+    },
+    {
+      "slug": "Wismut/nym-pii-multilingual-small",
+      "name": "nym PII Multilingual Small",
+      "backend": "tokens",
+      "languages": "Multilingual (25+)",
+      "size_mb": 274,
+      "description": "Compact; beats teacher on real text",
+      "recommended": true
+    },
+    {
+      "slug": "Wismut/nym-pii-multilingual-small/int8",
+      "name": "nym PII Multilingual Small int8",
+      "backend": "tokens",
+      "languages": "Multilingual (25+)",
+      "size_mb": 70,
+      "description": "Smallest multilingual; small accuracy cost"
+    },
+    {
+      "slug": "Wismut/openmed-onnx/small",
+      "name": "OpenMed Clinical Small",
+      "backend": "tokens",
+      "languages": "English (clinical)",
+      "size_mb": 279,
+      "description": "Clinical/medical NER, curated-F1 leader"
+    },
+    {
+      "slug": "Wismut/openmed-onnx/base",
+      "name": "OpenMed Clinical Base",
+      "backend": "tokens",
+      "languages": "English (clinical)",
+      "size_mb": 460,
+      "description": "Clinical/medical NER, higher capacity"
+    },
+    {
+      "slug": "Wismut/openmed-onnx/large",
+      "name": "OpenMed Clinical Large",
+      "backend": "tokens",
+      "languages": "English (clinical)",
+      "size_mb": 1500,
+      "description": "Clinical/medical NER, largest"
+    },
+    {
+      "slug": "nationaldesignstudio/rampart",
+      "name": "Rampart",
+      "backend": "tokens",
+      "languages": "English-centric",
+      "size_mb": 15,
+      "description": "Tiny PII model, fastest"
+    },
+    {
+      "slug": "onnx-community/gliner_multi-v2.1",
+      "name": "GLiNER Multi v2.1",
+      "backend": "gliner",
+      "languages": "Multilingual",
+      "size_mb": 500,
+      "description": "Zero-shot span NER, any labels (gliner default)",
+      "recommended": true
+    }
+  ]
+}

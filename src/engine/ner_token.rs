@@ -24,7 +24,7 @@
 
 #![cfg(feature = "ner")]
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ort::session::Session;
 use ort::value::Tensor;
@@ -177,6 +177,41 @@ impl TokenClassDetector {
             })?;
 
         Self::build(&model_path, &tokenizer_path, &config_path, threshold)
+    }
+
+    /// Download a token model's files into the HF cache without building a
+    /// session (used by `nym models pull` — avoids loading a multi-GB model
+    /// just to fetch it). Returns the resolved on-disk model path.
+    ///
+    /// `model_ref` follows the same `org/name[/subfolder]` convention as
+    /// [`Self::from_repo`]. Respects `HF_HOME`/`HF_ENDPOINT`; `cache_dir`
+    /// overrides the cache location.
+    pub fn download(
+        model_ref: &str,
+        cache_dir: Option<&Path>,
+    ) -> Result<PathBuf, Box<dyn std::error::Error + Send + Sync>> {
+        use hf_hub::api::sync::ApiBuilder;
+
+        let parts: Vec<&str> = model_ref.split('/').collect();
+        let (repo, prefix) = if parts.len() > 2 {
+            (parts[..2].join("/"), format!("{}/", parts[2..].join("/")))
+        } else {
+            (model_ref.to_string(), String::new())
+        };
+
+        let api = match cache_dir {
+            Some(dir) => ApiBuilder::new().with_cache_dir(dir.to_path_buf()).build()?,
+            None => ApiBuilder::from_env().build()?,
+        };
+        let model = api.model(repo);
+
+        model.get(&format!("{prefix}config.json"))?;
+        model.get(&format!("{prefix}tokenizer.json"))?;
+        let model_path = MODEL_CANDIDATES
+            .iter()
+            .find_map(|c| model.get(&format!("{prefix}{c}")).ok())
+            .ok_or_else(|| format!("no ONNX model in repo (looked for {MODEL_CANDIDATES:?})"))?;
+        Ok(model_path)
     }
 
     /// Build a detector from explicit file paths.

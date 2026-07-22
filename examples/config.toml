@@ -54,8 +54,8 @@ buffer_size = 65536
 # state_dir = "$XDG_STATE_HOME/nym"
 
 [ner]
-# Enable NER-based detection for names, addresses, organizations
-# Requires building with --features ner (or ner-cuda for GPU acceleration)
+# Enable NER-based detection for names, addresses, organizations.
+# NER ships in the default build; `nym models use <model>` sets this to true.
 enabled = false
 
 # Which backend(s) to run: "both" (default), "gliner", or "tokens".

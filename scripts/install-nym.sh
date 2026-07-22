@@ -18,72 +18,61 @@ echo "  - Streaming mode (pipe-friendly stdin/stdout processing)"
 echo "  - Progress bars"
 echo ""
 
-# Check if NER is wanted
-echo "Do you want NER support for detecting names and addresses?"
-echo "NER uses machine learning and requires downloading a ~50MB model."
-echo ""
-echo "  1) No  - Regex-only detection (fast, no model download)"
-echo "  2) Yes - Include NER support (more accurate for names/addresses)"
-echo ""
-read -p "Enter choice [1]: " NER_CHOICE
-NER_CHOICE="${NER_CHOICE:-1}"
-
-# Start with default features
+# NER (name/address detection) is always included. Only the ONNX Runtime
+# execution provider (hardware acceleration) is selectable. CPU is the base
+# `ner` feature, already in nym's default feature set.
 FEATURES=""
-ENABLE_NER=false
+ENABLE_NER=true
 ENABLE_BENCH=false
 
-if [[ "${NER_CHOICE}" == "2" ]]; then
-    ENABLE_NER=true
-    echo ""
-    echo "NER enabled. Select hardware acceleration:"
-    echo ""
-    echo "  1) CPU only - works everywhere"
-    echo "  2) CoreML (Apple Silicon) - macOS only, uses Neural Engine"
-    echo "  3) CUDA (NVIDIA GPU) - requires CUDA toolkit"
-    echo "  4) TensorRT (NVIDIA optimized) - requires TensorRT"
-    echo "  5) ROCm (AMD GPU) - requires ROCm"
-    echo "  6) DirectML (Windows GPU) - Windows only"
-    echo "  7) OpenVINO (Intel) - Intel CPU/GPU optimization"
-    echo ""
+echo "NER is built in. Select hardware acceleration for it:"
+echo ""
+echo "  1) CPU only - works everywhere (default)"
+echo "  2) CoreML (Apple Silicon) - macOS only, uses Neural Engine"
+echo "  3) CUDA (NVIDIA GPU) - requires CUDA toolkit"
+echo "  4) TensorRT (NVIDIA optimized) - requires TensorRT"
+echo "  5) ROCm (AMD GPU) - requires ROCm"
+echo "  6) DirectML (Windows GPU) - Windows only"
+echo "  7) OpenVINO (Intel) - Intel CPU/GPU optimization"
+echo ""
 
-    # Default based on platform
-    if [[ "${OS}" == "Darwin" && "${ARCH}" == "arm64" ]]; then
-        DEFAULT_HW="2"
-        echo "Recommended for Apple Silicon: CoreML (2)"
-    elif [[ "${OS}" == "Linux" ]] && command -v nvidia-smi &> /dev/null; then
-        DEFAULT_HW="3"
-        echo "NVIDIA GPU detected, recommended: CUDA (3)"
-    else
-        DEFAULT_HW="1"
-        echo "Recommended: CPU only (1)"
-    fi
-
-    echo ""
-    read -p "Enter choice [${DEFAULT_HW}]: " HW_CHOICE
-    HW_CHOICE="${HW_CHOICE:-$DEFAULT_HW}"
-
-    case "${HW_CHOICE}" in
-        1) FEATURES="ner" ;;
-        2)
-            if [[ "${OS}" != "Darwin" ]]; then
-                echo "Warning: CoreML is only available on macOS. Using CPU."
-                FEATURES="ner"
-            else
-                FEATURES="ner-coreml"
-            fi
-            ;;
-        3) FEATURES="ner-cuda" ;;
-        4) FEATURES="ner-tensorrt" ;;
-        5) FEATURES="ner-rocm" ;;
-        6) FEATURES="ner-directml" ;;
-        7) FEATURES="ner-openvino" ;;
-        *)
-            echo "Invalid choice. Using CPU-only NER."
-            FEATURES="ner"
-            ;;
-    esac
+# Default based on platform
+if [[ "${OS}" == "Darwin" && "${ARCH}" == "arm64" ]]; then
+    DEFAULT_HW="2"
+    echo "Recommended for Apple Silicon: CoreML (2)"
+elif [[ "${OS}" == "Linux" ]] && command -v nvidia-smi &> /dev/null; then
+    DEFAULT_HW="3"
+    echo "NVIDIA GPU detected, recommended: CUDA (3)"
+else
+    DEFAULT_HW="1"
+    echo "Recommended: CPU only (1)"
 fi
+
+echo ""
+read -p "Enter choice [${DEFAULT_HW}]: " HW_CHOICE
+HW_CHOICE="${HW_CHOICE:-$DEFAULT_HW}"
+
+# CPU uses the default features (ner is already default) -> empty FEATURES.
+case "${HW_CHOICE}" in
+    1) FEATURES="" ;;
+    2)
+        if [[ "${OS}" != "Darwin" ]]; then
+            echo "Warning: CoreML is only available on macOS. Using CPU."
+            FEATURES=""
+        else
+            FEATURES="ner-coreml"
+        fi
+        ;;
+    3) FEATURES="ner-cuda" ;;
+    4) FEATURES="ner-tensorrt" ;;
+    5) FEATURES="ner-rocm" ;;
+    6) FEATURES="ner-directml" ;;
+    7) FEATURES="ner-openvino" ;;
+    *)
+        echo "Invalid choice. Using CPU-only NER."
+        FEATURES=""
+        ;;
+esac
 
 # Ask about bench feature
 echo ""
@@ -111,6 +100,14 @@ echo "  Building nym..."
 echo "=========================================="
 echo ""
 
+# NER links the ONNX Runtime shared library dynamically. `cargo install` copies
+# only the binary to ~/.cargo/bin, leaving libonnxruntime.so behind -> the loader
+# can't find it at runtime. Fix: build with an rpath of $ORIGIN so the binary
+# searches its own directory, then copy the .so next to it after install.
+if [[ "${ENABLE_NER}" == "true" ]]; then
+    export RUSTFLAGS="${RUSTFLAGS:-} -C link-arg=-Wl,-rpath,\$ORIGIN"
+fi
+
 # Default features are always included (streaming, progress)
 if [[ -n "${FEATURES}" ]]; then
     echo "Features: default + ${FEATURES}"
@@ -130,6 +127,28 @@ if [[ -n "${FEATURES}" ]]; then
     cargo install --path "${ROOT_DIR}" --features "${FEATURES}" --force
 else
     cargo install --path "${ROOT_DIR}" --force
+fi
+
+# Place libonnxruntime.so (and any selected execution-provider libs) next to the
+# installed binary so the $ORIGIN rpath resolves them. Symlinks are dereferenced
+# with `cp -L`. Only the libs the selected feature actually loads are copied.
+if [[ "${ENABLE_NER}" == "true" ]]; then
+    BIN_DIR="${CARGO_INSTALL_ROOT:-${CARGO_HOME:-$HOME/.cargo}}/bin"
+    REL_DIR="${ROOT_DIR}/target/release"
+    LIBS=("libonnxruntime.so")
+    case "${FEATURES}" in
+        *cuda*)     LIBS+=("libonnxruntime_providers_shared.so" "libonnxruntime_providers_cuda.so") ;;
+        *tensorrt*) LIBS+=("libonnxruntime_providers_shared.so" "libonnxruntime_providers_cuda.so" "libonnxruntime_providers_tensorrt.so") ;;
+        *rocm*)     LIBS+=("libonnxruntime_providers_shared.so" "libonnxruntime_providers_rocm.so") ;;
+    esac
+    echo ""
+    echo "Bundling ONNX Runtime libraries into ${BIN_DIR}:"
+    for lib in "${LIBS[@]}"; do
+        if [[ -e "${REL_DIR}/${lib}" ]]; then
+            cp -Lf "${REL_DIR}/${lib}" "${BIN_DIR}/${lib}"
+            echo "  ${lib}"
+        fi
+    done
 fi
 
 echo ""
@@ -152,19 +171,19 @@ echo "  some_cmd | nym anon --stream | next_cmd  # Pipeline processing"
 echo ""
 
 if [[ "${ENABLE_NER}" == "true" ]]; then
-    echo "NER support enabled. Use --ner flag to detect names/addresses:"
+    echo "NER is built in. Use --ner to detect names/addresses:"
     echo "  nym detect --ner file.txt"
     echo "  nym anon --ner file.txt"
     echo ""
     echo "By default nym runs BOTH NER backends and merges results:"
     echo "  gliner  - zero-shot GLiNER span model"
-    echo "  tokens  - token-classification PII model (OpenMed, Rampart, any HF model)"
+    echo "  tokens  - token-classification PII model (nym, OpenMed, Rampart, any HF model)"
     echo "Both auto-download from the Hub on first use - no setup needed."
     echo ""
-    echo "Pick a single backend with [ner] backend = \"gliner\" | \"tokens\" | \"both\"."
-    echo "Default model: Wismut/nym-pii-multilingual (multilingual, 40 PII types)."
-    echo "Alternatives via token_model: Wismut/nym-pii-multilingual/int8 (4x smaller),"
-    echo "Wismut/openmed-onnx/small (clinical), nationaldesignstudio/rampart (tiny)."
+    echo "Browse and switch models:"
+    echo "  nym models list                # catalog: * default, ✓ downloaded"
+    echo "  nym models pull [query]        # fuzzy-pick and download"
+    echo "  nym models use [query]         # set the default model"
     echo "See docs/ner-backends.md for details."
     echo ""
 fi
