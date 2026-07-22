@@ -58,18 +58,20 @@ buffer_size = 65536
 # NER ships in the default build; `nym models use <model>` sets this to true.
 enabled = false
 
-# Which backend(s) to run: "both" (default), "gliner", or "tokens".
+# Which backend(s) to run: "tokens" (default), "gliner", or "both".
 #   tokens = token-classification PII model (the nym models below, OpenMed, Rampart)
 #   gliner = zero-shot GLiNER span model (uses `model` + `labels`)
-backend = "both"
+#   both   = run both and merge (best recall, but also loads the ~1.1 GB GLiNER model)
+backend = "tokens"
 
 # Token-classification model for the "tokens"/"both" backends. A HuggingFace repo
-# id (auto-downloaded + cached) or a local dir with model.onnx/tokenizer.json/config.json.
-# Default when unset: Wismut/nym-pii-multilingual (1.2 GB fp32, best accuracy).
+# id (auto-downloaded + cached with a progress bar) or a local dir with
+# model.onnx/tokenizer.json/config.json.
+# Default when unset: Wismut/nym-pii-multilingual-small/int8 (144 MB, fast + small).
 # token_model = "Wismut/nym-pii-multilingual"
-# token_model = "Wismut/nym-pii-multilingual-small"        # 274 MB, beats teacher on real text
-# token_model = "Wismut/nym-pii-multilingual-small/int8"   # 70 MB, small accuracy cost
-# token_model = "nationaldesignstudio/rampart"             # 15 MB (English-centric)
+# token_model = "Wismut/nym-pii-multilingual-small"        # 421 MB, beats teacher on real text
+# token_model = "Wismut/nym-pii-multilingual-small/int8"   # 144 MB, small accuracy cost
+# token_model = "nationaldesignstudio/rampart"             # 14 MB (English-centric)
 
 # GLiNER model for the "gliner"/"both" backends (Apache-2.0, multilingual)
 model = "onnx-community/gliner_multi-v2.1"

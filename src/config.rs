@@ -243,12 +243,13 @@ pub struct NerConfig {
     /// `threshold` (e.g. 0.2) for maximum-recall operation.
     #[serde(default)]
     pub recall_first: bool,
-    /// Which NER backend(s) to run: `both` (default), `gliner`, or `tokens`.
+    /// Which NER backend(s) to run: `tokens` (default), `gliner`, or `both`.
     pub backend: NerBackend,
     /// Token-classification model for the `tokens`/`both` backends: a local dir
     /// (`model.onnx` + `tokenizer.json` + `config.json`) or a HuggingFace repo id
     /// (e.g. `Wismut/openmed-onnx/small`, `nationaldesignstudio/rampart`).
-    /// Defaults to OpenMed-small when unset. `openmed_model` is a legacy alias.
+    /// Defaults to `Wismut/nym-pii-multilingual-small/int8` (144 MB) when unset.
+    /// `openmed_model` is a legacy alias.
     #[serde(alias = "openmed_model")]
     pub token_model: Option<String>,
 }

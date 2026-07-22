@@ -26,18 +26,22 @@ use super::ner_token::TokenClassDetector;
 /// - [`NerBackend::Gliner`] — zero-shot span model via `gline-rs`.
 /// - [`NerBackend::TokenClass`] — BERT/DeBERTa token classification via ONNX
 ///   Runtime (OpenMed, Rampart, or any HF token-classification PII model).
-/// - [`NerBackend::Both`] — run both and merge results (the default; best recall).
+/// - [`NerBackend::Both`] — run both and merge results (best recall, but also
+///   loads the ~1.1 GB GLiNER model).
+///
+/// The default is [`NerBackend::TokenClass`]: a single, fast token model. Set
+/// `[ner] backend = "both"` to additionally run GLiNER and merge results.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum NerBackend {
     /// GLiNER zero-shot span model.
     Gliner,
     /// Token-classification model (BERT/DeBERTa). Config value `"tokens"`;
-    /// `"openmed"` is accepted as a back-compat alias.
+    /// `"openmed"` is accepted as a back-compat alias. The default backend.
     #[serde(rename = "tokens", alias = "openmed")]
-    TokenClass,
-    /// Run both backends and merge their matches (default).
     #[default]
+    TokenClass,
+    /// Run both backends and merge their matches.
     Both,
 }
 

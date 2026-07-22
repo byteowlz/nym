@@ -1995,19 +1995,38 @@ fn handle_models(common: &CommonOpts, config: &Config, cmd: ModelsCommand) -> Re
     }
 }
 
+/// Human-readable download size (GB above 1024 MB, else MB) — the on-disk
+/// footprint, not a parameter count.
+#[cfg(feature = "ner")]
+fn fmt_size(mb: u32) -> String {
+    if mb >= 1024 {
+        format!("{:.1} GB", f64::from(mb) / 1024.0)
+    } else {
+        format!("{mb} MB")
+    }
+}
+
 #[cfg(feature = "ner")]
 fn model_row(m: &CatalogModel) -> String {
     format!(
-        "{:<42} {:<32} {:<7} {:<19} {:>5}M  {}",
-        m.slug, m.name, m.backend, m.languages, m.size_mb, m.description
+        "{:<42} {:<32} {:<7} {:<19} {:>8}  {}",
+        m.slug,
+        m.name,
+        m.backend,
+        m.languages,
+        fmt_size(m.size_mb),
+        m.description
     )
 }
 
 #[cfg(feature = "ner")]
 fn models_list(common: &CommonOpts, config: &Config) -> Result<()> {
+    use engine::detector::NerBackend;
     let models = model_catalog::load();
     let cache_dir = ner_cache_dir(config);
     let (tok_default, gli_default) = current_defaults(config);
+    let tokens_active = matches!(config.ner.backend, NerBackend::TokenClass | NerBackend::Both);
+    let gliner_active = matches!(config.ner.backend, NerBackend::Gliner | NerBackend::Both);
 
     if common.json {
         println!("{}", serde_json::to_string_pretty(&models)?);
@@ -2015,12 +2034,12 @@ fn models_list(common: &CommonOpts, config: &Config) -> Result<()> {
     }
 
     println!(
-        "   {:<42} {:<32} {:<7} {:<19} {:>6}  {}",
-        "SLUG", "NAME", "BACKEND", "LANGUAGES", "SIZE", "DESCRIPTION"
+        "   {:<42} {:<32} {:<7} {:<19} {:>8}  {}",
+        "SLUG", "NAME", "BACKEND", "LANGUAGES", "DISK", "DESCRIPTION"
     );
     for m in &models {
-        let is_default =
-            (m.is_tokens() && m.slug == tok_default) || (!m.is_tokens() && m.slug == gli_default);
+        let is_default = (m.is_tokens() && tokens_active && m.slug == tok_default)
+            || (!m.is_tokens() && gliner_active && m.slug == gli_default);
         let cached = m.is_cached(cache_dir.as_deref());
         let mark_default = if is_default { '*' } else { ' ' };
         let mark_cached = if cached { '✓' } else { ' ' };
@@ -2137,15 +2156,20 @@ fn models_use(config: &Config, query: Option<&str>) -> Result<()> {
     }
 }
 
-/// Persist a model as the default for its backend, enabling NER.
+/// Persist a model as the default, switching to its backend and enabling NER.
 #[cfg(feature = "ner")]
 fn apply_default_model(config: &Config, m: &CatalogModel) -> Result<()> {
     let cache_dir = ner_cache_dir(config);
+    let backend = if m.is_tokens() { "tokens" } else { "gliner" };
     let path = set_default_model(m)?;
     let field = if m.is_tokens() { "token_model" } else { "model" };
     println!("[ner] {field} = \"{}\"", m.slug);
+    eprintln!("[ner] backend = \"{backend}\"");
     eprintln!("[ner] enabled = true");
     eprintln!("wrote {}", path.display());
+    eprintln!(
+        "(now running only the {backend} backend; set [ner] backend = \"both\" to also run the other)"
+    );
     if !m.is_cached(cache_dir.as_deref()) {
         eprintln!("(not downloaded yet — it will fetch on first use, or run `nym models pull {}`)", m.slug);
     }
@@ -2179,6 +2203,9 @@ fn set_default_model(m: &CatalogModel) -> Result<PathBuf> {
         .as_table_mut()
         .ok_or_else(|| anyhow!("[ner] is not a table in config"))?;
     ner["enabled"] = value(true);
+    // Switch to the selected model's backend so `use X` runs X alone, rather
+    // than also paying for the other backend (e.g. the 1.1 GB GLiNER model).
+    ner["backend"] = value(if m.is_tokens() { "tokens" } else { "gliner" });
     let field = if m.is_tokens() { "token_model" } else { "model" };
     ner[field] = value(m.slug.clone());
 
