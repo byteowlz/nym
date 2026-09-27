@@ -72,13 +72,40 @@ entropy_backstop = true             # add unlabeled high-entropy candidates
 
 | Backend | Notes |
 |---------|-------|
-| A capable chat model (deepseek-flash on rtx6000, etc.) | Best accuracy on the small decision shape; ~1s/candidate |
-| A small local model (Qwen2.5-1.5B on a 4090 via llama.cpp) | ~0.8s/candidate, notably lower accuracy on ambiguous classes |
+| `chat` (default) | OpenAI-compatible `/v1/chat/completions`; label-only. The model's `confidence` is a decoded token, so it is NOT calibrated. Best for shipping a gate, not for a trust threshold. |
+| `systemone` | TypeSafe/Jev-compatible `/v1/systemone` readout (Choice/Noul/Score -> true per-option `probabilities` + derived, calibrated `confidence`). Use Kev-4B/Decider on your own GPU, or the official TypeSafe API. This is the calibrated path. |
+
+A capable chat model (deepseek-flash on rtx6000, etc.) is a fine `chat` backend
+(~1s/candidate). A small local model (Qwen2.5-1.5B on a 4090 via llama.cpp) is
+~0.8s/candidate but notably lower accuracy on ambiguous classes.
 
 Accuracy matters more than raw speed for a decision gate: a 1.5B model confuses a
 context length (`262144`) or a place name (`Chicago`) for a secret, while a
-stronger model corrects them. Use the stronger backend for corpus-wide scrubbing
-and the small/local one only for a fast in-harness pass.
+stronger model corrects them. Use the calibrated `systemone` backend (Kev) when
+you need to threshold/stage a failing-closed gate; the `confidence` is derived
+from the probability distribution, not a decoded token.
+
+#### systemone (Kev / TypeSafe)
+
+```bash
+# Kev-4B on the 4090 (kev.serve):
+nym decide input.txt \
+  --backend systemone \
+  --endpoint http://100.64.0.9:8009 \
+  --model kev-latest
+
+# Official TypeSafe/Jev API (same contract, different base URL + key):
+# set NYM_DECISION_KEY (or whatever api_key_env is in [decision]) before running
+TYPESAFE_API_KEY=... nym decide input.txt \
+  --backend systemone \
+  --endpoint https://api.typesafe.ai \
+  --model jev-latest
+```
+
+The endpoint may be a bare base URL (`http://host:8009`) or already include the
+path; `/v1/systemone` is appended when needed. The gate sends the chunk as
+`state` with one Choice per candidate (`redact`/`keep`/`flag`), and reads the
+calibrated answer back. No external crate is required.
 
 ## Design notes
 
