@@ -210,20 +210,18 @@ def prelabel(rows, nym_bin, endpoint, model, threshold):
             continue
         verdicts = [d.get("verdict") for d in decisions]
         any_redact = "redact" in verdicts
-        # The class nym assigned to a redacted span, for pre-filling the
-        # judge's class picker (e.g. "credential/secret", "pii", ...).
-        redacted = [d for d in decisions if d.get("verdict") == "redact"]
+        # For stratification and judge pre-fill, capture the class / PII
+        # sub-types nym assigned to ANY span (including ones it judged keep),
+        # not just redacted ones -- the keep-but-really-sensitive surface is
+        # exactly what we want to surface to the labeler.
         nym_class = None
-        for d in redacted:
+        for d in decisions:
             c = d.get("class") or ""
             if c:
                 nym_class = c
                 break
-        # Canonicalize the PII sub-types nym assigned across the span (name,
-        # email, phone, address, ssn/id, dob/date, username/handle, other) so
-        # the judge can pre-fill a multi-select sub-chip row.
         pii_subs = []
-        for d in redacted:
+        for d in decisions:
             sub = pii_sub_class(d.get("class"))
             if sub and sub not in pii_subs:
                 pii_subs.append(sub)
@@ -309,6 +307,107 @@ def gather_hstry_rows(rng, args):
     return rows
 
 
+def heuristic_interest(text):
+    """Independent structural interest score for stratification.
+
+    nym's decision gate under-detects on dev-trace data (it found zero spans
+    across many sessions), so we cannot rely on n_spans to surface the
+    recall-error surface. This regex scorer runs off the raw text and catches
+    the sensitive-in-dev-trace shapes a human would flag: internal paths,
+    usernames/emails, IPs/hostnames, and key/token/BEARER-like strings.
+
+    Returns (score, matched_names) where score is an int weight and
+    matched_names is the list of signals that fired, for display in the judge.
+    """
+    import re
+    matched = []
+    score = 0
+    pats = {
+        "path":     r"(?:/home/|/Users/|/var/|/etc/|/opt/|\\Users\\|C:\\|\\n|src/|/workspace)",
+        "user":     r"\b(?:user(?:name)?|admin|root|operator|svc_?[a-z]|_svc)\b",
+        "email":    r"[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}",
+        "ip":       r"\b(?:\d{1,3}\.){3}\d{1,3}\b",
+        "host":     r"\b(?:[a-z0-9-]+\.)+(?:com|net|org|io|dev|local|internal|corp|lan)",
+        "token":    r"(?:api[_-]?key|secret|token|bearer|authoriz|passw|pwd|aws_|AKIA|BEGIN [A-Z ]+KEY)",
+        "uuid":     r"\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b",
+        "hex":      r"\b[0-9a-f]{16,}\b",
+        "b64":      r"\b[A-Za-z0-9+/]{24,}={0,2}\b",
+        "jwt":      r"\beyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\b",
+        "date":     r"\b\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}",
+    }
+    for name, pat in pats.items():
+        if re.search(pat, text):
+            matched.append(name)
+            score += {"path": 3, "user": 3, "email": 4, "ip": 3, "host": 2,
+                      "token": 5, "uuid": 2, "hex": 2, "b64": 2, "jwt": 5,
+                      "date": 1}.get(name, 1)
+    return min(score, 12), matched
+
+
+def balanced_select(cards, rng, args):
+    """Return a stratified, high-signal subset for human labeling.
+
+    The naive random corpus is ~99% obvious negatives, so most labels confirm
+    'not sensitive' and tell us nothing about the scrubber's recall. Instead
+    we concentrate effort on the cases that actually change nym's behavior.
+
+    Because nym's decision gate under-detects on dev traces (n_spans is often
+    0 even on sensitive-looking text), we stratify primarily on an independent
+    structural heuristic (heuristic_interest) over the raw text:
+
+      Tier A: nym-predicted sensitive (true positives to confirm).
+      Tier B: nym found a span but judged it keep.
+      Tier C: chunks the heuristic flags as interesting (paths, usernames,
+              emails, IPs, tokens) that nym may have missed -- the recall-error
+              surface -- plus a small stratified slice of the benign tail so
+              precision stays calibrated.
+
+    --require-class filters chunks by the nym class if given. --max-cards caps
+    the total (benign slice shrinks to fit).
+    """
+    def interest(c):
+        return c["meta"].get("_interest", 0)
+
+    tier_a = [c for c in cards if c["meta"].get("nym_prediction") == "sensitive"]
+    tier_b = [c for c in cards
+              if c["meta"].get("nym_prediction") != "sensitive"
+              and c["meta"].get("n_spans")]
+    # Everything else, ranked by heuristic interest, split into an
+    # interesting upper band (recall surface) and a benign lower band.
+    rest = [c for c in cards
+            if c not in tier_a and c not in tier_b]
+    for c in rest:
+        sc, why = heuristic_interest(c["text"])
+        c["meta"]["_interest"] = sc
+        c["meta"]["_why"] = why
+    rest.sort(key=lambda c: (-interest(c), c["text"]))
+    interesting = [c for c in rest if interest(c) >= 4]
+    benign_pool = [c for c in rest if interest(c) < 4]
+
+    # Build the set: all of A + B + the interesting band, then take a
+    # benign fraction of the benign pool for calibration.
+    chosen = tier_a + tier_b + interesting
+    rng.shuffle(benign_pool)
+    benign_keep = 0
+    if args.max_cards is not None:
+        benign_keep = max(0, args.max_cards - len(chosen))
+    else:
+        benign_keep = int(round(len(benign_pool) * args.benign_fraction))
+    chosen += benign_pool[:benign_keep]
+
+    # Honor --require-class by filtering the final set (but keep at least a
+    # representative benign slice so the classifier still sees negatives).
+    if args.require_class:
+        def hit(c):
+            cls = (c["meta"].get("class") or "").lower()
+            return any(r in cls for r in args.require_class)
+        kept = [c for c in chosen if hit(c)]
+        # Always retain a small clean subset for calibration.
+        kept += [c for c in chosen if not hit(c)][:max(0, benign_keep)]
+        chosen = kept
+    return chosen
+
+
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--source", action="append", default=None,
@@ -326,8 +425,18 @@ def main(argv=None) -> int:
     ap.add_argument("--shuffle", action="store_true")
     ap.add_argument("--seed", type=int, default=None)
     ap.add_argument("--sensitive-first", action="store_true",
-                    help="order cards so nym-predicted-sensitive (or high-entropy) chunks come first; \
-                         the important corrections surface before the long benign tail")
+                    help="order cards so nym-predicted-sensitive (or high-entropy) chunks come first; the important corrections surface before the long benign tail")
+    ap.add_argument("--balanced", action="store_true",
+                    help="stratified high-signal sample: keep every nym-predicted-sensitive card, "
+                         "every card where nym found a span but judged it keep (the recall-error "
+                         "surface), plus a stratified slice of the benign tail. Targets the cases "
+                         "that actually change the scrubber instead of the obvious negatives.")
+    ap.add_argument("--max-cards", type=int, default=None,
+                    help="cap total balanced cards (default: unlimited; benign tail slice shrinks to fit)")
+    ap.add_argument("--benign-fraction", type=float, default=0.15,
+                    help="balanced mode: fraction of the benign (zero-span) tail to include (default 0.15)")
+    ap.add_argument("--require-class", action="append", default=None,
+                    help="balanced mode: only keep chunks whose nym class contains one of these strings (repeatable), e.g. --require-class username --require-class path")
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--endpoint", default=None, help="decision endpoint for pre-labeling")
     ap.add_argument("--model", default=None, help="decision model id")
@@ -383,6 +492,9 @@ def main(argv=None) -> int:
             return 2
         cards.sort(key=bucket_key)
 
+    if args.balanced:
+        cards = balanced_select(cards, rng, args)
+
     if args.dry_run:
         n_pred = sum(1 for c in cards if c["meta"].get("nym_prediction"))
         print(f"would write {len(cards)} cards to {out} "
@@ -407,7 +519,7 @@ def main(argv=None) -> int:
             written += 1
     n_pred = sum(1 for c in cards if c["meta"].get("nym_prediction"))
     print(f"wrote {written} new cards to {out} (total {len(cards)}, "
-          f"{n_pred} pre-labeled). Swipe at http://100.64.0.12:8511/swipe "
+          f"{n_pred} pre-labeled). Swipe at http://100.64.0.12:8511/sens "
           f"bucket={args.bucket}")
     return 0
 
