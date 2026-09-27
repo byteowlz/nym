@@ -210,10 +210,20 @@ def prelabel(rows, nym_bin, endpoint, model, threshold):
             continue
         verdicts = [d.get("verdict") for d in decisions]
         any_redact = "redact" in verdicts
+        # The class nym assigned to a redacted span, for pre-filling the
+        # judge's class picker (e.g. "credential/secret", "pii", ...).
+        redacted = [d for d in decisions if d.get("verdict") == "redact"]
+        nym_class = None
+        for d in redacted:
+            c = d.get("class") or ""
+            if c:
+                nym_class = c
+                break
         row["_pred"] = {
             "nym_prediction": "sensitive" if any_redact else "not_sensitive",
             "nym_verdicts": verdicts,
             "n_spans": len(decisions),
+            "class": nym_class,
         }
 
 
