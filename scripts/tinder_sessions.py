@@ -190,48 +190,84 @@ def hstry_export_to_pi(convs, out_dir: Path):
 # pre-labeling with nym
 # --------------------------------------------------------------------------
 
-def prelabel(rows, nym_bin, endpoint, model, threshold):
+def _apply_pred(row, decisions):
+    """Compute a pre-label dict from nym's decisions and store it on a row."""
+    verdicts = [d.get("verdict") for d in decisions]
+    any_redact = "redact" in verdicts
+    # For stratification and judge pre-fill, capture the class / PII
+    # sub-types nym assigned to ANY span (including ones it judged keep),
+    # not just redacted ones -- the keep-but-really-sensitive surface is
+    # exactly what we want to surface to the labeler.
+    nym_class = None
+    for d in decisions:
+        c = d.get("class") or ""
+        if c:
+            nym_class = c
+            break
+    pii_subs = []
+    for d in decisions:
+        sub = pii_sub_class(d.get("class"))
+        if sub and sub not in pii_subs:
+            pii_subs.append(sub)
+    row["_pred"] = {
+        "nym_prediction": "sensitive" if any_redact else "not_sensitive",
+        "nym_verdicts": verdicts,
+        "n_spans": len(decisions),
+        "class": nym_class,
+        "pii_subs": pii_subs,
+    }
+
+
+def prelabel(rows, nym_bin, endpoint, model, threshold, backend=None, fast=False):
     """Pre-label each chunk with nym `decide`.
 
     No-op if endpoint is unset (the loop still works unlabeled).
+
+    Uses `--jsonl` batch mode so all chunks go through a single `nym` process,
+    amortizing the startup + detector init (one process per chunk is ~0.9s of
+    pure overhead). Chunks are processed line-by-line; results map back to rows.
+    `backend` is passed through to `nym decide` (default: the `chat` backend).
+    `fast` writes a temp config that sets a large `batch_size` (so all of a
+    chunk's candidates go in one request) and disables the high-entropy
+    backstop (the expensive per-chunk scan) -- for the labeling sweep.
     """
     if not endpoint:
         return
-    for row in rows:
-        txt = row["_text"]
-        open("/tmp/_nym_row.txt", "w").write(txt)
-        cmd = [nym_bin, "decide", "/tmp/_nym_row.txt",
-               "--endpoint", endpoint, "--model", model,
-               "--threshold", str(threshold), "--output-json"]
+    config_path = None
+    if fast:
+        cfg = (
+            "[decision]\n"
+            "enabled = true\n"
+            "batch_size = 4096\n"  # all candidates of a chunk in one request
+            "entropy_backstop = false\n"  # skip the expensive per-chunk scan
+        )
+        config_path = "/tmp/_nym_fast.toml"
+        open(config_path, "w").write(cfg)
+    # Write chunks as line-delimited JSON, in row order, to a temp file.
+    batch = "\n".join(json.dumps({"text": r["_text"]}) for r in rows)
+    infile = "/tmp/_nym_batch.jsonl"
+    open(infile, "w").write(batch)
+    cmd = [nym_bin, "decide", "--jsonl",
+           "--endpoint", endpoint, "--model", model,
+           "--threshold", str(threshold)]
+    if backend:
+        cmd += ["--backend", backend]
+    if config_path:
+        cmd += ["--config", config_path]
+    # Output is one JSON object per input line, in order.
+    try:
+        out = subprocess.run(cmd, stdin=open(infile), capture_output=True, text=True, timeout=7200)
+        lines = [l for l in out.stdout.splitlines() if l.strip()]
+    except Exception:
+        lines = []
+    for i, row in enumerate(rows):
+        if i >= len(lines):
+            continue
         try:
-            out = subprocess.run(cmd, capture_output=True, text=True, timeout=90)
-            decisions = json.loads(out.stdout or "[]")
+            decisions = json.loads(lines[i])
         except Exception:
             continue
-        verdicts = [d.get("verdict") for d in decisions]
-        any_redact = "redact" in verdicts
-        # For stratification and judge pre-fill, capture the class / PII
-        # sub-types nym assigned to ANY span (including ones it judged keep),
-        # not just redacted ones -- the keep-but-really-sensitive surface is
-        # exactly what we want to surface to the labeler.
-        nym_class = None
-        for d in decisions:
-            c = d.get("class") or ""
-            if c:
-                nym_class = c
-                break
-        pii_subs = []
-        for d in decisions:
-            sub = pii_sub_class(d.get("class"))
-            if sub and sub not in pii_subs:
-                pii_subs.append(sub)
-        row["_pred"] = {
-            "nym_prediction": "sensitive" if any_redact else "not_sensitive",
-            "nym_verdicts": verdicts,
-            "n_spans": len(decisions),
-            "class": nym_class,
-            "pii_subs": pii_subs,
-        }
+        _apply_pred(row, decisions)
 
 
 def pii_sub_class(cls: str):
@@ -440,6 +476,12 @@ def main(argv=None) -> int:
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--endpoint", default=None, help="decision endpoint for pre-labeling")
     ap.add_argument("--model", default=None, help="decision model id")
+    ap.add_argument("--backend", default=None, help="decision backend for pre-labeling (chat | systemone)")
+    ap.add_argument("--entropy-backstop", action="store_true",
+                    help="enable the high-entropy unlabeled-secret backstop during pre-labeling (default off for speed)")
+    ap.add_argument("--config", default=None, help="path to a nym config toml (overrides for pre-labeling)")
+    ap.add_argument("--fast", action="store_true",
+                    help="pre-label fast: batch all candidates per chunk into one request (large batch_size) and turn the high-entropy backstop off. Use for the labeling sweep; keep entropy on for the real scrub pass.")
     ap.add_argument("--threshold", type=float, default=0.5)
     ap.add_argument("--nym", default=NYM_BIN)
     args = ap.parse_args(argv)
@@ -464,7 +506,7 @@ def main(argv=None) -> int:
         print("no chunks produced from the given sources", file=sys.stderr)
         return 1
 
-    prelabel(rows, args.nym, args.endpoint, args.model, args.threshold)
+    prelabel(rows, args.nym, args.endpoint, args.model, args.threshold, args.backend, fast=args.fast)
 
     # De-duplicate by text so the same span isn't judged twice.
     seen = set()
