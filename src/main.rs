@@ -639,6 +639,12 @@ struct DecideCommand {
     #[arg(long)]
     json: bool,
 
+    /// Batch mode: read line-delimited `{"text": ...}` chunks from stdin (or
+    /// the input file) and emit one JSON object per line, reusing a single
+    /// process so the startup cost is amortized across all chunks.
+    #[arg(long)]
+    jsonl: bool,
+
     /// Output as JSON
     #[arg(long)]
     output_json: bool,
@@ -1461,26 +1467,6 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
 
     let input_text = read_input(cmd.input.as_ref())?;
 
-    // Build a detector config from the user's general settings (like `detect`).
-    let min_confidence = config.detection.min_confidence.into();
-    let mut detector_config = DetectorConfig::default().with_min_confidence(min_confidence);
-
-    if !config.detection.enabled_patterns.is_empty() {
-        detector_config =
-            detector_config.with_patterns(config.detection.enabled_patterns.iter().cloned());
-    }
-    if !config.detection.disabled_patterns.is_empty() {
-        detector_config =
-            detector_config.without_patterns(config.detection.disabled_patterns.iter().cloned());
-    }
-
-    let ner_enabled = !cmd.no_ner && config.ner.enabled;
-    detector_config = detector_config.with_ner(ner_enabled);
-    detector_config = apply_ner_backend(detector_config, &config.ner);
-
-    let detector = Detector::new(&detector_config);
-    let matches = detector.detect(&input_text);
-
     // Resolve the decision configuration: CLI args override config.
     let mut dc = config.decision.clone();
     if let Some(ref ep) = cmd.endpoint {
@@ -1497,13 +1483,36 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
     }
     dc.enabled = true;
     dc.api_key_env = config.decision.api_key_env.clone();
-    if let Some(b) = cmd.backend {
-        dc.backend = b;
+    if let Some(ref b) = cmd.backend {
+        dc.backend = b.clone();
+    }
+
+    // Batch mode: process each line of `{"text": ...}` input in one process,
+    // emitting one JSON object per line. Amortizes startup + detector init
+    // across every chunk instead of spawning a process per chunk.
+    if cmd.jsonl {
+        let gate = DecisionGate::new(dc);
+        for line in input_text.lines() {
+            let line = line.trim();
+            if line.is_empty() {
+                continue;
+            }
+            let chunk = match serde_json::from_str::<serde_json::Value>(line) {
+                Ok(v) => v
+                    .get("text")
+                    .and_then(|t| t.as_str())
+                    .unwrap_or_default()
+                    .to_string(),
+                Err(_) => line.to_string(),
+            };
+            let decisions = decide_one(&gate, &chunk, &config, &cmd)?;
+            println!("{}", serde_json::to_string(&decisions)?);
+        }
+        return Ok(());
     }
 
     let gate = DecisionGate::new(dc);
-    let candidates = gate.candidates(&input_text, &matches);
-    let decisions = gate.adjudicate(&input_text, candidates)?;
+    let decisions = decide_one(&gate, &input_text, &config, &cmd)?;
 
     if cmd.output_json {
         println!("{}", serde_json::to_string_pretty(&decisions)?);
@@ -1525,6 +1534,28 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
         }
     }
     Ok(())
+}
+
+/// Run detection + adjudication for one chunk and return its decisions.
+fn decide_one(gate: &engine::DecisionGate, input_text: &str, config: &Config, cmd: &DecideCommand) -> Result<Vec<engine::Decision>> {
+
+    let min_confidence = config.detection.min_confidence.into();
+    let mut detector_config = DetectorConfig::default().with_min_confidence(min_confidence);
+    if !config.detection.enabled_patterns.is_empty() {
+        detector_config =
+            detector_config.with_patterns(config.detection.enabled_patterns.iter().cloned());
+    }
+    if !config.detection.disabled_patterns.is_empty() {
+        detector_config =
+            detector_config.without_patterns(config.detection.disabled_patterns.iter().cloned());
+    }
+    let ner_enabled = !cmd.no_ner && config.ner.enabled;
+    detector_config = detector_config.with_ner(ner_enabled);
+    detector_config = apply_ner_backend(detector_config, &config.ner);
+    let detector = Detector::new(&detector_config);
+    let matches = detector.detect(input_text);
+    let candidates = gate.candidates(input_text, &matches);
+    gate.adjudicate(input_text, candidates)
 }
 
 fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Result<()> {
