@@ -219,12 +219,47 @@ def prelabel(rows, nym_bin, endpoint, model, threshold):
             if c:
                 nym_class = c
                 break
+        # Canonicalize the PII sub-types nym assigned across the span (name,
+        # email, phone, address, ssn/id, dob/date, username/handle, other) so
+        # the judge can pre-fill a multi-select sub-chip row.
+        pii_subs = []
+        for d in redacted:
+            sub = pii_sub_class(d.get("class"))
+            if sub and sub not in pii_subs:
+                pii_subs.append(sub)
         row["_pred"] = {
             "nym_prediction": "sensitive" if any_redact else "not_sensitive",
             "nym_verdicts": verdicts,
             "n_spans": len(decisions),
             "class": nym_class,
+            "pii_subs": pii_subs,
         }
+
+
+def pii_sub_class(cls: str):
+    """Map nym's free-text class onto a canonical PII sub-tag (or None if it
+    is not PII).
+    """
+    if not cls:
+        return None
+    l = cls.lower()
+    if "email" in l:
+        return "email"
+    if "phone" in l or "mobile" in l or "tel" in l:
+        return "phone"
+    if "ssn" in l or "national" in l or "passport" in l or "driver" in l or "license" in l:
+        return "id"
+    if "address" in l or "street" in l or "city" in l or "geo" in l or "zip" in l:
+        return "address"
+    if "dob" in l or "birth" in l or "date" in l or "age" in l:
+        return "dob"
+    if "username" in l or "handle" in l or "user" in l:
+        return "username"
+    if "company" in l or "org" in l:
+        return "org"
+    if "pii" in l or "name" in l or "person" in l:
+        return "name"
+    return "other"
 
 
 # --------------------------------------------------------------------------
