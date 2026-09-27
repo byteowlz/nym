@@ -616,6 +616,12 @@ struct DecideCommand {
     #[arg(long, value_name = "MODEL")]
     model: Option<String>,
 
+    /// Decision backend. `chat` = OpenAI-compatible /v1/chat/completions
+    /// (label-only); `systemone` = TypeSafe/Jev /v1/systemone (calibrated
+    /// Choice/Noul/Score readout).
+    #[arg(long, value_name = "BACKEND")]
+    backend: Option<String>,
+
     /// p(secret) at or above which a candidate is adjudicated `redact`
     #[arg(long, value_name = "THRESHOLD")]
     threshold: Option<f32>,
@@ -1491,6 +1497,9 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
     }
     dc.enabled = true;
     dc.api_key_env = config.decision.api_key_env.clone();
+    if let Some(b) = cmd.backend {
+        dc.backend = b;
+    }
 
     let gate = DecisionGate::new(dc);
     let candidates = gate.candidates(&input_text, &matches);

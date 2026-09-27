@@ -98,6 +98,12 @@ pub struct DecisionConfig {
     pub entropy_backstop: bool,
     /// Batch size for a single HTTP request (how many candidates asked at once).
     pub batch_size: usize,
+    /// Decision backend. `chat` = OpenAI-compatible `/v1/chat/completions`
+    /// (label-only, decoded-token confidence, NOT calibrated).
+    /// `systemone` = TypeSafe/Jev-compatible `/v1/systemone` (Choice/Noul/Score
+    /// readout -> true per-option probabilities + derived confidence).
+    /// Defaults to `chat`.
+    pub backend: String,
 }
 
 impl Default for DecisionConfig {
@@ -113,6 +119,7 @@ impl Default for DecisionConfig {
             max_candidates: 0,
             entropy_backstop: true,
             batch_size: 1,
+            backend: "chat".to_string(),
         }
     }
 }
@@ -192,6 +199,82 @@ struct ModelAnswer {
         reason = "model may supply is_secret; kept for forward-compat"
     )]
     is_secret: Option<bool>,
+}
+
+/// Response envelope from a TypeSafe/Jev-compatible `/v1/systemone` endpoint.
+#[derive(Deserialize)]
+struct SystemOneResponse {
+    answers: std::collections::HashMap<String, SystemOneAnswer>,
+}
+
+/// One typed answer from a `/v1/systemone` endpoint.
+///
+/// We send a `choice` per candidate (criteria `redact`/`keep`/`flag`), so the
+/// answer carries `choice` + `probabilities` + `confidence`. Noul and Score
+/// variants are supported structurally but are not used by the gate's choice
+/// contract.
+#[derive(Deserialize)]
+struct SystemOneAnswer {
+    #[serde(rename = "type")]
+    qtype: String,
+    #[serde(default)]
+    choice: Option<String>,
+    #[serde(default)]
+    noul: Option<f32>,
+    #[serde(default)]
+    score: Option<f32>,
+    #[serde(default)]
+    confidence: Option<f32>,
+    #[serde(default)]
+    probabilities: std::collections::HashMap<String, f32>,
+}
+
+impl SystemOneAnswer {
+    /// Map a typed Jev answer onto a [`ModelAnswer`] so the existing
+    /// [`apply_answer`] logic can consume it unchanged.
+    ///
+    /// For a `choice` we take `choice` as the verdict option
+    /// (`redact`/`keep`/`flag`), the option probability as confidence, and the
+    /// most-probable other option's class via the option key. For `noul` we
+    /// threshold the 0-1 value against 0.5 to derive a redact/keep verdict. For
+    /// `score` we treat the expected value as a confidence-like signal.
+    fn as_decision(&self) -> Option<ModelAnswer> {
+        match self.qtype.as_str() {
+            "choice" => {
+                // Verdict option = the chosen criteria key (redact/keep/flag).
+                let verdict = self.choice.clone()?;
+                let confidence = self.confidence.unwrap_or(0.0);
+                Some(ModelAnswer {
+                    index: None,
+                    verdict: verdict.clone(),
+                    // Class option = most-probable non-choice option; fall back
+                    // to the choice option itself (already the verdict).
+                    class: self
+                        .probabilities
+                        .iter()
+                        .max_by(|a, b| a.1.partial_cmp(b.1).expect("finite"))
+                        .map(|(k, _)| k.clone())
+                        .unwrap_or_else(|| verdict.clone()),
+                    confidence,
+                    reason: None,
+                    is_secret: None,
+                })
+            }
+            "noul" => {
+                // 0-1 value; threshold at 0.5 into a redact/keep verdict.
+                let v = self.noul.unwrap_or(0.5);
+                Some(ModelAnswer {
+                    index: None,
+                    verdict: if v >= 0.5 { "redact" } else { "keep" }.to_string(),
+                    class: if v >= 0.5 { "secret" } else { "benign" }.to_string(),
+                    confidence: v,
+                    reason: None,
+                    is_secret: None,
+                })
+            }
+            _ => None,
+        }
+    }
 }
 
 /// The decision-model adjudicator.
@@ -276,25 +359,128 @@ impl DecisionGate {
 
         let mut out = Vec::new();
         for chunk in candidates.chunks(self.config.batch_size.max(1)) {
-            let prompt = self.build_prompt(text, chunk);
-            let answers = self.ask(&prompt)?;
-            for (i, cand) in chunk.iter().enumerate() {
-                let mut decision = cand.clone();
-                // Prefer the model's stated index when it supplies one;
-                // otherwise fall back to positional order. A candidate the
-                // model did not answer stays a `Flag` (unsure) rather than a
-                // hard redact/keep, so nothing is silently decided.
-                let ans = answers
-                    .iter()
-                    .find(|a| a.index == Some(i))
-                    .or_else(|| answers.get(i));
-                if let Some(ans) = ans {
-                    apply_answer(&mut decision, ans, self.config.threshold);
-                } else {
-                    decision.verdict = Verdict::Flag;
-                    decision.reason = Some("no model answer".to_string());
+            if self.config.backend.eq_ignore_ascii_case("systemone") {
+                // TypeSafe/Jev-compatible readout: send the whole chunk as
+                // `state`, one Choice per candidate, over the /v1/systemone
+                // endpoint. Returns true per-option probabilities and a
+                // derived (calibrated) confidence.
+                let answers = self.ask_systemone(text, chunk)?;
+                for (i, cand) in chunk.iter().enumerate() {
+                    let mut decision = cand.clone();
+                    if let Some(ans) = answers.get(&i) {
+                        apply_answer(&mut decision, ans, self.config.threshold);
+                    } else {
+                        decision.verdict = Verdict::Flag;
+                        decision.reason = Some("no systemone answer".to_string());
+                    }
+                    out.push(decision);
                 }
-                out.push(decision);
+            } else {
+                let prompt = self.build_prompt(text, chunk);
+                let answers = self.ask(&prompt)?;
+                for (i, cand) in chunk.iter().enumerate() {
+                    let mut decision = cand.clone();
+                    // Prefer the model's stated index when it supplies one;
+                    // otherwise fall back to positional order. A candidate the
+                    // model did not answer stays a `Flag` (unsure) rather than a
+                    // hard redact/keep, so nothing is silently decided.
+                    let ans = answers
+                        .iter()
+                        .find(|a| a.index == Some(i))
+                        .or_else(|| answers.get(i));
+                    if let Some(ans) = ans {
+                        apply_answer(&mut decision, ans, self.config.threshold);
+                    } else {
+                        decision.verdict = Verdict::Flag;
+                        decision.reason = Some("no model answer".to_string());
+                    }
+                    out.push(decision);
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    /// Ask a TypeSafe/Jev-compatible `/v1/systemone` endpoint.
+    ///
+    /// Sends `state = <text>` with one `choice` question per candidate in the
+    /// chunk (criteria: `redact` / `keep` / `flag`). The response's `answers`
+    /// map is keyed by the question ids we sent, so we map back by index.
+    /// This is the calibrated readout path: probabilities + derived confidence,
+    /// unlike the chat backend's decoded-token confidence.
+    fn ask_systemone(&self, text: &str, candidates: &[Decision]) -> Result<std::collections::HashMap<usize, ModelAnswer>> {
+        let mut questions = serde_json::Map::new();
+        for (i, cand) in candidates.iter().enumerate() {
+            let span = cand.text.clone();
+            let ctx = context_around(text, cand, self.config.context_chars);
+            let instructions = format!(
+                "Adjudicate the span `{}` (in the state) as a secret/credential/PII. \
+                 Context: ...{}...",
+                span, ctx
+            );
+            let mut criteria = serde_json::Map::new();
+            criteria.insert("redact".to_string(), serde_json::json!("Real secret/credential/PII; must be redacted"));
+            criteria.insert("keep".to_string(), serde_json::json!("Benign code, path, uuid, checksum, or example; safe to keep"));
+            criteria.insert("flag".to_string(), serde_json::json!("Uncertain; ambiguous identifiers, review manually"));
+            let q = serde_json::json!({
+                "type": "choice",
+                "instructions": instructions,
+                "criteria": criteria,
+            });
+            questions.insert(format!("cand_{}", i), q);
+        }
+        let body = serde_json::json!({
+            "state": text,
+            "model": self.config.model,
+            "questions": questions,
+        });
+        let body_str = serde_json::to_string(&body).context("serializing systemone request")?;
+        let timeout = Duration::from_secs(self.config.timeout_secs.max(1));
+        // The `endpoint` may be a base URL (e.g. http://host:8009) or already
+        // include the path. Accept either; append /v1/systemone if needed.
+        let base = self.config.endpoint.trim_end_matches('/');
+        let url = if base.ends_with("/v1/systemone") || base.ends_with("/systemone") {
+            base.to_string()
+        } else {
+            format!("{}/v1/systemone", base)
+        };
+        let mut req = ureq::post(&url)
+            .config()
+            .timeout_global(Some(timeout))
+            .build()
+            .header("Content-Type", "application/json");
+        if let Some(ref env_name) = self.config.api_key_env {
+            let key = std::env::var(env_name)
+                .map_err(|_| anyhow!("decision api_key_env '{env_name}' not set"))?;
+            req = req.header("Authorization", &format!("Bearer {key}"));
+        }
+        let mut resp = req
+            .send(body_str.as_str())
+            .map_err(|e| anyhow!("systemone request failed: {e}"))?;
+        let content = resp.body_mut().read_to_string().context("reading systemone response")?;
+        if std::env::var("NYM_DEBUG_DECISION").is_ok() {
+            eprintln!("[decision] systemone:");
+            eprintln!("{}", serde_json::to_string_pretty(&body)?);
+            eprintln!("[decision] systemone reply:\n{content}");
+        }
+        let parsed: SystemOneResponse = serde_json::from_str(&content)
+            .context("parsing systemone response")?;
+        let mut out = std::collections::HashMap::new();
+        for (i, _cand) in candidates.iter().enumerate() {
+            let key = format!("cand_{}", i);
+            let ans = parsed.answers.get(&key);
+            let ma = ans.and_then(|a| a.as_decision());
+            if let Some(ma) = ma {
+                out.insert(i, ma);
+            } else {
+                out.insert(i, ModelAnswer {
+                    index: Some(i),
+                    verdict: "flag".to_string(),
+                    class: "unlabeled".to_string(),
+                    confidence: 0.0,
+                    reason: Some("no answer".to_string()),
+                    is_secret: None,
+                });
             }
         }
         Ok(out)
@@ -533,6 +719,7 @@ static TOKEN_ISH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn ans(verdict: &str, class: &str, conf: f32) -> ModelAnswer {
         ModelAnswer {
@@ -601,6 +788,85 @@ mod tests {
         apply_answer(&mut d, &ans("keep", "example", 0.9), 0.5);
         assert_eq!(d.verdict, Verdict::Keep);
         assert_eq!(d.class, "example");
+    }
+
+    #[test]
+    fn systemone_choice_maps_verdict_and_confidence() {
+        // A real Jev/Kev `/v1/systemone` choice answer.
+        let a = SystemOneAnswer {
+            qtype: "choice".into(),
+            choice: Some("redact".into()),
+            noul: None,
+            score: None,
+            confidence: Some(0.76),
+            probabilities: vec![
+                ("redact".to_string(), 0.84),
+                ("keep".to_string(), 0.03),
+                ("flag".to_string(), 0.12),
+            ]
+            .into_iter()
+            .collect(),
+        };
+        let ma = a.as_decision().expect("choice answer should map");
+        assert_eq!(ma.verdict, "redact");
+        assert_eq!(ma.confidence, 0.76);
+        // Class becomes the most-probable option (the chosen one here).
+        assert_eq!(ma.class, "redact");
+    }
+
+    #[test]
+    fn systemone_noul_thresholds_to_verdict() {
+        let yes = SystemOneAnswer {
+            qtype: "noul".into(),
+            choice: None,
+            noul: Some(0.9),
+            score: None,
+            confidence: None,
+            probabilities: HashMap::new(),
+        };
+        let ma = yes.as_decision().expect("noul answer should map");
+        assert_eq!(ma.verdict, "redact");
+        assert_eq!(ma.confidence, 0.9);
+
+        let no = SystemOneAnswer {
+            qtype: "noul".into(),
+            choice: None,
+            noul: Some(0.2),
+            score: None,
+            confidence: None,
+            probabilities: HashMap::new(),
+        };
+        let ma2 = no.as_decision().unwrap();
+        assert_eq!(ma2.verdict, "keep");
+    }
+
+    #[test]
+    fn systemone_unknown_type_yields_none() {
+        let a = SystemOneAnswer {
+            qtype: "score".into(),
+            choice: None,
+            noul: None,
+            score: Some(1.37),
+            confidence: Some(0.34),
+            probabilities: HashMap::new(),
+        };
+        assert!(a.as_decision().is_none());
+    }
+
+    #[test]
+    fn systemone_response_parses_answers_by_question_id() {
+        let raw = r##"{"model":"kev-latest","answers":{
+            "cand_0":{"type":"choice","choice":"redact","confidence":0.76,
+                       "probabilities":{"redact":0.84,"keep":0.03,"flag":0.12}},
+            "cand_1":{"type":"choice","choice":"keep","confidence":0.9,
+                       "probabilities":{"redact":0.02,"keep":0.93,"flag":0.05}}
+        },"usage":{"input_tokens":227,"output_tokens":179}}"##;
+        let resp: SystemOneResponse = serde_json::from_str(raw).expect("parse");
+        assert!(resp.answers.contains_key("cand_0"));
+        let a0 = resp.answers["cand_0"].as_decision().unwrap();
+        assert_eq!(a0.verdict, "redact");
+        let a1 = resp.answers["cand_1"].as_decision().unwrap();
+        assert_eq!(a1.verdict, "keep");
     }
 
     #[test]
