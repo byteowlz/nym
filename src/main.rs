@@ -68,6 +68,8 @@ fn try_main() -> Result<()> {
         Command::Anon(cmd) => handle_anon(&cli.common, &config, cmd),
         Command::Deanon(cmd) => handle_deanon(&cli.common, cmd),
         Command::Detect(cmd) => handle_detect(&cli.common, &config, cmd),
+        #[cfg(feature = "decision")]
+        Command::Decide(cmd) => handle_decide(&cli.common, &config, cmd),
         Command::Patterns(cmd) => handle_patterns(&cli.common, cmd),
         Command::Config(cmd) => handle_config(&cli.common, &config, cmd),
         Command::Sessions(cmd) => handle_sessions(&cli.common, cmd),
@@ -250,6 +252,14 @@ enum Command {
 
     /// Detect PII without modifying the text
     Detect(DetectCommand),
+
+    /// Decide whether detected spans are real secrets using a decision model.
+    /// Adjudicates regex + NER + high-entropy candidates against an
+    /// OpenAI-compatible endpoint, returning a keep/redact/flag verdict per
+    /// span so a downstream scrubber can veto over-redactions and catch
+    /// unlabeled secrets. Requires the `decision` feature.
+    #[cfg(feature = "decision")]
+    Decide(DecideCommand),
 
     /// List and inspect available PII patterns
     Patterns(PatternsCommand),
@@ -584,6 +594,51 @@ struct DetectCommand {
 }
 
 // -----------------------------------------------------------------------------
+// Decide Command
+// -----------------------------------------------------------------------------
+
+/// Adjudicate detected spans with a decision model (keep/redact/flag).
+#[derive(Debug, Clone, Args)]
+struct DecideCommand {
+    /// Input file (reads from stdin if not specified)
+    #[arg(value_name = "INPUT")]
+    input: Option<PathBuf>,
+
+    /// Input format (auto-detected from extension if not specified)
+    #[arg(short = 'f', long, value_enum)]
+    format: Option<FormatArg>,
+
+    /// Decision endpoint (overrides [decision] endpoint)
+    #[arg(long, value_name = "URL")]
+    endpoint: Option<String>,
+
+    /// Decision model id (overrides [decision] model)
+    #[arg(long, value_name = "MODEL")]
+    model: Option<String>,
+
+    /// p(secret) at or above which a candidate is adjudicated `redact`
+    #[arg(long, value_name = "THRESHOLD")]
+    threshold: Option<f32>,
+
+    /// Max number of candidates to adjudicate (0 = unlimited)
+    #[arg(long, value_name = "N")]
+    max_candidates: Option<usize>,
+
+    /// Disable NER-based detection (defaults to config; `decide` always runs
+    /// the deterministic detector, and enables NER only if configured on)
+    #[arg(long)]
+    no_ner: bool,
+
+    /// JSON input (per-record JSONL is handled as line-delimited)
+    #[arg(long)]
+    json: bool,
+
+    /// Output as JSON
+    #[arg(long)]
+    output_json: bool,
+}
+
+// -----------------------------------------------------------------------------
 // Patterns Command
 // -----------------------------------------------------------------------------
 
@@ -882,7 +937,10 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
 
         if replacements.is_empty() {
             if !common.quiet {
-                eprintln!("No PII detected; unmodified copy written to: {}", out_path.display());
+                eprintln!(
+                    "No PII detected; unmodified copy written to: {}",
+                    out_path.display()
+                );
             }
             return Ok(());
         }
@@ -926,7 +984,10 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
                 fs::write(&out_path, &bytes)
                     .with_context(|| format!("Failed to write output: {}", out_path.display()))?;
                 if !common.quiet {
-                    eprintln!("No PII recognized; unmodified copy written to: {}", out_path.display());
+                    eprintln!(
+                        "No PII recognized; unmodified copy written to: {}",
+                        out_path.display()
+                    );
                 }
             }
             Some(red) => {
@@ -993,7 +1054,9 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         }
         #[cfg(not(feature = "ocr"))]
         if cmd.ocr {
-            return Err(anyhow!("--ocr requires nym to be built with the `ocr` feature"));
+            return Err(anyhow!(
+                "--ocr requires nym to be built with the `ocr` feature"
+            ));
         }
 
         let out_path = cmd
@@ -1021,12 +1084,18 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
                 );
             }
             if report.metadata_scrubbed > 0 {
-                eprintln!("Scrubbed {} metadata/annotation field(s).", report.metadata_scrubbed);
+                eprintln!(
+                    "Scrubbed {} metadata/annotation field(s).",
+                    report.metadata_scrubbed
+                );
             }
         }
         if replacements.is_empty() {
             if !common.quiet {
-                eprintln!("No PII detected; document rewritten to: {}", out_path.display());
+                eprintln!(
+                    "No PII detected; document rewritten to: {}",
+                    out_path.display()
+                );
             }
             return Ok(());
         }
@@ -1228,7 +1297,11 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
     use std::io::BufRead;
 
     // PDF and raster-image redaction are destructive by design.
-    if cmd.input.as_ref().is_some_and(|p| engine::pdf::is_pdf_path(p)) {
+    if cmd
+        .input
+        .as_ref()
+        .is_some_and(|p| engine::pdf::is_pdf_path(p))
+    {
         return Err(anyhow!(
             "PDF redaction is destructive (text is removed from the file); \
              deanonymization is not possible. Keep the original PDF instead."
@@ -1367,6 +1440,84 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
     Ok(())
 }
 
+/// Adjudicate detected spans against a decision model.
+///
+/// `decide` runs the deterministic detector (regex + optional NER) plus the
+/// high-entropy unlabeled-secret backstop, then asks an OpenAI-compatible
+/// decision endpoint whether each candidate is a real secret (`redact`),
+/// benign (`keep`), or ambiguous (`flag`). It is the residual gate for the
+/// secrets and PII that carry no name and no recognisable structure.
+///
+/// The original input is never rewritten -- `decide` only reports decisions.
+#[cfg(feature = "decision")]
+fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> Result<()> {
+    use engine::DecisionGate;
+
+    let input_text = read_input(cmd.input.as_ref())?;
+
+    // Build a detector config from the user's general settings (like `detect`).
+    let min_confidence = config.detection.min_confidence.into();
+    let mut detector_config = DetectorConfig::default().with_min_confidence(min_confidence);
+
+    if !config.detection.enabled_patterns.is_empty() {
+        detector_config =
+            detector_config.with_patterns(config.detection.enabled_patterns.iter().cloned());
+    }
+    if !config.detection.disabled_patterns.is_empty() {
+        detector_config =
+            detector_config.without_patterns(config.detection.disabled_patterns.iter().cloned());
+    }
+
+    let ner_enabled = !cmd.no_ner && config.ner.enabled;
+    detector_config = detector_config.with_ner(ner_enabled);
+    detector_config = apply_ner_backend(detector_config, &config.ner);
+
+    let detector = Detector::new(&detector_config);
+    let matches = detector.detect(&input_text);
+
+    // Resolve the decision configuration: CLI args override config.
+    let mut dc = config.decision.clone();
+    if let Some(ref ep) = cmd.endpoint {
+        dc.endpoint = ep.clone();
+    }
+    if let Some(ref model) = cmd.model {
+        dc.model = model.clone();
+    }
+    if let Some(t) = cmd.threshold {
+        dc.threshold = t;
+    }
+    if let Some(n) = cmd.max_candidates {
+        dc.max_candidates = n;
+    }
+    dc.enabled = true;
+    dc.api_key_env = config.decision.api_key_env.clone();
+
+    let gate = DecisionGate::new(dc);
+    let candidates = gate.candidates(&input_text, &matches);
+    let decisions = gate.adjudicate(&input_text, candidates)?;
+
+    if cmd.output_json {
+        println!("{}", serde_json::to_string_pretty(&decisions)?);
+    } else {
+        for d in &decisions {
+            let verdict = match d.verdict {
+                engine::Verdict::Redact => "redact",
+                engine::Verdict::Keep => "keep",
+                engine::Verdict::Flag => "flag",
+            };
+            let span = match (d.start, d.end) {
+                (Some(s), Some(e)) => format!("{s}..{e}"),
+                _ => "?".to_string(),
+            };
+            println!(
+                "[{verdict:6}] {span:>12}  {:<12}  conf={:.2}  {}",
+                d.class, d.confidence, d.text
+            );
+        }
+    }
+    Ok(())
+}
+
 fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Result<()> {
     // Check for streaming mode
     #[cfg(feature = "streaming")]
@@ -1424,7 +1575,9 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
         }
         #[cfg(not(feature = "ocr"))]
         if cmd.ocr {
-            return Err(anyhow!("--ocr requires nym to be built with the `ocr` feature"));
+            return Err(anyhow!(
+                "--ocr requires nym to be built with the `ocr` feature"
+            ));
         }
         text
     } else {
@@ -2025,7 +2178,10 @@ fn models_list(common: &CommonOpts, config: &Config) -> Result<()> {
     let models = model_catalog::load();
     let cache_dir = ner_cache_dir(config);
     let (tok_default, gli_default) = current_defaults(config);
-    let tokens_active = matches!(config.ner.backend, NerBackend::TokenClass | NerBackend::Both);
+    let tokens_active = matches!(
+        config.ner.backend,
+        NerBackend::TokenClass | NerBackend::Both
+    );
     let gliner_active = matches!(config.ner.backend, NerBackend::Gliner | NerBackend::Both);
 
     if common.json {
@@ -2162,7 +2318,11 @@ fn apply_default_model(config: &Config, m: &CatalogModel) -> Result<()> {
     let cache_dir = ner_cache_dir(config);
     let backend = if m.is_tokens() { "tokens" } else { "gliner" };
     let path = set_default_model(m)?;
-    let field = if m.is_tokens() { "token_model" } else { "model" };
+    let field = if m.is_tokens() {
+        "token_model"
+    } else {
+        "model"
+    };
     println!("[ner] {field} = \"{}\"", m.slug);
     eprintln!("[ner] backend = \"{backend}\"");
     eprintln!("[ner] enabled = true");
@@ -2171,7 +2331,10 @@ fn apply_default_model(config: &Config, m: &CatalogModel) -> Result<()> {
         "(now running only the {backend} backend; set [ner] backend = \"both\" to also run the other)"
     );
     if !m.is_cached(cache_dir.as_deref()) {
-        eprintln!("(not downloaded yet — it will fetch on first use, or run `nym models pull {}`)", m.slug);
+        eprintln!(
+            "(not downloaded yet — it will fetch on first use, or run `nym models pull {}`)",
+            m.slug
+        );
     }
     Ok(())
 }
@@ -2206,12 +2369,15 @@ fn set_default_model(m: &CatalogModel) -> Result<PathBuf> {
     // Switch to the selected model's backend so `use X` runs X alone, rather
     // than also paying for the other backend (e.g. the 1.1 GB GLiNER model).
     ner["backend"] = value(if m.is_tokens() { "tokens" } else { "gliner" });
-    let field = if m.is_tokens() { "token_model" } else { "model" };
+    let field = if m.is_tokens() {
+        "token_model"
+    } else {
+        "model"
+    };
     ner[field] = value(m.slug.clone());
 
     if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("creating {}", parent.display()))?;
+        fs::create_dir_all(parent).with_context(|| format!("creating {}", parent.display()))?;
     }
     fs::write(&path, doc.to_string()).with_context(|| format!("writing {}", path.display()))?;
     Ok(path)
@@ -2738,10 +2904,7 @@ fn derive_document_output(path: &std::path::Path, tag: &str) -> PathBuf {
         .file_stem()
         .and_then(|s| s.to_str())
         .unwrap_or("output");
-    let ext = path
-        .extension()
-        .and_then(|s| s.to_str())
-        .unwrap_or("bin");
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("bin");
     path.with_file_name(format!("{stem}.{tag}.{ext}"))
 }
 

@@ -25,6 +25,9 @@ cargo install --path .
 # With NER support for AI-powered detection
 cargo install --path . --features ner
 
+# With NER + the decision-model adjudication gate
+cargo install --path . --features "ner,decision"
+
 # With all features (NER + bench)
 cargo install --path . --all-features
 ```
@@ -322,6 +325,25 @@ nym ships two NER backends that can run individually or together:
 - **`both`** (default) — run both and merge results for best recall.
 
 Select with `[ner] backend = "both" | "gliner" | "tokens"`. Token-classification models auto-download from the Hub (with a progress bar) — the default is nym's own small int8 model [`Wismut/nym-pii-multilingual-small/int8`](https://huggingface.co/Wismut/nym-pii-multilingual-small) (144 MB, 40 PII types, ~23 languages, OCR-noise-trained). Trade up for accuracy with [`Wismut/nym-pii-multilingual`](https://huggingface.co/Wismut/nym-pii-multilingual) (best, 1.2 GB) or `-small` fp32 (421 MB). Alternatives: `Wismut/openmed-onnx/{small,base,large}` (clinical), `nationaldesignstudio/rampart` (tiny), or a local dir. See [docs/ner-backends.md](docs/ner-backends.md) for the model-selection guide.
+
+## Decision-model adjudication (`decide`)
+
+Built with the `decision` feature, `nym decide` adds a System-One style gate that
+adjudicates the spans the deterministic (regex + NER) layers found — plus an
+unlabeled high-entropy backstop — asking an OpenAI-compatible model whether each
+is a real secret (`redact`), benign (`keep`), or ambiguous (`flag`). This is the
+residual catch for secrets that carry no name and no recognisable structure, and
+it lets nym veto over-redactions (code samples, paths, example tokens) before a
+trace is shared or uploaded. The originals are never rewritten.
+
+```bash
+cargo build --release --features "decision,ner"
+nym decide trace.jsonl --endpoint http://100.64.0.26:8001/v1/chat/completions \
+  --model deepseek-v4-flash-vision --output-json
+```
+
+See [docs/decision-layer.md](docs/decision-layer.md) for configuration, backend
+selection, and the datatinder labeling loop for your real chat-session traces.
 
 ## Key Files
 

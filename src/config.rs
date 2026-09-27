@@ -15,6 +15,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::engine::detector::NerBackend;
 
+#[cfg(feature = "decision")]
+use crate::engine::DecisionConfig;
 use crate::engine::{Confidence, ReplacementStrategy};
 
 /// Application configuration.
@@ -30,6 +32,10 @@ pub struct Config {
     pub paths: PathsConfig,
     pub ner: NerConfig,
     pub ocr: OcrConfig,
+    /// Decision-model adjudication layer (System-One gate over candidate spans).
+    #[cfg(feature = "decision")]
+    #[serde(default)]
+    pub decision: DecisionConfig,
     /// Named rulesets for common use cases
     #[serde(default)]
     pub rulesets: HashMap<String, RulesetConfig>,

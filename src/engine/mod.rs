@@ -22,18 +22,24 @@
 //! println!("Anonymized: {}", anonymized);
 //! ```
 
+#[cfg(feature = "decision")]
+pub mod decision;
 pub mod detector;
 pub mod formats;
-pub mod ner;
 #[cfg(feature = "ner")]
 pub mod model_catalog;
+pub mod ner;
 #[cfg(feature = "ner")]
 pub mod ner_token;
-pub mod office;
 pub mod ocr;
-pub mod pdf;
+pub mod office;
 pub mod patterns;
+pub mod pdf;
 pub mod replacer;
+
+#[cfg(feature = "decision")]
+#[expect(unused_imports, reason = "Conditionally used with decision feature")]
+pub use decision::{Decision, DecisionConfig, DecisionGate, Verdict};
 
 pub use detector::{Detector, DetectorConfig, PiiMatch};
 pub use formats::{JsonPiiMatch, detect_json, process_json};

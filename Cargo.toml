@@ -96,6 +96,12 @@ progress = ["indicatif"]
 streaming = ["tokio", "futures", "async-stream"]
 bench = ["ureq"]
 
+# Decision-model adjudication layer (OpenAI-compatible endpoint).
+# A System-One style gate that classifies candidate spans (detected matches +
+# unlabeled high-entropy backstop) as redact/keep/flag, catching secrets the
+# deterministic regex+NRE layers cannot name. Uses `ureq` for HTTP.
+decision = ["ureq"]
+
 # OCR-based raster redaction (images + scanned PDF pages). The OCR engine
 # itself runs as an external process (nym-ocr / tesseract / custom command).
 ocr = ["image"]
