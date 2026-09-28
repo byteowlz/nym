@@ -357,6 +357,18 @@ through CoreML (Neural Engine / GPU). Expect markedly lower latency than these
 CPU-only numbers, especially for the base/large fp32 models; peak RSS will be
 similar since the weights still load into memory.
 
+> **Measured caveat (2026-09-28, M2 Ultra, small int8 token model, batch-of-1):**
+> the CPU path with intra-op threads is **faster** than the CoreML EP for the
+> batch-of-1 spans this CLI produces. CoreML's per-inference-call overhead
+> (lazy model conversion, ANE dispatch, graph setup for a single tiny input)
+> outweighs its compute savings: 60 short chunks took 4.5s on CPU vs 8.0s via
+> CoreML (1.8x slower), and 1000 medium chunks 25s on CPU vs CoreML timing out
+> at 120s. The dominant win on Apple Silicon came from (a) loading the ONNX
+> model once per process (not once per chunk) and (b) `with_intra_threads` to
+> available parallelism. CoreML is best reserved for large-batch or large –input
+> work where the EP's fixed overhead is amortized; keep `ner-coreml` off for
+> small single-span inference and build plain `--features ner`.
+
 ## Train your own model
 
 `scripts/datagen/` synthesizes labeled token-classification data with exact,

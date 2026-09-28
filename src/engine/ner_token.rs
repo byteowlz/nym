@@ -240,9 +240,18 @@ impl TokenClassDetector {
         let threads = std::thread::available_parallelism()
             .map(|n| n.get())
             .unwrap_or(1);
-        let session = Session::builder()?
-            .with_intra_threads(threads)?
-            .commit_from_file(model_path)?;
+        let mut builder = Session::builder()?.with_intra_threads(threads)?;
+        // On Apple Silicon, register the CoreML execution provider so the
+        // token-classification model runs on the ANE/GPU instead of CPU. CoreML
+        // is gated behind the `ner-coreml` build feature; the session builder
+        // falls back to CPU for any ops CoreML cannot handle.
+        #[cfg(feature = "ner-coreml")]
+        {
+            builder = builder.with_execution_providers([
+                ort::execution_providers::CoreMLExecutionProvider::default().build(),
+            ])?;
+        }
+        let session = builder.commit_from_file(model_path)?;
 
         let needs_token_type_ids = session
             .inputs

@@ -126,7 +126,7 @@ ner-onednn = ["ner", "gline-rs/onednn"]
 # Windows DirectML (DirectX 12 GPU acceleration)
 ner-directml = ["ner", "gline-rs/directml"]
 # Apple CoreML (macOS/iOS)
-ner-coreml = ["ner", "gline-rs/coreml"]
+ner-coreml = ["ner", "gline-rs/coreml", "ort/coreml"]
 # Qualcomm QNN
 ner-qnn = ["ner", "gline-rs/qnn"]
 # Huawei CANN
