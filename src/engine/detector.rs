@@ -401,33 +401,7 @@ impl Detector {
     /// Returns matches sorted by start position. Combines regex-based
     /// detection with NER-based detection if enabled.
     pub fn detect(&self, text: &str) -> Vec<PiiMatch> {
-        let mut matches = Vec::new();
-
-        // Regex-based detection
-        let matching_indices: Vec<usize> = self.regex_set.matches(text).into_iter().collect();
-
-        for idx in matching_indices {
-            let pattern = self.patterns[idx];
-
-            for m in pattern.regex.find_iter(text) {
-                // Filter out false positives for social handles
-                // (e.g., @domain in emails should not match as a handle)
-                if Self::is_social_handle_pattern(pattern.name)
-                    && !Self::is_valid_social_handle(text, m.start(), m.end())
-                {
-                    continue;
-                }
-
-                matches.push(PiiMatch {
-                    pattern_name: pattern.name.to_string(),
-                    matched_text: m.as_str().to_string(),
-                    start: m.start(),
-                    end: m.end(),
-                    confidence: pattern.confidence,
-                    category: pattern.category,
-                });
-            }
-        }
+        let mut matches = self.regex_matches(text);
 
         // NER-based detection
         #[cfg(feature = "ner")]
@@ -476,6 +450,78 @@ impl Detector {
         // Sort by start position, then by length (longer first for overlaps)
         matches.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| b.len().cmp(&a.len())));
 
+        matches
+    }
+
+    /// Detect PII across many texts, batching the token-classification NER into
+    /// a single padded forward pass. Returns one match list per input text, in
+    /// order. Each text still gets its own regex pass; the NER results are
+    /// merged and de-duplicated per text exactly as in [`Self::detect`].
+    pub fn detect_batch(&self, texts: &[&str]) -> Vec<Vec<PiiMatch>> {
+        let n = texts.len();
+        let mut per_text = vec![Vec::new(); n];
+        if n == 0 {
+            return per_text;
+        }
+
+        // Regex pass per text.
+        for (i, &text) in texts.iter().enumerate() {
+            for m in self.regex_matches(text) {
+                per_text[i].push(m);
+            }
+        }
+
+        // Batched token-classification NER.
+        #[cfg(feature = "ner")]
+        if let Some(ref token) = self.token_detector {
+            let batch: Vec<Vec<PiiMatch>> = match token.detect_batch(texts) {
+                Ok(b) => b,
+                Err(e) => {
+                    log::warn!("Token-classification NER batch failed: {}", e);
+                    vec![Vec::new(); n]
+                }
+            };
+            for (i, token_matches) in batch.into_iter().enumerate() {
+                for nm in token_matches {
+                    let overlaps = per_text[i]
+                        .iter()
+                        .any(|m| nm.start < m.end && nm.end > m.start);
+                    if !overlaps {
+                        per_text[i].push(nm);
+                    }
+                }
+            }
+        }
+
+        // Sort each per matches by start then longer-first.
+        for matches in per_text.iter_mut() {
+            matches.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| b.len().cmp(&a.len())));
+        }
+        per_text
+    }
+
+    /// Run the regex pass over a single text and return its matches.
+    fn regex_matches(&self, text: &str) -> Vec<PiiMatch> {
+        let mut matches = Vec::new();
+        let matching_indices: Vec<usize> = self.regex_set.matches(text).into_iter().collect();
+        for idx in matching_indices {
+            let pattern = self.patterns[idx];
+            for m in pattern.regex.find_iter(text) {
+                if Self::is_social_handle_pattern(pattern.name)
+                    && !Self::is_valid_social_handle(text, m.start(), m.end())
+                {
+                    continue;
+                }
+                matches.push(PiiMatch {
+                    pattern_name: pattern.name.to_string(),
+                    matched_text: m.as_str().to_string(),
+                    start: m.start(),
+                    end: m.end(),
+                    confidence: pattern.confidence,
+                    category: pattern.category,
+                });
+            }
+        }
         matches
     }
 

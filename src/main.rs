@@ -1496,20 +1496,30 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
         // chunk. Previously each chunk re-created the Detector, re-loading the
         // ONNX NER model (~2s) per line -- the real per-call cost.
         let detector = build_decide_detector(config, &cmd);
+        // Collect all chunks, run the NER/token detector in one batched padded
+        // forward pass, then adjudicate each span per chunk. The batched NER
+        // amortizes ONNX per-call overhead across the whole input.
+        let mut chunks: Vec<String> = Vec::new();
         for line in input_text.lines() {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
-            let chunk = match serde_json::from_str::<serde_json::Value>(line) {
+            chunks.push(match serde_json::from_str::<serde_json::Value>(line) {
                 Ok(v) => v
                     .get("text")
                     .and_then(|t| t.as_str())
                     .unwrap_or_default()
                     .to_string(),
                 Err(_) => line.to_string(),
-            };
-            let decisions = decide_one(&gate, &detector, &chunk)?;
+            });
+        }
+        let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
+        let all_matches = detector.detect_batch(&chunk_refs);
+        for (i, chunk) in chunks.iter().enumerate() {
+            let matches = all_matches.get(i).cloned().unwrap_or_default();
+            let candidates = gate.candidates(chunk, &matches);
+            let decisions = gate.adjudicate(chunk, candidates)?;
             println!("{}", serde_json::to_string(&decisions)?);
         }
         return Ok(());

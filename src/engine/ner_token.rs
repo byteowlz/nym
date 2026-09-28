@@ -302,6 +302,147 @@ impl TokenClassDetector {
         Ok(all_matches)
     }
 
+    /// Run batched inference over several texts in ONE padded `[N, seq]` forward
+    /// pass, returning one match list per input. This amortizes ONNX Runtime's
+    /// fixed per-call overhead across the batch (which is what matters for the
+    /// many-small-chunks workload, e.g. datatinder / `decide --jsonl`).
+    ///
+    /// Each text is tokenized independently, then all are padded to the max
+    /// sequence length in the batch; the attention mask marks the real tokens so
+    /// padding contributes nothing to the output. Rows are decoded with their own
+    /// offsets/special mask, so results are identical to N single (`detect`)
+    /// calls.
+    pub fn detect_batch(
+        &self,
+        texts: &[&str],
+    ) -> Result<Vec<Vec<PiiMatch>>, Box<dyn std::error::Error + Send + Sync>> {
+        let n = texts.len();
+        let mut out = vec![Vec::new(); n];
+        if n == 0 {
+            return Ok(out);
+        }
+        if n == 1 {
+            return Ok(vec![self.detect(texts[0])?]);
+        }
+
+        // Encode every text, keeping its tokenizer encoding for decoding.
+        let mut encodings = Vec::with_capacity(n);
+        let mut max_seq = 1;
+        for &text in texts {
+            let trimmed = text.trim();
+            if trimmed.len() < MIN_TEXT_LENGTH || trimmed.is_empty() {
+                encodings.push(None);
+                continue;
+            }
+            let encoding = match self.tokenizer.encode(trimmed, true) {
+                Ok(e) => e,
+                Err(_) => {
+                    encodings.push(None);
+                    continue;
+                }
+            };
+            let ids = encoding.get_ids();
+            if ids.is_empty() {
+                encodings.push(None);
+                continue;
+            }
+            max_seq = max_seq.max(ids.len());
+            encodings.push(Some((encoding, trimmed.to_string())));
+        }
+
+        // If nothing encoded, return empties.
+        if encodings.iter().all(|e| e.is_none()) {
+            return Ok(out);
+        }
+
+        // Bucket by exact seq length would avoid wasted pad compute, but padding
+        // to the batch max is simpler and already amortizes the call overhead.
+        let seq = max_seq;
+        let num_labels = self.id2label.len();
+        let total = seq * n;
+        let mut input_ids = vec![0i64; total];
+        let mut attention_mask = vec![0i64; total];
+        // token_type_ids is only needed if the model requires it (BERT-family).
+        let mut type_ids = vec![0i64; total];
+        let mut row_seq = vec![0usize; n];
+        for (i, entry) in encodings.iter().enumerate() {
+            let Some((encoding, _)) = entry else { continue };
+            let ids = encoding.get_ids();
+            let mask = encoding.get_attention_mask();
+            let slen = ids.len().min(seq);
+            row_seq[i] = slen;
+            for t in 0..slen {
+                input_ids[i * seq + t] = i64::from(ids[t]);
+                attention_mask[i * seq + t] = i64::from(mask[t]);
+            }
+        }
+
+        let shape = vec![n as i64, seq as i64];
+        let ids_tensor = Tensor::from_array((shape.clone(), input_ids))?;
+        let mask_tensor = Tensor::from_array((shape.clone(), attention_mask))?;
+        let outputs = if self.needs_token_type_ids {
+            let t_tensor = Tensor::from_array((shape.clone(), type_ids))?;
+            self.session.run(ort::inputs![
+                "input_ids" => ids_tensor,
+                "attention_mask" => mask_tensor,
+                "token_type_ids" => t_tensor,
+            ]?)?
+        } else {
+            self.session.run(ort::inputs![
+                "input_ids" => ids_tensor,
+                "attention_mask" => mask_tensor,
+            ]?)?
+        };
+
+        let (_, logits) = outputs["logits"].try_extract_raw_tensor::<f32>()?;
+        let expected = seq * n * num_labels;
+        if logits.len() != expected {
+            return Err(format!(
+                "unexpected batched logits length: got {}, expected {}",
+                logits.len(),
+                expected
+            )
+            .into());
+        }
+
+        // Decode each row with its own offsets/special mask; skip empty rows.
+        for (i, entry) in encodings.iter().enumerate() {
+            let Some((encoding, text)) = entry else { continue };
+            let offsets = encoding.get_offsets();
+            let special_mask = encoding.get_special_tokens_mask();
+            let row_logits = &logits[i * seq * num_labels..(i + 1) * seq * num_labels];
+            let spans = self.decode_bio(row_logits, num_labels, offsets, special_mask);
+            let spans = merge_fragments(spans, text);
+            let mut matches = Vec::new();
+            for span in spans {
+                let (start, end) = trim_span(text, span.start, span.end);
+                if start >= end {
+                    continue;
+                }
+                let matched_text = &text[start..end];
+                let avg_prob = if span.token_count > 0 {
+                    span.prob_sum / span.token_count as f32
+                } else {
+                    0.0
+                };
+                let (pattern_name, category) = label_to_pattern(&span.base_label);
+                if !is_valid_entity(&span.base_label, matched_text) {
+                    continue;
+                }
+                matches.push(PiiMatch {
+                    pattern_name: pattern_name.to_string(),
+                    matched_text: matched_text.to_string(),
+                    start,
+                    end,
+                    confidence: probability_to_confidence(avg_prob),
+                    category,
+                });
+            }
+            out[i] = matches;
+        }
+        Ok(out)
+    }
+
     /// Run inference on a single chunk and decode entities at `offset`.
     fn detect_chunk(
         &self,
