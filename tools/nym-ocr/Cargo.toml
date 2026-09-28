@@ -5,19 +5,34 @@
 # Running as a subprocess sidesteps that entirely, and keeps OCR engine churn
 # out of nym's dependency graph.
 #
+# PP-OCRv6 models are fetched from Hugging Face (official PaddlePaddle exports,
+# SHA-256 pinned) via src/models.rs — ported from ingestr-core::models
+# (ADR-0004) — NOT via oar-ocr's ModelScope auto-download. `oar-ocr-auto-download`
+# is deliberately not enabled so a bare model name can never silently pull from
+# a third-party mirror. `ort` is pinned to 2.0.0-rc.12 because oar-ocr-core
+# 0.8.1 does not build against rc.13 (see ingestr's drift-check note).
+#
 # Install:  cargo install --path tools/nym-ocr
 [package]
 name = "nym-ocr"
 version = "0.1.0"
 edition = "2021"
-description = "PP-OCR engine (via oar-ocr) emitting nym's OCR JSON contract"
+description = "PP-OCRv6 engine (oar-ocr via liteparse) emitting nym's OCR JSON contract"
 license = "MIT OR Apache-2.0"
 
 [dependencies]
-oar-ocr = { version = "0.7", features = ["auto-download"] }
+liteparse = { version = "2", features = ["oar-ocr"] }
+ort = "=2.0.0-rc.12"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 anyhow = "1"
+log = "0.4"
+env_logger = "0.11"
+hf-hub = { version = "0.4", default-features = false, features = ["ureq"] }
+sha2 = "0.10"
+hex = "0.4"
+image = "0.25"
+futures = "0.3"
 
 [profile.release]
 strip = true

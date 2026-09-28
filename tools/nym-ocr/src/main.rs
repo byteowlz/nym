@@ -1,7 +1,7 @@
 //! nym-ocr: OCR engine companion for nym's raster redaction.
 //!
-//! Runs PP-OCR (via oar-ocr, models auto-downloaded to `$OAR_HOME`, default
-//! `~/.oar`) on one image and prints nym's OCR JSON contract on stdout:
+//! Runs PP-OCRv6 (via liteparse `OarOcrEngine`, backed by oar-ocr/ONNX) on one
+//! image and prints nym's OCR JSON contract on stdout:
 //!
 //! ```json
 //! {"engine":"nym-ocr/pp-ocr","width":1240,"height":1754,
@@ -9,14 +9,29 @@
 //! ```
 //!
 //! Boxes are detection-region level (pixel-true DBNet polygons, reduced to
-//! their axis-aligned bounds). Model files can be overridden with the
-//! `NYM_OCR_DET` / `NYM_OCR_REC` / `NYM_OCR_DICT` environment variables
-//! (bare names are auto-downloaded, paths are used as-is).
+//! their axis-aligned bounds). Models are resolved from Hugging Face
+//! (`~/byteowlz/nym/tools/nym-ocr/src/models.rs`, ported from ingestr's
+//! ADR-0004 store): official PaddlePaddle `PP-OCRv6_{tiny,small,medium}_{det,rec}`
+//! ONNX exports, SHA-256 pinned, cached in the standard Hugging Face cache, and
+//! looked up as `$NYM_SHARED_HF_HOME/hub` → user's `$HF_HOME/hub` → download
+//! (unless `HF_HUB_OFFLINE=1`). The bare-name ModelScope auto-download is
+//! deliberately not used.
+//!
+//! Model tier is selected with `NYM_OCR_TIER` (`tiny` | `small` | `medium`;
+//! default `small`). The engine is built once per process (the expensive part is
+//! model loading) and reused across pages/files within a single invocation.
 
-use anyhow::{Context, Result, bail};
-use oar_ocr::prelude::*;
-use serde::Serialize;
+mod models;
+
 use std::path::Path;
+use std::sync::OnceLock;
+
+use anyhow::{Context, Result, anyhow, bail};
+use liteparse::ocr::oar::OarOcrEngine;
+use liteparse::ocr::{OcrEngine, OcrOptions, OcrResult};
+use serde::Serialize;
+
+use models::PpOcrTier;
 
 #[derive(Serialize)]
 struct Word {
@@ -40,62 +55,78 @@ fn env_or(key: &str, default: &str) -> String {
     std::env::var(key).unwrap_or_else(|_| default.to_string())
 }
 
+/// Process-wide PP-OCRv6 engine, built once and shared. The model store is
+/// keyed by tier so a process that changes tiers doesn't silently keep the
+/// first one it loaded.
+fn ppocr_engine(tier: PpOcrTier) -> Result<&'static OarOcrEngine> {
+    static ENGINE: OnceLock<Result<OarOcrEngine, String>> = OnceLock::new();
+    ENGINE
+        .get_or_init(|| {
+            log::info!("loading PP-OCRv6 {}", tier.as_str());
+            let models = models::ensure_ppocr(tier).map_err(|e| format!("{e:#}"))?;
+            OarOcrEngine::from_models(
+                models.det.as_path(),
+                models.rec.as_path(),
+                models.dict.as_bytes(),
+            )
+            .map_err(|e| e.to_string())
+        })
+        .as_ref()
+        .map_err(|e| anyhow!("initializing PP-OCRv6 engine: {e}"))
+}
+
+fn block_on<T>(fut: impl std::future::Future<Output = T>) -> T {
+    futures::executor::block_on(fut)
+}
+
+/// Convert a liteparse `OcrResult` (bbox `[x1,y1,x2,y2]`) to nym's word box.
+fn to_word(r: &OcrResult) -> Word {
+    let [x1, y1, x2, y2] = r.bbox;
+    Word {
+        text: r.text.clone(),
+        conf: r.confidence,
+        x: x1.max(0.0) as u32,
+        y: y1.max(0.0) as u32,
+        w: (x2 - x1).max(0.0) as u32,
+        h: (y2 - y1).max(0.0) as u32,
+    }
+}
+
 fn main() -> Result<()> {
+    env_logger::init();
+
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
-        eprintln!("usage: nym-ocr <image>\n(model overrides: NYM_OCR_DET / NYM_OCR_REC / NYM_OCR_DICT)");
+        eprintln!(
+            "usage: nym-ocr <image>\n(model tier: NYM_OCR_TIER=tiny|small|medium (default small))"
+        );
         return Ok(());
     }
     let Some(img_path) = args.first() else {
         bail!("usage: nym-ocr <image>");
     };
 
-    let det = env_or("NYM_OCR_DET", "pp-ocrv5_mobile_det.onnx");
-    let rec = env_or("NYM_OCR_REC", "pp-ocrv5_mobile_rec.onnx");
-    let dict = env_or("NYM_OCR_DICT", "ppocrv5_dict.txt");
+    let tier = PpOcrTier::parse(&env_or("NYM_OCR_TIER", "small"));
+    let engine = ppocr_engine(tier)?;
 
-    let ocr = OAROCRBuilder::new(det, rec, dict)
-        .build()
-        .context("failed to build OCR pipeline (models auto-download to $OAR_HOME, default ~/.oar)")?;
+    let img = image::open(Path::new(img_path))
+        .with_context(|| format!("failed to load image: {img_path}"))?
+        .into_rgb8();
+    let (width, height) = img.dimensions();
 
-    let image = load_image(Path::new(img_path))
-        .with_context(|| format!("failed to load image: {img_path}"))?;
-    let (width, height) = (image.width(), image.height());
+    let options = OcrOptions {
+        language: "en".to_string(),
+        dpi: 300.0,
+    };
+    let results = block_on(engine.recognize(img.as_raw(), width, height, &options))
+        .map_err(|e| anyhow!("OCR prediction failed: {e}"))?;
 
-    let results = ocr.predict(vec![image]).context("OCR prediction failed")?;
-
-    let mut words = Vec::new();
-    for result in &results {
-        for region in &result.text_regions {
-            let (Some(text), Some(conf)) = (region.text.as_ref(), region.confidence) else {
-                continue;
-            };
-            let pts = &region.bounding_box.points;
-            if pts.is_empty() || text.trim().is_empty() {
-                continue;
-            }
-            let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
-            for p in pts {
-                x0 = x0.min(p.x);
-                y0 = y0.min(p.y);
-                x1 = x1.max(p.x);
-                y1 = y1.max(p.y);
-            }
-            words.push(Word {
-                text: text.to_string(),
-                conf,
-                x: x0.max(0.0) as u32,
-                y: y0.max(0.0) as u32,
-                w: (x1 - x0).max(0.0) as u32,
-                h: (y1 - y0).max(0.0) as u32,
-            });
-        }
-    }
+    let words: Vec<Word> = results.iter().map(to_word).collect();
 
     println!(
         "{}",
         serde_json::to_string(&Output {
-            engine: "nym-ocr/pp-ocr".to_string(),
+            engine: format!("nym-ocr/pp-ocr/{}", tier.as_str()),
             width,
             height,
             words,

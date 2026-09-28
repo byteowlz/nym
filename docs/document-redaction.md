@@ -90,11 +90,14 @@ nym anon scanned-contract.pdf --ocr  # also OCR+redact images inside the PDF
 
 **Engines** (`[ocr] engine` in config, default `auto`):
 
-- **`nym-ocr`** (recommended) — PP-OCR companion binary in this repo:
+- **`nym-ocr`** (recommended) — PP-OCRv6 companion binary in this repo:
   `cargo install --path tools/nym-ocr`. Ships as a separate process because it
-  uses a newer ONNX Runtime than nym's GLiNER backend allows; models
-  auto-download to `~/.oar` on first use. Detection boxes are pixel-true
-  DBNet regions.
+  uses a newer ONNX Runtime than nym's GLiNER backend allows; models are
+  fetched from Hugging Face (official PaddlePaddle `PP-OCRv6_{tiny,small,medium}`
+  exports, SHA-256 pinned) on first use and cached in the standard Hugging Face
+  cache. Detection boxes are pixel-true DBNet regions. Tier is chosen with
+  `NYM_OCR_TIER=tiny|small|medium` (default `small`); models can be seeded per
+  host via `NYM_SHARED_HF_HOME` (see `tools/nym-ocr/src/models.rs`).
 - **`tesseract`** — used automatically if installed and nym-ocr is not.
 - **Custom** — any command template with `{input}` that prints nym's OCR JSON
   contract: `{"words":[{"text":..,"conf":..,"x":..,"y":..,"w":..,"h":..}]}`.
