@@ -369,6 +369,18 @@ similar since the weights still load into memory.
 > work where the EP's fixed overhead is amortized; keep `ner-coreml` off for
 > small single-span inference and build plain `--features ner`.
 
+**On NVIDIA:** build with `--features ner-cuda` to route ONNX Runtime through CUDA
+(and `--features ner-tensorrt` for fused kernels). Unlike CoreML, CUDA genuinely
+accelerates this workload once the EP engages.
+
+> **Measured (2026-09-28, RTX 4090):** CUDA is ~21x faster than CPU for the
+> many-medium-chunks workload — 5000 medium chunks in 56.4s CPU vs **2.7s CUDA**,
+> with byte-identical output. Getting the EP to engage required a CUDA-12-
+> compatible onnxruntime-gpu (1.30 needs CUDA 13; pin 1.20) plus cuDNN 9/cuBLAS
+> in `LD_LIBRARY_PATH`; otherwise the session silently falls back to CPU. The
+> batched path is bounded (`MAX_BATCH_SIZE = 128`) so it never OOMs the CUDA
+> allocator on large inputs.
+
 ## Train your own model
 
 `scripts/datagen/` synthesizes labeled token-classification data with exact,
