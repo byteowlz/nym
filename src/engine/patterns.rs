@@ -217,6 +217,26 @@ static USERNAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     regex(r"\b[a-zA-Z][a-zA-Z0-9_]{2,20}\d+[a-zA-Z0-9_]*\b|\b[a-zA-Z][a-zA-Z0-9]*_[a-zA-Z0-9_]+\b")
 });
 
+// Home-directory paths: /Users/<user>/..., /home/<user>/..., /Volumes/<name>/...,
+// and Windows C:\\Users\\<user>\\... (or forward slashes C:/Users/...).
+// These leak a real local username (a person's account) plus machine layout, and
+// are a top sensitive surface in agent transcripts. High confidence: a leading
+// /Users/ or /home/ is unambiguous. The username may contain non-ASCII letters
+// /marks (müller, 東京) and Windows usernames; \p{L}\p{N}\p{M} covers letters,
+// numbers and combining diacritics, so accented names redact in full.
+static HOME_DIR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(r"(?i)(?:(?:/|\\)(?:users|home|volumes)|[a-z]:[/\\]users)[/\\][\p{L}\p{N}\p{M}._-]+")
+});
+
+// Unix system paths: /etc/..., /var/..., /opt/..., /usr/..., /srv/..., /root/...
+// Reveal internal infrastructure layout (host config, launch agents, deployment
+// paths). High confidence; the decision gate adjudicates redact/keep. Segment
+// chars accept Unicode letters/marks so hostnames and config names in any
+// script are captured whole.
+static UNIX_PATH_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(r"(?i)/(?:etc|var|opt|usr|srv|root|dev|proc|sys|lib|bin|sbin|tmp|mnt|media)/[\p{L}\p{N}\p{M}._-]+")
+});
+
 // Social media handles
 // Twitter/X handle: @username (1-15 chars, alphanumeric + underscore)
 // Note: We exclude emails by requiring @ to NOT be preceded by alphanumeric
@@ -489,6 +509,24 @@ pub static BUILTIN_PATTERNS: &[PiiPattern] = &[
         replacement_template: "<USERNAME>",
     },
     PiiPattern {
+        name: "home_dir",
+        description: "Home-directory path (/Users/user, /home/user)",
+        regex: &HOME_DIR_REGEX,
+        confidence: Confidence::High,
+        category: PiiCategory::Social,
+        example: "/Users/johndoe/project",
+        replacement_template: "<HOME_DIR>",
+    },
+    PiiPattern {
+        name: "unix_path",
+        description: "Unix system path (/etc, /var, /opt, /usr)",
+        regex: &UNIX_PATH_REGEX,
+        confidence: Confidence::High,
+        category: PiiCategory::Other,
+        example: "/etc/nginx/nginx.conf",
+        replacement_template: "<PATH>",
+    },
+    PiiPattern {
         name: "twitter_handle",
         description: "Twitter/X handle (@username, 1-15 chars)",
         regex: &TWITTER_HANDLE_REGEX,
@@ -684,6 +722,42 @@ mod tests {
             "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0In0.TJVA95OrM7E2cBab30RMHrHDcEfxjoYZgeFONFh7HgQ"
         ));
         assert!(!re.is_match("not.a.jwt"));
+    }
+
+    #[test]
+    fn test_home_dir_pattern() {
+        let re = &*HOME_DIR_REGEX;
+        assert!(re.is_match("/Users/tommyfalkowski/project"));
+        assert!(re.is_match("/home/wismut/.config"));
+        assert!(re.is_match("/Volumes/Macintosh HD/apps"));
+        // Unicode usernames redact in full, not a partial ASCII prefix.
+        assert!(re.is_match("/Users/müller/apps"));
+        assert!(re.is_match("/home/東京/projects"));
+        assert!(re.is_match("/Users/joão/site"));
+        // Windows home dirs, both separators.
+        assert!(re.is_match(r"C:\Users\Jörg\Desktop"));
+        assert!(re.is_match("C:/Users/john/AppData"));
+        assert!(!re.is_match("/usr/local/bin/python")); // not a home path
+        assert!(!re.is_match("homepage"));
+    }
+
+    #[test]
+    fn test_unix_path_pattern() {
+        let re = &*UNIX_PATH_REGEX;
+        assert!(re.is_match("/etc/nginx/nginx.conf"));
+        assert!(re.is_match("/var/log/syslog"));
+        assert!(re.is_match("/opt/homebrew/bin/uv"));
+        assert!(re.is_match("/usr/local/bin/python"));
+        assert!(re.is_match("/root/.ssh/authorized_keys"));
+        // Non-ASCII host/config names captured whole.
+        assert!(re.is_match("/var/www/münchen/index.html"));
+        assert!(!re.is_match("vim"));
+    }
+
+    #[test]
+    fn test_check_pattern() {
+        let re = &*SOCIAL_HANDLE_REGEX;
+        assert!(!re.is_match("none"));
     }
 
     #[test]

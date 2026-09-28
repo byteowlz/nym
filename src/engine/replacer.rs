@@ -297,6 +297,8 @@ impl Replacer {
             "date" => "<DATE>".to_string(),
             "time" => "<TIME>".to_string(),
             "username" => "<USERNAME>".to_string(),
+            "home_dir" => "<HOME_DIR>".to_string(),
+            "unix_path" => "<PATH>".to_string(),
             _ => "<PII>".to_string(),
         }
     }
