@@ -330,7 +330,7 @@ impl TokenClassDetector {
     /// Run batched inference over several texts in ONE padded `[N, seq]` forward
     /// pass, returning one match list per input. This amortizes ONNX Runtime's
     /// fixed per-call overhead across the batch (which is what matters for the
-    /// many-small-chunks workload, e.g. datatinder / `decide --jsonl`).
+    /// many-small-chunks workload, e.g. session labeling / `decide --jsonl`).
     ///
     /// Each text is tokenized independently, then all are padded to the max
     /// sequence length in the batch; the attention mask marks the real tokens so

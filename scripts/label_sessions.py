@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """Chop chat-session traces into judge-at-a-glance chunks, pre-label them with
-nym (deterministic detector + decision gate), and feed them as datatinder swipe
+nym (deterministic detector + decision gate), and feed them as swipe
 candidates (good = "contains sensitive data", bad = "does not").
+
+This feeds the separate datatinder swipe UI (it targets that project's data
+dir), but the nym-side script is named for the labeling loop it drives.
 
 The point is a high-ergonomics labeling loop for YOUR real sessions:
 - we pre-label each chunk, so you correct the pre-label instead of judging
@@ -20,7 +23,7 @@ Two sources are supported and can be mixed (`--source` is repeatable):
              narrows to one indexed source.
 
 Usage:
-    python3 scripts/tinder_sessions.py --source pi --source hstry \
+    python3 scripts/label_sessions.py --source pi --source hstry \
         --bucket nym-sensitive --chunk-chars 300 --max-sessions 50 --shuffle \
         --dry-run
     # add pre-labeling from a decision endpoint:

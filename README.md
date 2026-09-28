@@ -343,7 +343,7 @@ nym decide trace.jsonl --endpoint http://100.64.0.26:8001/v1/chat/completions \
 ```
 
 See [docs/decision-layer.md](docs/decision-layer.md) for configuration, backend
-selection, and the datatinder labeling loop for your real chat-session traces.
+selection, and the session labeling loop for your real chat-session traces.
 
 ## Key Files
 

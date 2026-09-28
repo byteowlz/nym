@@ -120,14 +120,14 @@ calibrated answer back. No external crate is required.
   high-recall gauntlet against *honest* misses; pair it with the deterministic
   layers for the structural guarantees.
 
-## Labeling loop (datatinder)
+## Labeling loop
 
 To build a real labeled set for tuning the decision layer, chop chat-session
 traces into at-a-glance chunks, pre-label them with nym, and correct the
 pre-labels in a swipe UI:
 
 ```bash
-python3 scripts/tinder_sessions.py --source pi --source hstry \
+python3 scripts/label_sessions.py --source pi --source hstry \
   --bucket nym-sensitive --chunk-chars 300 --shuffle --sensitive-first \
   --endpoint http://100.64.0.26:8001/v1/chat/completions \
   --model deepseek-v4-flash-vision
