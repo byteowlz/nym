@@ -409,9 +409,9 @@ dependencies = [
 
 [[package]]
 name = "composable"
-version = "0.9.0"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a3edc943416fc51136a23f0881bf65ee06d108810b0ee8737c6f7de4e2bbb40b"
+checksum = "1db0ceee9eeadbb126e15d9c596d0768d69e0de5cfa7c7239af4f2d9c26e6569"
 
 [[package]]
 name = "config"
@@ -1064,9 +1064,9 @@ dependencies = [
 
 [[package]]
 name = "gline-rs"
-version = "1.0.0"
+version = "1.1.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "4479c5f2f7f00c8b4fd3e112eceaf43f3569d0d1ea7dcad3c8d0d882d132a93c"
+checksum = "187d55c624cd5eb969cb84ef25e0e394368bb276905abd7dc136105770a16bad"
 dependencies = [
  "composable",
  "csv",
@@ -1810,13 +1810,14 @@ dependencies = [
 
 [[package]]
 name = "orp"
-version = "0.9.2"
+version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "a1b96de390c49ac6b80de1dbb72da4ecec9ce5a53a40b0173968a5899917b73e"
+checksum = "e4988aa3d7fe73b735d283ce9ec2b2e881ca9178bceee750cf226a4cbf83f7d8"
 dependencies = [
  "composable",
  "ndarray",
  "ort",
+ "ort-sys",
 ]
 
 [[package]]
