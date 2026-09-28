@@ -1492,6 +1492,10 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
     // across every chunk instead of spawning a process per chunk.
     if cmd.jsonl {
         let gate = DecisionGate::new(dc);
+        // Build the Detector (and its NER model) ONCE and reuse it across every
+        // chunk. Previously each chunk re-created the Detector, re-loading the
+        // ONNX NER model (~2s) per line -- the real per-call cost.
+        let detector = build_decide_detector(config, &cmd);
         for line in input_text.lines() {
             let line = line.trim();
             if line.is_empty() {
@@ -1505,14 +1509,15 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
                     .to_string(),
                 Err(_) => line.to_string(),
             };
-            let decisions = decide_one(&gate, &chunk, &config, &cmd)?;
+            let decisions = decide_one(&gate, &detector, &chunk)?;
             println!("{}", serde_json::to_string(&decisions)?);
         }
         return Ok(());
     }
 
     let gate = DecisionGate::new(dc);
-    let decisions = decide_one(&gate, &input_text, &config, &cmd)?;
+    let detector = build_decide_detector(config, &cmd);
+    let decisions = decide_one(&gate, &detector, &input_text)?;
 
     if cmd.output_json {
         println!("{}", serde_json::to_string_pretty(&decisions)?);
@@ -1537,8 +1542,19 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
 }
 
 /// Run detection + adjudication for one chunk and return its decisions.
-fn decide_one(gate: &engine::DecisionGate, input_text: &str, config: &Config, cmd: &DecideCommand) -> Result<Vec<engine::Decision>> {
+fn decide_one(
+    gate: &engine::DecisionGate,
+    detector: &Detector,
+    input_text: &str,
+) -> Result<Vec<engine::Decision>> {
+    let matches = detector.detect(input_text);
+    let candidates = gate.candidates(input_text, &matches);
+    gate.adjudicate(input_text, candidates)
+}
 
+/// Build the detector configuration used by `decide`/`detect` from the config
+/// and CLI flags (enabled/disabled patterns, min confidence, NER backend).
+fn build_decide_detector(config: &Config, cmd: &DecideCommand) -> Detector {
     let min_confidence = config.detection.min_confidence.into();
     let mut detector_config = DetectorConfig::default().with_min_confidence(min_confidence);
     if !config.detection.enabled_patterns.is_empty() {
@@ -1552,10 +1568,7 @@ fn decide_one(gate: &engine::DecisionGate, input_text: &str, config: &Config, cm
     let ner_enabled = !cmd.no_ner && config.ner.enabled;
     detector_config = detector_config.with_ner(ner_enabled);
     detector_config = apply_ner_backend(detector_config, &config.ner);
-    let detector = Detector::new(&detector_config);
-    let matches = detector.detect(input_text);
-    let candidates = gate.candidates(input_text, &matches);
-    gate.adjudicate(input_text, candidates)
+    Detector::new(&detector_config)
 }
 
 fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Result<()> {

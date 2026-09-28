@@ -231,7 +231,18 @@ impl TokenClassDetector {
         // past that token -- undetectable false negatives on long input. We
         // window explicitly below, so take full control here.
         tokenizer.with_truncation(None)?;
-        let session = Session::builder()?.commit_from_file(model_path)?;
+        // ONNX Runtime defaults to a single intra-op thread on macOS/CPU, which
+        // makes each session.run() ~2s even on a short chunk (per-call overhead,
+        // not content cost). Set intra-op threads to the available parallelism
+        // so a batch-of-1 forward pass uses the cores. Graph optimization is
+        // already Level3 by default. This is the high-leverage fix for the
+        // per-inference-call cost.
+        let threads = std::thread::available_parallelism()
+            .map(|n| n.get())
+            .unwrap_or(1);
+        let session = Session::builder()?
+            .with_intra_threads(threads)?
+            .commit_from_file(model_path)?;
 
         let needs_token_type_ids = session
             .inputs
