@@ -98,39 +98,58 @@ fn main() -> Result<()> {
     let args: Vec<String> = std::env::args().skip(1).collect();
     if args.iter().any(|a| a == "--help" || a == "-h") {
         eprintln!(
-            "usage: nym-ocr <image>\n(model tier: NYM_OCR_TIER=tiny|small|medium (default small))"
+            "usage: nym-ocr <image> [image ...]\n\n\
+            OCR one or more images; the model is loaded once for the whole\n\
+            invocation. With multiple images (or `--batch`) a JSON array of\n\
+            results is emitted, one per image in argument order.\n\n\
+            model tier: NYM_OCR_TIER=tiny|small|medium (default small)"
         );
         return Ok(());
     }
-    let Some(img_path) = args.first() else {
-        bail!("usage: nym-ocr <image>");
-    };
+
+    let mut batch = false;
+    let mut images: Vec<String> = Vec::new();
+    for a in &args {
+        if a == "--batch" {
+            batch = true;
+        } else {
+            images.push(a.clone());
+        }
+    }
+    if images.is_empty() {
+        bail!("usage: nym-ocr <image> [image ...]");
+    }
 
     let tier = PpOcrTier::parse(&env_or("NYM_OCR_TIER", "small"));
     let engine = ppocr_engine(tier)?;
 
-    let img = image::open(Path::new(img_path))
-        .with_context(|| format!("failed to load image: {img_path}"))?
-        .into_rgb8();
-    let (width, height) = img.dimensions();
+    let mut outputs = Vec::with_capacity(images.len());
+    for img_path in &images {
+        let img = image::open(Path::new(img_path))
+            .with_context(|| format!("failed to load image: {img_path}"))?
+            .into_rgb8();
+        let (width, height) = img.dimensions();
 
-    let options = OcrOptions {
-        language: "en".to_string(),
-        dpi: 300.0,
-    };
-    let results = block_on(engine.recognize(img.as_raw(), width, height, &options))
-        .map_err(|e| anyhow!("OCR prediction failed: {e}"))?;
+        let options = OcrOptions {
+            language: "en".to_string(),
+            dpi: 300.0,
+        };
+        let results = block_on(engine.recognize(img.as_raw(), width, height, &options))
+            .map_err(|e| anyhow!("OCR prediction failed on {img_path}: {e}"))?;
 
-    let words: Vec<Word> = results.iter().map(to_word).collect();
-
-    println!(
-        "{}",
-        serde_json::to_string(&Output {
+        let words: Vec<Word> = results.iter().map(to_word).collect();
+        outputs.push(Output {
             engine: format!("nym-ocr/pp-ocr/{}", tier.as_str()),
             width,
             height,
             words,
-        })?
-    );
+        });
+    }
+
+    if batch || outputs.len() > 1 {
+        println!("{}", serde_json::to_string(&outputs)?);
+    } else {
+        println!("{}", serde_json::to_string(&outputs[0])?);
+    }
     Ok(())
 }

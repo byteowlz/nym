@@ -97,7 +97,10 @@ nym anon scanned-contract.pdf --ocr  # also OCR+redact images inside the PDF
   exports, SHA-256 pinned) on first use and cached in the standard Hugging Face
   cache. Detection boxes are pixel-true DBNet regions. Tier is chosen with
   `NYM_OCR_TIER=tiny|small|medium` (default `small`); models can be seeded per
-  host via `NYM_SHARED_HF_HOME` (see `tools/nym-ocr/src/models.rs`).
+  host via `NYM_SHARED_HF_HOME` (see `tools/nym-ocr/src/models.rs`). The engine
+  is invoked once per PDF run (not once per image): nym batches all scanned
+  images into a single `nym-ocr` invocation, so the model loads once and is
+  reused across every page.
 - **`tesseract`** — used automatically if installed and nym-ocr is not.
 - **Custom** — any command template with `{input}` that prints nym's OCR JSON
   contract: `{"words":[{"text":..,"conf":..,"x":..,"y":..,"w":..,"h":..}]}`.

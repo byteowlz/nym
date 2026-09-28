@@ -184,6 +184,111 @@ impl OcrEngine {
         let _ = std::fs::remove_file(&path);
         result
     }
+
+    /// Recognize several images in **one** engine invocation, so a
+    /// subprocess-based engine (e.g. `nym-ocr`) loads its model once instead
+    /// of once per image. Returns one result per input, in order. Falls back
+    /// to per-image calls for engines that cannot batch (e.g. tesseract).
+    pub fn recognize_bytes_batch(
+        &self,
+        images: &[(Vec<u8>, String)],
+    ) -> Result<Vec<OcrOutput>, Error> {
+        if images.is_empty() {
+            return Ok(Vec::new());
+        }
+        let outs = match &self.kind {
+            // JSON engine: the command template usually has a single `{input}`
+            // placeholder (one image per call). For batching we substitute
+            // every image path into the template so the engine gets them all
+            // as positional args; a well-behaved companion (ny-ocr) reads them
+            // all in one process. If the template cannot hold multiple
+            // inputs, fall back to per-image calls.
+            EngineKind::Json(template) if can_batch_template(template) => {
+                let mut paths = Vec::with_capacity(images.len());
+                for (bytes, ext) in images {
+                    let path = temp_path(ext);
+                    std::fs::write(&path, bytes)?;
+                    paths.push(path);
+                }
+                let result = self.run_json_engine(template, &paths);
+                // Always clean up temp files, on both success and failure.
+                for p in &paths {
+                    let _ = std::fs::remove_file(p);
+                }
+                result? // Vec<OcrOutput>, one per path
+            }
+            _ => {
+                // Non-batchable engine: recognize each image separately.
+                let mut outs = Vec::with_capacity(images.len());
+                for (bytes, ext) in images {
+                    outs.push(self.recognize_bytes(bytes, ext)?);
+                }
+                outs
+            }
+        };
+        Ok(outs
+            .into_iter()
+            .map(|mut o| {
+                o.words.retain(|w| {
+                    !w.text.trim().is_empty() && w.conf >= self.min_confidence && w.w > 0 && w.h > 0
+                });
+                o
+            })
+            .collect())
+    }
+
+    /// Run a JSON engine command with a list of `{input}`-replaced paths and
+    /// parse the output, accepting either a single `OcrOutput` or a JSON array
+    /// of them (nym-ocr emits an array when given multiple images).
+    fn run_json_engine(
+        &self,
+        template: &[String],
+        paths: &[PathBuf],
+    ) -> Result<Vec<OcrOutput>, Error> {
+        let parts = template.iter().flat_map(|p| {
+            if p.contains("{input}") {
+                paths.iter().map(|pp| pp.to_string_lossy().to_string()).collect::<Vec<_>>()
+            } else {
+                vec![p.clone()]
+            }
+        });
+        let mut parts: Vec<String> = parts.collect();
+        let program = parts.remove(0);
+        let output = Command::new(&program).args(&parts).output().map_err(|e| {
+            format!("failed to run OCR engine {program:?}: {e}")
+        })?;
+        if !output.status.success() {
+            return Err(format!(
+                "OCR engine {program:?} failed: {}",
+                String::from_utf8_lossy(&output.stderr)
+            )
+            .into());
+        }
+        // A single object or an array of objects.
+        let value: serde_json::Value =
+            serde_json::from_slice(&output.stdout).map_err(|e| format!("invalid OCR engine JSON: {e}"))?;
+        self.parse_output_value(value)
+    }
+
+    /// Parse engine output that is either a single `OcrOutput` or a JSON array
+    /// of them (nym-ocr emits an array when given multiple images).
+    fn parse_output_value(&self, value: serde_json::Value) -> Result<Vec<OcrOutput>, Error> {
+        match value {
+            serde_json::Value::Array(items) => items
+                .into_iter()
+                .map(serde_json::from_value::<OcrOutput>)
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|e| format!("invalid OCR engine JSON entry: {e}").into()),
+            single => Ok(vec![serde_json::from_value::<OcrOutput>(single)
+                .map_err(|e| format!("invalid OCR engine JSON: {e}"))?]),
+        }
+    }
+}
+
+/// Whether a JSON engine template can accept multiple inputs. The canonical
+/// `{input}`-template can, since every `{input}` expands to one path.
+fn can_batch_template(template: &[String]) -> bool {
+    template.iter().any(|p| p.contains("{input}"))
 }
 
 fn temp_path(ext: &str) -> PathBuf {
@@ -408,6 +513,19 @@ pub fn redact_image(
     replacer: &mut Replacer,
 ) -> Result<Option<ImageRedaction>, Error> {
     let recognized = engine.recognize_bytes(bytes, fmt.ext())?;
+    redact_image_from_recognition(bytes, fmt, engine, &recognized, detector, replacer)
+}
+
+/// Redact one raster image whose recognition output is already computed (the
+/// batch path recognizes all images in one engine call).
+pub fn redact_image_from_recognition(
+    bytes: &[u8],
+    fmt: RasterFormat,
+    engine: &OcrEngine,
+    recognized: &OcrOutput,
+    detector: &Detector,
+    replacer: &mut Replacer,
+) -> Result<Option<ImageRedaction>, Error> {
     if recognized.words.is_empty() {
         return Ok(None);
     }
@@ -482,11 +600,14 @@ fn verify_gone(
 
 /// Recognize the text inside a PDF's JPEG images (for `nym detect --ocr`).
 pub fn extract_pdf_image_text(pdf_bytes: &[u8], engine: &OcrEngine) -> Result<String, Error> {
+    let jpegs = collect_pdf_jpegs(pdf_bytes)?;
+    let inputs: Vec<(Vec<u8>, String)> =
+        jpegs.iter().map(|j| (j.clone(), "jpg".to_string())).collect();
+    let recognized = engine.recognize_bytes_batch(&inputs)?;
     let mut out = String::new();
-    for jpeg in collect_pdf_jpegs(pdf_bytes)? {
-        let recognized = engine.recognize_bytes(&jpeg, "jpg")?;
-        if !recognized.words.is_empty() {
-            out.push_str(&assemble_text(&recognized).text);
+    for r in &recognized {
+        if !r.words.is_empty() {
+            out.push_str(&assemble_text(r).text);
             out.push('\n');
         }
     }
@@ -644,19 +765,29 @@ pub fn redact_pdf_images(
         .into());
     }
 
-    for id in jpeg_ids {
-        let jpeg = {
-            let Ok(stream) = doc.get_object(id).and_then(Object::as_stream) else {
-                continue;
-            };
-            stream.content.clone()
-        };
-        report.images_scanned += 1;
-        match redact_image(&jpeg, RasterFormat::Jpeg, engine, detector, replacer)? {
+    // Collect the JPEG payloads first so we can batch the (expensive) OCR
+    // recognition across all images in one engine call. The paint + re-OCR
+    // verification step still runs per image (it must inspect each painted
+    // image independently).
+    let mut jpegs = Vec::with_capacity(jpeg_ids.len());
+    for id in &jpeg_ids {
+        if let Ok(stream) = doc.get_object(*id).and_then(Object::as_stream) {
+            jpegs.push(stream.content.clone());
+        }
+    }
+    report.images_scanned = jpegs.len();
+
+    let inputs: Vec<(Vec<u8>, String)> =
+        jpegs.iter().map(|j| (j.clone(), "jpg".to_string())).collect();
+    let recognized = engine.recognize_bytes_batch(&inputs)?;
+
+    for (idx, (id, jpeg)) in jpeg_ids.iter().zip(jpegs.iter()).enumerate() {
+        let output = &recognized[idx];
+        match redact_image_from_recognition(jpeg, RasterFormat::Jpeg, engine, output, detector, replacer)? {
             None => {}
             Some(red) => {
                 report.images_redacted += 1;
-                if let Ok(obj) = doc.get_object_mut(id) {
+                if let Ok(obj) = doc.get_object_mut(*id) {
                     if let Ok(stream) = obj.as_stream_mut() {
                         // Re-encoded as RGB JPEG: keep DCTDecode, fix the
                         // color-space keys to match.
@@ -758,5 +889,47 @@ mod tests {
     #[test]
     fn normalize_is_whitespace_and_case_insensitive() {
         assert_eq!(normalize("Jo hn.Doe@X.COM"), normalize("john.doe@x.com"));
+    }
+
+    #[test]
+    fn can_batch_template_detects_input() {
+        // A template with an {input} placeholder can be given multiple paths.
+        assert!(can_batch_template(&["nym-ocr".into(), "{input}".into()]));
+        // A template with no placeholder cannot hold multiple inputs.
+        assert!(!can_batch_template(&["tesseract".into(), "stdout".into(), "tsv".into()]));
+    }
+
+    #[test]
+    fn run_json_engine_parses_single_object() {
+        // A single-image engine emitting one OcrOutput object.
+        let json = r#"{"engine":"e","words":[{"text":"hi","conf":0.9,"x":1,"y":2,"w":3,"h":4}]}"#;
+        let engine = OcrEngine {
+            kind: EngineKind::Json(vec!["cat".into()]),
+            min_confidence: 0.0,
+        };
+        // Write the JSON to a temp file path is not needed; instead we invoke
+        // the internal parser directly.
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        let parsed = engine.parse_output_value(value).unwrap();
+        assert_eq!(parsed.len(), 1);
+        assert_eq!(parsed[0].words[0].text, "hi");
+    }
+
+    #[test]
+    fn run_json_engine_parses_array() {
+        // A batch engine emitting a JSON array of OcrOutput objects.
+        let json = r#"[
+          {"engine":"e","words":[{"text":"one","conf":0.9,"x":1,"y":2,"w":3,"h":4}]},
+          {"engine":"e","words":[{"text":"two","conf":0.9,"x":1,"y":2,"w":3,"h":4}]}
+        ]"#;
+        let engine = OcrEngine {
+            kind: EngineKind::Json(vec!["cat".into()]),
+            min_confidence: 0.0,
+        };
+        let value: serde_json::Value = serde_json::from_str(json).unwrap();
+        let parsed = engine.parse_output_value(value).unwrap();
+        assert_eq!(parsed.len(), 2);
+        assert_eq!(parsed[0].words[0].text, "one");
+        assert_eq!(parsed[1].words[0].text, "two");
     }
 }
