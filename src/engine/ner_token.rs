@@ -82,6 +82,12 @@ const DEFAULT_WINDOW_OVERLAP: usize = 64;
 /// Minimum text length in characters before attempting inference.
 const MIN_TEXT_LENGTH: usize = 3;
 
+/// Cap on the number of texts in a single padded forward pass. seq can be up to
+/// window_tokens (480), so [N, seq] tensor is ~N*480*4 bytes; bounding N keeps
+/// the workspace (and the GPU CUDA allocator) from OOMing on big inputs. Larger
+/// inputs are processed in sub-batches of this size.
+const MAX_BATCH_SIZE: usize = 128;
+
 /// A decoded entity span within a single chunk, in chunk-local byte offsets.
 struct DecodedSpan {
     base_label: String,
@@ -251,6 +257,25 @@ impl TokenClassDetector {
                 ort::execution_providers::CoreMLExecutionProvider::default().build(),
             ])?;
         }
+        // On NVIDIA, register the CUDA execution provider so the token model
+        // runs on the GPU instead of the CPU. CUDA is gated behind the
+        // `ner-cuda` build feature; ONNX Runtime falls back to CPU for any ops
+        // CUDA cannot handle, so the session still works if a CUDA build is run
+        // on a box without a CUDA-capable GPU.
+        #[cfg(feature = "ner-cuda")]
+        {
+            builder = builder.with_execution_providers([
+                ort::execution_providers::CUDAExecutionProvider::default().build(),
+            ])?;
+        }
+        // TensorRT (fused NVIDIA kernels) — opt-in and may need TensorRT runtime
+        // installed; ONNX Runtime falls back to CUDA/CPU if unavailable.
+        #[cfg(feature = "ner-tensorrt")]
+        {
+            builder = builder.with_execution_providers([
+                ort::execution_providers::TensorRtExecutionProvider::default().build(),
+            ])?;
+        }
         let session = builder.commit_from_file(model_path)?;
 
         let needs_token_type_ids = session
@@ -323,6 +348,19 @@ impl TokenClassDetector {
         }
         if n == 1 {
             return Ok(vec![self.detect(texts[0])?]);
+        }
+
+        // Cap the batch size so we don't build one huge padded [N, seq] tensor
+        // that OOMs on long inputs / low-VRAM GPUs. `seq` can be up to
+        // window_tokens (480) so N must be bounded; process in sub-batches and
+        // concatenate.
+        if n > MAX_BATCH_SIZE {
+            let mut all = Vec::with_capacity(n);
+            for chunk in texts.chunks(MAX_BATCH_SIZE) {
+                let part = self.detect_batch(chunk)?;
+                all.extend(part);
+            }
+            return Ok(all);
         }
 
         // Encode every text, keeping its tokenizer encoding for decoding.

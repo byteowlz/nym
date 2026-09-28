@@ -114,9 +114,9 @@ ner-load-dynamic = ["ner", "gline-rs/load-dynamic"]
 
 # GPU/NPU acceleration for NER (requires appropriate hardware and drivers)
 # NVIDIA CUDA
-ner-cuda = ["ner", "gline-rs/cuda"]
+ner-cuda = ["ner", "gline-rs/cuda", "ort/cuda"]
 # NVIDIA TensorRT (optimized inference on NVIDIA GPUs)
-ner-tensorrt = ["ner", "gline-rs/tensorrt"]
+ner-tensorrt = ["ner", "gline-rs/tensorrt", "ort/tensorrt"]
 # AMD ROCm
 ner-rocm = ["ner", "gline-rs/rocm"]
 # Intel OpenVINO
