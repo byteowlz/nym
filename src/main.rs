@@ -1552,6 +1552,7 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
 }
 
 /// Run detection + adjudication for one chunk and return its decisions.
+#[cfg(feature = "decision")]
 fn decide_one(
     gate: &engine::DecisionGate,
     detector: &Detector,
@@ -1564,6 +1565,7 @@ fn decide_one(
 
 /// Build the detector configuration used by `decide`/`detect` from the config
 /// and CLI flags (enabled/disabled patterns, min confidence, NER backend).
+#[cfg(feature = "decision")]
 fn build_decide_detector(config: &Config, cmd: &DecideCommand) -> Detector {
     let min_confidence = config.detection.min_confidence.into();
     let mut detector_config = DetectorConfig::default().with_min_confidence(min_confidence);
