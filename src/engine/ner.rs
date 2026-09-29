@@ -42,10 +42,6 @@ use crate::engine::patterns::PiiCategory;
 ///
 /// Note: GLiNER is a zero-shot NER model, so we can add any labels we want.
 /// The model will try to extract entities matching these semantic concepts.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Public API - used by consumers")
-)]
 pub const PII_LABELS: &[&str] = &[
     // Name components - try to get first/last name separately
     "person",
@@ -262,7 +258,7 @@ impl NerDetector {
             model_path.as_ref(),
         )?;
 
-        let labels = labels.unwrap_or_else(|| PII_LABELS.iter().map(|s| s.to_string()).collect());
+        let labels = labels.unwrap_or_else(|| PII_LABELS.iter().map(std::string::ToString::to_string).collect());
 
         Ok(Self {
             // Wrap in ManuallyDrop to prevent ONNX Runtime cleanup crash on macOS.
@@ -315,7 +311,7 @@ impl NerDetector {
         text: &str,
         offset: usize,
     ) -> Result<Vec<PiiMatch>, Box<dyn std::error::Error + Send + Sync>> {
-        let label_refs: Vec<&str> = self.labels.iter().map(|s| s.as_str()).collect();
+        let label_refs: Vec<&str> = self.labels.iter().map(std::string::String::as_str).collect();
 
         let input = TextInput::from_str(&[text], &label_refs)?;
         let output = self.model.inference(input)?;
@@ -362,7 +358,7 @@ impl NerDetector {
         match label.to_lowercase().as_str() {
             // Phone numbers should have at least 7 digits
             "phone_number" | "phone" => {
-                let digit_count = text.chars().filter(|c| c.is_ascii_digit()).count();
+                let digit_count = text.chars().filter(char::is_ascii_digit).count();
                 digit_count >= 7
             }
             // Persons should have at least 2 characters and ideally a space (first + last)
@@ -613,10 +609,6 @@ impl NerDetector {
 }
 
 /// Default model repository on HuggingFace.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Public API - used by consumers")
-)]
 pub const DEFAULT_NER_MODEL: &str = "onnx-community/gliner_multi-v2.1";
 
 /// Model paths configuration for NER.

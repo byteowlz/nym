@@ -315,8 +315,7 @@ impl Detector {
             Ok(p) => p,
             Err(e) => {
                 warn!(
-                    "Failed to download NER model: {}. NER detection disabled.",
-                    e
+                    "Failed to download NER model: {e}. NER detection disabled."
                 );
                 return None;
             }
@@ -334,8 +333,7 @@ impl Detector {
             Ok(detector) => Some(detector),
             Err(e) => {
                 warn!(
-                    "Failed to initialize NER detector: {}. NER detection disabled.",
-                    e
+                    "Failed to initialize NER detector: {e}. NER detection disabled."
                 );
                 None
             }
@@ -383,8 +381,7 @@ impl Detector {
             }
             Err(e) => {
                 warn!(
-                    "Failed to initialize token-classification detector: {}. Disabled.",
-                    e
+                    "Failed to initialize token-classification detector: {e}. Disabled."
                 );
                 None
             }
@@ -422,7 +419,7 @@ impl Detector {
                     }
                 }
                 Err(e) => {
-                    log::warn!("NER detection failed: {}", e);
+                    log::warn!("NER detection failed: {e}");
                 }
             }
         }
@@ -442,7 +439,7 @@ impl Detector {
                     }
                 }
                 Err(e) => {
-                    log::warn!("Token-classification NER detection failed: {}", e);
+                    log::warn!("Token-classification NER detection failed: {e}");
                 }
             }
         }
@@ -457,6 +454,7 @@ impl Detector {
     /// a single padded forward pass. Returns one match list per input text, in
     /// order. Each text still gets its own regex pass; the NER results are
     /// merged and de-duplicated per text exactly as in [`Self::detect`].
+    #[cfg(feature = "decision")]
     pub fn detect_batch(&self, texts: &[&str]) -> Vec<Vec<PiiMatch>> {
         let n = texts.len();
         let mut per_text = vec![Vec::new(); n];

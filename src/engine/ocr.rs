@@ -59,10 +59,13 @@ pub struct OcrWord {
 #[derive(Debug, Clone, Deserialize)]
 pub struct OcrOutput {
     #[serde(default)]
+    #[expect(dead_code, reason = "part of the OCR engine contract; nym only consumes `words`")]
     pub engine: String,
     #[serde(default)]
+    #[expect(dead_code, reason = "part of the OCR engine contract; nym only consumes `words`")]
     pub width: u32,
     #[serde(default)]
+    #[expect(dead_code, reason = "part of the OCR engine contract; nym only consumes `words`")]
     pub height: u32,
     pub words: Vec<OcrWord>,
 }
@@ -529,7 +532,7 @@ pub fn redact_image_from_recognition(
     if recognized.words.is_empty() {
         return Ok(None);
     }
-    let ocr_text = assemble_text(&recognized);
+    let ocr_text = assemble_text(recognized);
     let matches = detector.detect(&ocr_text.text);
     if matches.is_empty() {
         return Ok(None);
@@ -548,8 +551,8 @@ pub fn redact_image_from_recognition(
             continue;
         }
         last_end = m.end;
-        precise_rects.extend(boxes_for_span(&ocr_text, &recognized, m.start, m.end, true));
-        full_rects.extend(boxes_for_span(&ocr_text, &recognized, m.start, m.end, false));
+        precise_rects.extend(boxes_for_span(&ocr_text, recognized, m.start, m.end, true));
+        full_rects.extend(boxes_for_span(&ocr_text, recognized, m.start, m.end, false));
         replacements.push(replacer.replace(m));
     }
     if precise_rects.is_empty() {
@@ -640,7 +643,7 @@ fn collect_pdf_jpegs(pdf_bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
                 _ => None,
             };
             let Some(xobjs) = xobjs else { continue };
-            for (_, r) in xobjs.iter() {
+            for (_, r) in xobjs {
                 let Ok(id) = r.as_reference() else { continue };
                 if !seen.insert(id) {
                     continue;
@@ -652,14 +655,12 @@ fn collect_pdf_jpegs(pdf_bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
                     .dict
                     .get(b"Subtype")
                     .and_then(Object::as_name)
-                    .map(|n| n == b"Image")
-                    .unwrap_or(false)
+                    .is_ok_and(|n| n == b"Image")
                     && stream
                         .dict
                         .get(b"Filter")
                         .and_then(Object::as_name)
-                        .map(|n| n == b"DCTDecode")
-                        .unwrap_or(false);
+                        .is_ok_and(|n| n == b"DCTDecode");
                 if is_jpeg_image {
                     jpegs.push(stream.content.clone());
                 }
@@ -723,7 +724,7 @@ pub fn redact_pdf_images(
                 _ => None,
             };
             let Some(xobjs) = xobjs else { continue };
-            for (_, r) in xobjs.iter() {
+            for (_, r) in xobjs {
                 let Ok(id) = r.as_reference() else { continue };
                 if !seen.insert(id) {
                     continue;
@@ -735,8 +736,7 @@ pub fn redact_pdf_images(
                     .dict
                     .get(b"Subtype")
                     .and_then(Object::as_name)
-                    .map(|n| n == b"Image")
-                    .unwrap_or(false);
+                    .is_ok_and(|n| n == b"Image");
                 if !is_image {
                     continue;
                 }
@@ -744,8 +744,7 @@ pub fn redact_pdf_images(
                     .dict
                     .get(b"Filter")
                     .and_then(Object::as_name)
-                    .map(|n| n == b"DCTDecode")
-                    .unwrap_or(false);
+                    .is_ok_and(|n| n == b"DCTDecode");
                 if is_jpeg {
                     jpeg_ids.push(id);
                 } else {
@@ -787,8 +786,8 @@ pub fn redact_pdf_images(
             None => {}
             Some(red) => {
                 report.images_redacted += 1;
-                if let Ok(obj) = doc.get_object_mut(*id) {
-                    if let Ok(stream) = obj.as_stream_mut() {
+                if let Ok(obj) = doc.get_object_mut(*id)
+                    && let Ok(stream) = obj.as_stream_mut() {
                         // Re-encoded as RGB JPEG: keep DCTDecode, fix the
                         // color-space keys to match.
                         stream.set_content(red.bytes);
@@ -799,7 +798,6 @@ pub fn redact_pdf_images(
                         stream.dict.set("BitsPerComponent", 8);
                         stream.dict.remove(b"DecodeParms");
                     }
-                }
                 log.extend(red.replacements);
             }
         }

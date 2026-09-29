@@ -600,7 +600,7 @@ impl Replacer {
                 let key: [u8; 20] = self.rng.random();
                 let encoded = base64::engine::general_purpose::STANDARD.encode(key);
                 if pii_match.pattern_name == "aws_key" {
-                    format!("AKIA{}", &encoded[..16].to_uppercase())
+                    format!("AKIA{}", encoded[..16].to_uppercase())
                 } else {
                     encoded
                 }

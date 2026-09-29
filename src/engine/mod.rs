@@ -38,7 +38,6 @@ pub mod pdf;
 pub mod replacer;
 
 #[cfg(feature = "decision")]
-#[expect(unused_imports, reason = "Conditionally used with decision feature")]
 pub use decision::{Decision, DecisionConfig, DecisionGate, Verdict};
 
 pub use detector::{Detector, DetectorConfig, PiiMatch};

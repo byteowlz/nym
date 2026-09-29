@@ -235,8 +235,8 @@ fn process_part(
         }
 
         if group_depth == 0 {
-            if let Event::Start(ref e) = ev {
-                if is_group(profile, e.name().as_ref()) {
+            if let Event::Start(ref e) = ev
+                && is_group(profile, e.name().as_ref()) {
                     group_depth = 1;
                     para.clear();
                     nodes.clear();
@@ -246,7 +246,6 @@ fn process_part(
                     buf.clear();
                     continue;
                 }
-            }
             writer.write_event(ev)?;
             buf.clear();
             continue;
@@ -290,8 +289,8 @@ fn process_part(
             // resolve them so they are part of the paragraph text. Unresolvable
             // custom entities pass through untouched (and stay invisible to
             // detection, which is the safe direction).
-            Event::GeneralRef(e) => {
-                if in_text_context(profile, &elem_stack) {
+            Event::GeneralRef(e)
+                if in_text_context(profile, &elem_stack) => {
                     let resolved = match e.decode()?.as_ref() {
                         "lt" => Some('<'),
                         "gt" => Some('>'),
@@ -308,7 +307,6 @@ fn process_part(
                         });
                     }
                 }
-            }
             _ => {}
         }
         para.push(ev.into_owned());
@@ -392,8 +390,8 @@ fn flush_paragraph(
             writer.write_event(Event::Text(BytesText::new(new)))?;
             continue;
         }
-        if needs_preserve.contains(&idx) {
-            if let Event::Start(e) = ev {
+        if needs_preserve.contains(&idx)
+            && let Event::Start(e) = ev {
                 let has_attr = e
                     .attributes()
                     .flatten()
@@ -405,7 +403,6 @@ fn flush_paragraph(
                     continue;
                 }
             }
-        }
         writer.write_event(ev.clone())?;
     }
     Ok(())

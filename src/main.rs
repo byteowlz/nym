@@ -1034,13 +1034,13 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
             .ok_or_else(|| anyhow!("PDF input requires a file path"))?;
         let bytes = fs::read(path)
             .with_context(|| format!("Failed to read input file: {}", path.display()))?;
-        #[expect(unused_mut, reason = "mutated only with the ocr feature")]
+        #[cfg_attr(not(feature = "ocr"), expect(unused_mut, reason = "mutated only with the ocr feature"))]
         let (out_bytes, mut replacements, report) =
             engine::pdf::redact(&bytes, &detector, &mut replacer, !cmd.no_strict_pdf)
                 .map_err(|e| anyhow!("PDF redaction failed: {e}"))?;
 
         // Optional OCR pass over raster images in the (already text-redacted) PDF.
-        #[expect(unused_mut, reason = "reassigned only with the ocr feature")]
+        #[cfg_attr(not(feature = "ocr"), expect(unused_mut, reason = "reassigned only with the ocr feature"))]
         let mut out_bytes = out_bytes;
         #[cfg(feature = "ocr")]
         if cmd.ocr || config.ocr.enabled {
@@ -1625,7 +1625,7 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
             .ok_or_else(|| anyhow!("PDF input requires a file path"))?;
         let bytes = fs::read(path)
             .with_context(|| format!("Failed to read input file: {}", path.display()))?;
-        #[expect(unused_mut, reason = "mutated only with the ocr feature")]
+        #[cfg_attr(not(feature = "ocr"), expect(unused_mut, reason = "mutated only with the ocr feature"))]
         let mut text =
             engine::pdf::extract_text(&bytes).map_err(|e| anyhow!("Failed to parse PDF: {e}"))?;
         #[cfg(feature = "ocr")]
@@ -2255,8 +2255,8 @@ fn models_list(common: &CommonOpts, config: &Config) -> Result<()> {
     }
 
     println!(
-        "   {:<42} {:<32} {:<7} {:<19} {:>8}  {}",
-        "SLUG", "NAME", "BACKEND", "LANGUAGES", "DISK", "DESCRIPTION"
+        "   {:<42} {:<32} {:<7} {:<19} {:>8}  DESCRIPTION",
+        "SLUG", "NAME", "BACKEND", "LANGUAGES", "DISK"
     );
     for m in &models {
         let is_default = (m.is_tokens() && tokens_active && m.slug == tok_default)
@@ -2367,12 +2367,9 @@ fn models_use(config: &Config, query: Option<&str>) -> Result<()> {
             eprintln!("Only one model downloaded; selecting it.");
             apply_default_model(config, &downloaded[0])
         }
-        _ => match pick_catalog(&downloaded, query)? {
-            Some(m) => apply_default_model(config, &m),
-            None => {
-                eprintln!("nothing selected");
-                Ok(())
-            }
+        _ => if let Some(m) = pick_catalog(&downloaded, query)? { apply_default_model(config, &m) } else {
+            eprintln!("nothing selected");
+            Ok(())
         },
     }
 }
@@ -2469,36 +2466,33 @@ fn pick_catalog(models: &[CatalogModel], query: Option<&str>) -> Result<Option<C
     if let Some(q) = query {
         cmd.arg(format!("--query={q}"));
     }
-    match cmd.spawn() {
-        Ok(mut child) => {
-            if let Some(mut child_stdin) = child.stdin.take() {
-                child_stdin.write_all(lines.join("\n").as_bytes()).ok();
-            }
-            let output = child.wait_with_output().context("running fzf")?;
-            if !output.status.success() {
-                return Ok(None); // cancelled
-            }
-            let selection = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-            Ok(models
-                .iter()
-                .zip(lines.iter())
-                .find(|(_, line)| **line == selection)
-                .map(|(m, _)| m.clone()))
+    if let Ok(mut child) = cmd.spawn() {
+        if let Some(mut child_stdin) = child.stdin.take() {
+            child_stdin.write_all(lines.join("\n").as_bytes()).ok();
         }
-        Err(_) => {
-            eprintln!("(fzf not found - pick a number)");
-            for (i, line) in lines.iter().enumerate() {
-                eprintln!("{:>3}  {}", i + 1, line);
-            }
-            eprint!("model number: ");
-            io::stderr().flush().ok();
-            let mut buf = String::new();
-            stdin().read_line(&mut buf).context("reading selection")?;
-            let Ok(n) = buf.trim().parse::<usize>() else {
-                return Ok(None);
-            };
-            Ok(n.checked_sub(1).and_then(|i| models.get(i)).cloned())
+        let output = child.wait_with_output().context("running fzf")?;
+        if !output.status.success() {
+            return Ok(None); // cancelled
         }
+        let selection = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+        Ok(models
+            .iter()
+            .zip(lines.iter())
+            .find(|(_, line)| **line == selection)
+            .map(|(m, _)| m.clone()))
+    } else {
+        eprintln!("(fzf not found - pick a number)");
+        for (i, line) in lines.iter().enumerate() {
+            eprintln!("{:>3}  {}", i + 1, line);
+        }
+        eprint!("model number: ");
+        io::stderr().flush().ok();
+        let mut buf = String::new();
+        stdin().read_line(&mut buf).context("reading selection")?;
+        let Ok(n) = buf.trim().parse::<usize>() else {
+            return Ok(None);
+        };
+        Ok(n.checked_sub(1).and_then(|i| models.get(i)).cloned())
     }
 }
 

@@ -165,15 +165,14 @@ impl FontCodec {
                 let code = bytes[i..i + step]
                     .iter()
                     .fold(0u32, |acc, &b| (acc << 8) | u32::from(b));
-                if let Some(u) = map.get(&code) {
-                    if !u.is_empty() {
+                if let Some(u) = map.get(&code)
+                    && !u.is_empty() {
                         out.push(DecodedChar {
                             text: u.clone(),
                             byte_off: i,
                             byte_len: step,
                         });
                     }
-                }
                 i += step;
             }
         } else {
@@ -396,7 +395,7 @@ fn load_fonts(doc: &Document, resources: Option<&Dictionary>) -> HashMap<Vec<u8>
     else {
         return out;
     };
-    for (name, fref) in fonts.iter() {
+    for (name, fref) in fonts {
         if let Some(fd) = resolve(doc, fref).and_then(|o| o.as_dict().ok()) {
             out.insert(name.clone(), FontCodec::from_font_dict(doc, fd));
         }
@@ -422,7 +421,7 @@ fn assemble_text(ops: &[Operation], fonts: &HashMap<Vec<u8>, FontCodec>) -> Stre
     };
     let mut cur_font: Option<&FontCodec> = None;
 
-    let mut push_sep = |st: &mut StreamText, c: char| {
+    let push_sep = |st: &mut StreamText, c: char| {
         if !st.text.is_empty() && !st.text.ends_with(c) {
             st.text.push(c);
         }
@@ -473,11 +472,10 @@ fn assemble_text(ops: &[Operation], fonts: &HashMap<Vec<u8>, FontCodec>) -> Stre
                                 }
                                 other => {
                                     // Large negative kern = word gap.
-                                    if let Some(v) = object_as_f64(other) {
-                                        if v < -180.0 {
+                                    if let Some(v) = object_as_f64(other)
+                                        && v < -180.0 {
                                             push_sep(&mut st, ' ');
                                         }
-                                    }
                                 }
                             }
                         }
@@ -657,7 +655,7 @@ fn form_xobjects(
     else {
         return out;
     };
-    for (_, r) in xobjs.iter() {
+    for (_, r) in xobjs {
         let Ok(id) = r.as_reference() else { continue };
         let Some(stream) = doc.get_object(id).ok().and_then(|o| o.as_stream().ok()) else {
             continue;
@@ -683,7 +681,7 @@ fn page_resources(doc: &Document, page_id: ObjectId) -> Option<&Dictionary> {
         .and_then(|o| o.as_dict().ok())
 }
 
-fn stream_resources<'a>(doc: &'a Document, id: ObjectId) -> Option<&'a Dictionary> {
+fn stream_resources(doc: &Document, id: ObjectId) -> Option<&Dictionary> {
     doc.get_object(id)
         .ok()
         .and_then(|o| o.as_stream().ok())
@@ -712,17 +710,15 @@ pub fn extract_text(bytes: &[u8]) -> Result<String, Error> {
         out.push('\n');
 
         for fid in form_xobjects(&doc, resources, &mut images) {
-            if let Some(stream) = doc.get_object(fid).ok().and_then(|o| o.as_stream().ok()) {
-                if let Ok(data) = stream.decompressed_content() {
-                    if let Ok(c) = Content::decode(&data) {
+            if let Some(stream) = doc.get_object(fid).ok().and_then(|o| o.as_stream().ok())
+                && let Ok(data) = stream.decompressed_content()
+                    && let Ok(c) = Content::decode(&data) {
                         let fres = stream_resources(&doc, fid).or(resources);
                         let ffonts = load_fonts(&doc, fres);
                         let fst = assemble_text(&c.operations, &ffonts);
                         out.push_str(&fst.text);
                         out.push('\n');
                     }
-                }
-            }
         }
     }
 
@@ -734,7 +730,7 @@ pub fn extract_text(bytes: &[u8]) -> Result<String, Error> {
         .and_then(|o| resolve(&doc, o))
         .and_then(|o| o.as_dict().ok())
     {
-        for (_, v) in info.iter() {
+        for (_, v) in info {
             if let Object::String(s, _) = v {
                 out.push_str(&pdf_string_to_text(s));
                 out.push('\n');
@@ -816,7 +812,7 @@ pub fn redact(
     let mut form_edits: Vec<(ObjectId, Vec<u8>)> = Vec::new();
     let mut done_forms: HashSet<ObjectId> = HashSet::new();
 
-    for (_no, page_id) in &pages {
+    for page_id in pages.values() {
         let resources = page_resources(&doc, *page_id);
         let content = doc.get_page_content(*page_id)?;
         let mut ops = Content::decode(&content)?.operations;
@@ -874,13 +870,12 @@ pub fn redact(
         doc.change_page_content(page_id, content)?;
     }
     for (fid, content) in form_edits {
-        if let Ok(obj) = doc.get_object_mut(fid) {
-            if let Ok(stream) = obj.as_stream_mut() {
+        if let Ok(obj) = doc.get_object_mut(fid)
+            && let Ok(stream) = obj.as_stream_mut() {
                 stream.set_plain_content(content);
                 stream.dict.remove(b"Filter");
                 stream.dict.remove(b"DecodeParms");
             }
-        }
     }
 
     // -- Pass 2: metadata + annotations -----------------------------------
@@ -901,36 +896,31 @@ pub fn redact(
             })
             .unwrap_or_default();
         for (key, text) in fields {
-            if let Some(new) = scrub_text_value(&text, detector, replacer, &mut log) {
-                if let Ok(obj) = doc.get_object_mut(id) {
-                    if let Ok(dict) = obj.as_dict_mut() {
+            if let Some(new) = scrub_text_value(&text, detector, replacer, &mut log)
+                && let Ok(obj) = doc.get_object_mut(id)
+                    && let Ok(dict) = obj.as_dict_mut() {
                         dict.set(key, Object::String(text_to_pdf_string(&new), StringFormat::Literal));
                         report.metadata_scrubbed += 1;
                     }
-                }
-            }
         }
     }
 
     // XMP metadata stream: drop it entirely (it duplicates Info and often
     // carries author/tool identifiers).
     let catalog_id = doc.trailer.get(b"Root").ok().and_then(|o| o.as_reference().ok());
-    if let Some(id) = catalog_id {
-        if let Ok(obj) = doc.get_object_mut(id) {
-            if let Ok(dict) = obj.as_dict_mut() {
-                if dict.remove(b"Metadata").is_some() {
+    if let Some(id) = catalog_id
+        && let Ok(obj) = doc.get_object_mut(id)
+            && let Ok(dict) = obj.as_dict_mut()
+                && dict.remove(b"Metadata").is_some() {
                     report.metadata_scrubbed += 1;
                 }
-            }
-        }
-    }
 
     // Annotation strings (comments, popup titles, form field values).
     let annot_keys: &[&[u8]] = &[b"Contents", b"T", b"Subj", b"V", b"TU"];
     let mut annot_ids: Vec<ObjectId> = Vec::new();
-    for (_no, page_id) in &pages {
-        if let Ok(page) = doc.get_dictionary(*page_id) {
-            if let Ok(annots) = page.get(b"Annots") {
+    for page_id in pages.values() {
+        if let Ok(page) = doc.get_dictionary(*page_id)
+            && let Ok(annots) = page.get(b"Annots") {
                 let arr = match annots {
                     Object::Array(a) => a.clone(),
                     Object::Reference(r) => doc
@@ -943,7 +933,6 @@ pub fn redact(
                 };
                 annot_ids.extend(arr.iter().filter_map(|o| o.as_reference().ok()));
             }
-        }
     }
     for aid in annot_ids {
         let fields: Vec<(Vec<u8>, String)> = doc
@@ -961,14 +950,12 @@ pub fn redact(
             })
             .unwrap_or_default();
         for (key, text) in fields {
-            if let Some(new) = scrub_text_value(&text, detector, replacer, &mut log) {
-                if let Ok(obj) = doc.get_object_mut(aid) {
-                    if let Ok(dict) = obj.as_dict_mut() {
+            if let Some(new) = scrub_text_value(&text, detector, replacer, &mut log)
+                && let Ok(obj) = doc.get_object_mut(aid)
+                    && let Ok(dict) = obj.as_dict_mut() {
                         dict.set(key, Object::String(text_to_pdf_string(&new), StringFormat::Literal));
                         report.metadata_scrubbed += 1;
                     }
-                }
-            }
         }
     }
 
@@ -1014,14 +1001,13 @@ fn verify_absence(out: &[u8], log: &[Replacement]) -> Result<Vec<String>, Error>
     haystack.push_str(&extract_text(out)?);
 
     let doc = Document::load_mem(out)?;
-    for (_id, obj) in &doc.objects {
+    for obj in doc.objects.values() {
         collect_strings(obj, &mut haystack);
-        if let Ok(stream) = obj.as_stream() {
-            if let Ok(data) = stream.decompressed_content() {
+        if let Ok(stream) = obj.as_stream()
+            && let Ok(data) = stream.decompressed_content() {
                 haystack.extend(data.iter().map(|&b| char::from(b)));
                 haystack.push('\n');
             }
-        }
     }
     // Raw bytes as Latin-1 (catches anything unparsed).
     haystack.extend(out.iter().map(|&b| char::from(b)));
@@ -1045,12 +1031,12 @@ fn collect_strings(obj: &Object, out: &mut String) {
             }
         }
         Object::Dictionary(d) => {
-            for (_, o) in d.iter() {
+            for (_, o) in d {
                 collect_strings(o, out);
             }
         }
         Object::Stream(s) => {
-            for (_, o) in s.dict.iter() {
+            for (_, o) in &s.dict {
                 collect_strings(o, out);
             }
         }

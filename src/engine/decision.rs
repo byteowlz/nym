@@ -222,6 +222,7 @@ struct SystemOneAnswer {
     #[serde(default)]
     noul: Option<f32>,
     #[serde(default)]
+    #[allow(dead_code, reason = "part of the /v1/systemone Score variant payload; not used by the gate's choice contract")]
     score: Option<f32>,
     #[serde(default)]
     confidence: Option<f32>,
@@ -712,7 +713,6 @@ fn high_entropy(s: &str) -> bool {
     h > 4.0
 }
 
-#[expect(dead_code, reason = "used only when the entropy backstop is enabled")]
 static TOKEN_ISH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(r"\b[A-Za-z0-9+/=_\-]{32,}\b").expect("static regex is valid")
 });

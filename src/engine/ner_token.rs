@@ -86,6 +86,7 @@ const MIN_TEXT_LENGTH: usize = 3;
 /// window_tokens (480), so [N, seq] tensor is ~N*480*4 bytes; bounding N keeps
 /// the workspace (and the GPU CUDA allocator) from OOMing on big inputs. Larger
 /// inputs are processed in sub-batches of this size.
+#[cfg(feature = "decision")]
 const MAX_BATCH_SIZE: usize = 128;
 
 /// A decoded entity span within a single chunk, in chunk-local byte offsets.
@@ -244,8 +245,11 @@ impl TokenClassDetector {
         // already Level3 by default. This is the high-leverage fix for the
         // per-inference-call cost.
         let threads = std::thread::available_parallelism()
-            .map(|n| n.get())
-            .unwrap_or(1);
+            .map_or(1, std::num::NonZero::get);
+        // The builder is only reassigned inside the hardware-execution-provider
+        // feature blocks below (CoreML/CUDA/TensorRT); in a default build the
+        // `mut` is unused.
+        #[expect(unused_mut, reason = "assigned only when a hardware execution-provider feature is enabled")]
         let mut builder = Session::builder()?.with_intra_threads(threads)?;
         // On Apple Silicon, register the CoreML execution provider so the
         // token-classification model runs on the ANE/GPU instead of CPU. CoreML
@@ -337,6 +341,7 @@ impl TokenClassDetector {
     /// padding contributes nothing to the output. Rows are decoded with their own
     /// offsets/special mask, so results are identical to N single (`detect`)
     /// calls.
+    #[cfg(feature = "decision")]
     pub fn detect_batch(
         &self,
         texts: &[&str],
@@ -401,7 +406,7 @@ impl TokenClassDetector {
         let mut input_ids = vec![0i64; total];
         let mut attention_mask = vec![0i64; total];
         // token_type_ids is only needed if the model requires it (BERT-family).
-        let mut type_ids = vec![0i64; total];
+        let type_ids = vec![0i64; total];
         let mut row_seq = vec![0usize; n];
         for (i, entry) in encodings.iter().enumerate() {
             let Some((encoding, _)) = entry else { continue };
