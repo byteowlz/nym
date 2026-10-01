@@ -222,7 +222,7 @@ struct SystemOneAnswer {
     #[serde(default)]
     noul: Option<f32>,
     #[serde(default)]
-    #[allow(dead_code, reason = "part of the /v1/systemone Score variant payload; not used by the gate's choice contract")]
+    #[expect(dead_code, reason = "part of the /v1/systemone Score variant payload; not used by the gate's choice contract")]
     score: Option<f32>,
     #[serde(default)]
     confidence: Option<f32>,
@@ -253,9 +253,7 @@ impl SystemOneAnswer {
                     class: self
                         .probabilities
                         .iter()
-                        .max_by(|a, b| a.1.partial_cmp(b.1).expect("finite"))
-                        .map(|(k, _)| k.clone())
-                        .unwrap_or_else(|| verdict.clone()),
+                        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)).map_or_else(|| verdict.clone(), |(k, _)| k.clone()),
                     confidence,
                     reason: None,
                     is_secret: None,
@@ -415,9 +413,8 @@ impl DecisionGate {
             let span = cand.text.clone();
             let ctx = context_around(text, cand, self.config.context_chars);
             let instructions = format!(
-                "Adjudicate the span `{}` (in the state) as a secret/credential/PII. \
-                 Context: ...{}...",
-                span, ctx
+                "Adjudicate the span `{span}` (in the state) as a secret/credential/PII. \
+                 Context: ...{ctx}..."
             );
             let mut criteria = serde_json::Map::new();
             criteria.insert("redact".to_string(), serde_json::json!("Real secret/credential/PII; must be redacted"));
@@ -428,7 +425,7 @@ impl DecisionGate {
                 "instructions": instructions,
                 "criteria": criteria,
             });
-            questions.insert(format!("cand_{}", i), q);
+            questions.insert(format!("cand_{i}"), q);
         }
         let body = serde_json::json!({
             "state": text,
@@ -443,7 +440,7 @@ impl DecisionGate {
         let url = if base.ends_with("/v1/systemone") || base.ends_with("/systemone") {
             base.to_string()
         } else {
-            format!("{}/v1/systemone", base)
+            format!("{base}/v1/systemone")
         };
         let mut req = ureq::post(&url)
             .config()
@@ -468,9 +465,9 @@ impl DecisionGate {
             .context("parsing systemone response")?;
         let mut out = std::collections::HashMap::new();
         for (i, _cand) in candidates.iter().enumerate() {
-            let key = format!("cand_{}", i);
+            let key = format!("cand_{i}");
             let ans = parsed.answers.get(&key);
-            let ma = ans.and_then(|a| a.as_decision());
+            let ma = ans.and_then(SystemOneAnswer::as_decision);
             if let Some(ma) = ma {
                 out.insert(i, ma);
             } else {
@@ -498,7 +495,7 @@ impl DecisionGate {
              in the same order as the candidates."
                 .to_string(),
         );
-        lines.push(format!("Candidates (index | span | context):"));
+        lines.push("Candidates (index | span | context):".to_string());
         for (i, cand) in candidates.iter().enumerate() {
             let ctx = context_around(text, cand, self.config.context_chars);
             lines.push(format!(
@@ -553,9 +550,7 @@ impl DecisionGate {
         // and parse THAT as the candidate answers.
         let inner = serde_json::from_str::<ChatResponse>(&content)
             .ok()
-            .and_then(|c| c.choices.into_iter().next())
-            .map(|c| c.message.content)
-            .unwrap_or_else(|| content.clone());
+            .and_then(|c| c.choices.into_iter().next()).map_or_else(|| content.clone(), |c| c.message.content);
         if std::env::var("NYM_DEBUG_DECISION").is_ok() {
             eprintln!("[decision] inner:\n{inner}");
         }
@@ -566,9 +561,9 @@ impl DecisionGate {
 
 /// Extract named-model punctures: apply a raw model answer onto a decision.
 fn apply_answer(decision: &mut Decision, ans: &ModelAnswer, threshold: f32) {
-    decision.class = ans.class.clone();
+    decision.class.clone_from(&ans.class);
     decision.confidence = ans.confidence;
-    decision.reason = ans.reason.clone();
+    decision.reason.clone_from(&ans.reason);
 
     let v = ans.verdict.to_lowercase();
     // Trust the model's explicit verdict if it is unambiguous.
@@ -600,6 +595,7 @@ fn apply_answer(decision: &mut Decision, ans: &ModelAnswer, threshold: f32) {
 /// - one JSON object per line (the requested form);
 /// - a single JSON object (the model answered once, e.g. for one candidate);
 /// - a JSON array of objects.
+///
 /// Any prose wrapping is tolerated by scanning for `{...}` blocks.
 fn parse_model_answer_lines(content: &str) -> Vec<ModelAnswer> {
     let trimmed = content.trim();
@@ -626,20 +622,20 @@ fn parse_model_answer_lines(content: &str) -> Vec<ModelAnswer> {
         // Match the closing brace (naive nesting depth).
         let mut depth = 0usize;
         let mut close = open;
-        for j in open..bytes.len() {
-            match bytes[j] {
+        for (offset, &b) in bytes[open..].iter().enumerate() {
+            match b {
                 b'{' => depth += 1,
                 b'}' => {
                     depth = depth.saturating_sub(1);
                     if depth == 0 {
-                        close = j;
+                        close = open + offset;
                         break;
                     }
                 }
                 _ => {}
             }
         }
-        let candidate = &trimmed[open..close + 1];
+        let candidate = &trimmed[open..=close];
         if let Ok(ans) = serde_json::from_str::<ModelAnswer>(candidate) {
             out.push(ans);
         }
@@ -693,6 +689,10 @@ fn entropy_candidates(text: &str, matches: &[PiiMatch]) -> Vec<Candidate> {
     out
 }
 
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "character-count entropy of a token; usize->f64 for log2 division cannot lose meaningful precision at these magnitudes"
+)]
 fn high_entropy(s: &str) -> bool {
     use std::collections::HashMap;
     if s.len() < 32 {
@@ -714,6 +714,7 @@ fn high_entropy(s: &str) -> bool {
 }
 
 static TOKEN_ISH: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
+    #[expect(clippy::expect_used, reason = "static regex literal is infallible")]
     regex::Regex::new(r"\b[A-Za-z0-9+/=_\-]{32,}\b").expect("static regex is valid")
 });
 #[cfg(test)]
@@ -855,12 +856,12 @@ mod tests {
 
     #[test]
     fn systemone_response_parses_answers_by_question_id() {
-        let raw = r##"{"model":"kev-latest","answers":{
+        let raw = r#"{"model":"kev-latest","answers":{
             "cand_0":{"type":"choice","choice":"redact","confidence":0.76,
                        "probabilities":{"redact":0.84,"keep":0.03,"flag":0.12}},
             "cand_1":{"type":"choice","choice":"keep","confidence":0.9,
                        "probabilities":{"redact":0.02,"keep":0.93,"flag":0.05}}
-        },"usage":{"input_tokens":227,"output_tokens":179}}"##;
+        },"usage":{"input_tokens":227,"output_tokens":179}}"#;
         let resp: SystemOneResponse = serde_json::from_str(raw).expect("parse");
         assert!(resp.answers.contains_key("cand_0"));
         let a0 = resp.answers["cand_0"].as_decision().unwrap();

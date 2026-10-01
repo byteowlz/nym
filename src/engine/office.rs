@@ -40,6 +40,14 @@ type Error = Box<dyn std::error::Error + Send + Sync>;
 /// A replacement span in paragraph-text coordinates: `(start, end, replacement)`.
 type Span = (usize, usize, String);
 
+/// Case-insensitive `.xml` extension check (zip archive entry names are not
+/// guaranteed to match case).
+fn ends_with_xml_ci(name: &str) -> bool {
+    Path::new(name)
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("xml"))
+}
+
 /// Supported office document families.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum OfficeFormat {
@@ -120,8 +128,8 @@ fn profile_for(fmt: OfficeFormat, name: &str) -> Option<PartProfile> {
                 || name == "word/footnotes.xml"
                 || name == "word/endnotes.xml"
                 || name == "word/comments.xml"
-                || (name.starts_with("word/header") && name.ends_with(".xml"))
-                || (name.starts_with("word/footer") && name.ends_with(".xml"));
+                || (name.starts_with("word/header") && ends_with_xml_ci(name))
+                || (name.starts_with("word/footer") && ends_with_xml_ci(name));
             is_text_part.then_some(PartProfile {
                 groups: &["p"],
                 rule: TextRule::Elems(&["t"]),
@@ -132,7 +140,7 @@ fn profile_for(fmt: OfficeFormat, name: &str) -> Option<PartProfile> {
             let is_text_part = (name.starts_with("ppt/slides/")
                 || name.starts_with("ppt/notesSlides/")
                 || name.starts_with("ppt/comments"))
-                && name.ends_with(".xml");
+                && ends_with_xml_ci(name);
             is_text_part.then_some(PartProfile {
                 groups: &["p"],
                 rule: TextRule::Elems(&["t"]),
@@ -146,7 +154,7 @@ fn profile_for(fmt: OfficeFormat, name: &str) -> Option<PartProfile> {
                     rule: TextRule::Elems(&["t"]),
                     preserve_space: true,
                 })
-            } else if name.starts_with("xl/worksheets/sheet") && name.ends_with(".xml") {
+            } else if name.starts_with("xl/worksheets/sheet") && ends_with_xml_ci(name) {
                 // Only inline strings (`<is><t>`): formulas (`f`) and cell
                 // values (`v`, numbers / shared-string indices) stay untouched.
                 Some(PartProfile {
@@ -154,7 +162,7 @@ fn profile_for(fmt: OfficeFormat, name: &str) -> Option<PartProfile> {
                     rule: TextRule::Elems(&["t"]),
                     preserve_space: true,
                 })
-            } else if name.starts_with("xl/comments") && name.ends_with(".xml") {
+            } else if name.starts_with("xl/comments") && ends_with_xml_ci(name) {
                 Some(PartProfile {
                     groups: &["text"],
                     rule: TextRule::Elems(&["t"]),

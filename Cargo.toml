@@ -94,7 +94,6 @@ tempfile = "3"
 default = ["progress", "streaming", "ocr", "ner"]
 progress = ["indicatif"]
 streaming = ["tokio", "futures", "async-stream"]
-bench = ["ureq"]
 
 # Decision-model adjudication layer (OpenAI-compatible endpoint).
 # A System-One style gate that classifies candidate spans (detected matches +

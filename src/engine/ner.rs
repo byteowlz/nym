@@ -92,19 +92,16 @@ fn label_to_pattern_name(label: &str) -> &'static str {
 #[cfg(feature = "ner")]
 fn label_to_category(label: &str) -> PiiCategory {
     match label.to_lowercase().as_str() {
-        // Names are identity
-        "person" | "first_name" | "firstname" | "last_name" | "lastname" => PiiCategory::Identity,
-        // Organizations
-        "organization" | "company" | "org" => PiiCategory::Other,
+        // Names and birthdates are identity
+        "person" | "first_name" | "firstname" | "last_name" | "lastname" | "date_of_birth"
+        | "dob" | "birthday" | "birthdate" => PiiCategory::Identity,
         // Locations are contact info
         "street_address" | "address" | "city" | "state" | "country" | "location" => {
             PiiCategory::Contact
         }
         // Phone is contact
         "phone_number" | "phone" => PiiCategory::Contact,
-        // Dates can be identity (birthdate) or other
-        "date_of_birth" | "dob" | "birthday" | "birthdate" => PiiCategory::Identity,
-        "date" | "time" => PiiCategory::Other,
+        // Organizations, dates, times, and anything unclassified are "other".
         _ => PiiCategory::Other,
     }
 }
@@ -361,19 +358,12 @@ impl NerDetector {
                 let digit_count = text.chars().filter(char::is_ascii_digit).count();
                 digit_count >= 7
             }
-            // Persons should have at least 2 characters and ideally a space (first + last)
-            "person" => text.len() >= 2,
-            // Countries should be at least 2 characters
-            "country" => text.len() >= 2,
-            // Cities should be at least 2 characters
-            "city" => text.len() >= 2,
             // Street addresses should have multiple words or a number
             "street_address" | "address" => {
                 text.split_whitespace().count() >= 2 || text.chars().any(|c| c.is_ascii_digit())
             }
-            // Organizations should be at least 2 characters
-            "organization" | "company" => text.len() >= 2,
-            // Default: accept if at least 2 characters
+            // Persons, countries, cities, organizations, and the default all
+            // accept a minimum of 2 characters.
             _ => text.len() >= 2,
         }
     }
@@ -390,7 +380,7 @@ impl NerDetector {
         for (chunk_text, chunk_offset) in &chunks {
             // First, find cached entities in this chunk using fast string matching
             let cached_matches =
-                self.find_cached_entities(chunk_text, *chunk_offset, &entity_cache);
+                Self::find_cached_entities(chunk_text, *chunk_offset, &entity_cache);
             all_matches.extend(cached_matches);
 
             // Then run NER on the chunk to find new entities
@@ -418,7 +408,7 @@ impl NerDetector {
         }
 
         // Deduplicate overlapping matches (from chunk overlap regions)
-        self.deduplicate_matches(&mut all_matches);
+        Self::deduplicate_matches(&mut all_matches);
 
         // Sort by position
         all_matches.sort_by_key(|m| (m.start, std::cmp::Reverse(m.end - m.start)));
@@ -467,7 +457,6 @@ impl NerDetector {
 
     /// Find cached entities in text using fast string matching.
     fn find_cached_entities(
-        &self,
         text: &str,
         offset: usize,
         cache: &[CachedEntity],
@@ -512,7 +501,7 @@ impl NerDetector {
     }
 
     /// Remove duplicate matches from overlapping chunk regions.
-    fn deduplicate_matches(&self, matches: &mut Vec<PiiMatch>) {
+    fn deduplicate_matches(matches: &mut Vec<PiiMatch>) {
         if matches.len() <= 1 {
             return;
         }

@@ -85,6 +85,10 @@ fn parse(json: &str) -> Result<Vec<CatalogModel>> {
 }
 
 /// The catalog compiled into this binary.
+#[expect(
+    clippy::expect_used,
+    reason = "BAKED_JSON is a compile-time constant committed with the binary and validated by a test; a parse failure is a build bug"
+)]
 pub fn baked() -> Vec<CatalogModel> {
     parse(BAKED_JSON).expect("baked catalog.json is valid and matches the schema")
 }

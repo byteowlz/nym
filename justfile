@@ -48,10 +48,6 @@ test-ner:
 test-all:
     cargo test --all-features
 
-# Run tests with NER and bench features
-test-ner-bench:
-    cargo test --features "ner,bench"
-
 # Run tests with nextest (faster, install with: cargo install cargo-nextest)
 test-fast:
     cargo nextest run --no-fail-fast
@@ -71,10 +67,6 @@ build-release:
 # Build release with NER support (CPU)
 build-ner:
     cargo build --release --features ner
-
-# Build release with NER + bench support
-build-ner-bench:
-    cargo build --release --features "ner,bench"
 
 # Build release with NER + CoreML (macOS Apple Silicon)
 build-ner-coreml:
@@ -123,10 +115,6 @@ install-default:
 # Install nym with NER support (CPU)
 install-ner:
     cargo install --path . --features ner
-
-# Install nym with NER + bench support
-install-ner-bench:
-    cargo install --path . --features "ner,bench"
 
 # Install nym with all features
 install-full:
@@ -187,22 +175,6 @@ example-stream:
 # Stream detect example (streaming is default)
 example-stream-detect:
     cat examples/person.md | cargo run --release -- detect --stream
-
-# =============================================================================
-# Benchmarking
-# =============================================================================
-
-# Run benchmark on HuggingFace dataset (100 examples)
-bench-hf:
-    cargo run --release --features "ner,bench" -- bench ai4privacy/pii-masking-300k --split train -n 100 --ner
-
-# Run benchmark on HuggingFace dataset (10% sample)
-bench-hf-sample dataset="ai4privacy/pii-masking-300k" pct="10":
-    cargo run --release --features "ner,bench" -- bench {{dataset}} --split train -p {{pct}} --ner
-
-# Run benchmark on local JSONL file
-bench-local file:
-    cargo run --release --features "ner,bench" -- bench "{{file}}" --ner
 
 # =============================================================================
 # Documentation

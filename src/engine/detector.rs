@@ -229,10 +229,10 @@ pub struct Detector {
     patterns: Vec<&'static PiiPattern>,
     /// Optional GLiNER detector for name/address detection
     #[cfg(feature = "ner")]
-    ner_detector: Option<NerDetector>,
+    ner: Option<NerDetector>,
     /// Optional token-classification detector
     #[cfg(feature = "ner")]
-    token_detector: Option<TokenClassDetector>,
+    token: Option<TokenClassDetector>,
 }
 
 impl Detector {
@@ -288,9 +288,9 @@ impl Detector {
             regex_set,
             patterns,
             #[cfg(feature = "ner")]
-            ner_detector,
+            ner: ner_detector,
             #[cfg(feature = "ner")]
-            token_detector,
+            token: token_detector,
         }
     }
 
@@ -321,7 +321,7 @@ impl Detector {
             }
         };
 
-        info!("NER model loaded from: {:?}", paths.model);
+        info!("NER model loaded from: {}", paths.model.display());
 
         // Create detector
         match NerDetector::new(
@@ -402,7 +402,7 @@ impl Detector {
 
         // NER-based detection
         #[cfg(feature = "ner")]
-        if let Some(ref ner) = self.ner_detector {
+        if let Some(ref ner) = self.ner {
             match ner.detect(text) {
                 Ok(ner_matches) => {
                     // Add NER matches, avoiding duplicates with regex matches
@@ -426,7 +426,7 @@ impl Detector {
 
         // Token-classification detection (runs alongside GLiNER)
         #[cfg(feature = "ner")]
-        if let Some(ref token) = self.token_detector {
+        if let Some(ref token) = self.token {
             match token.detect(text) {
                 Ok(token_matches) => {
                     for nm in token_matches {
@@ -471,11 +471,11 @@ impl Detector {
 
         // Batched token-classification NER.
         #[cfg(feature = "ner")]
-        if let Some(ref token) = self.token_detector {
+        if let Some(ref token) = self.token {
             let batch: Vec<Vec<PiiMatch>> = match token.detect_batch(texts) {
                 Ok(b) => b,
                 Err(e) => {
-                    log::warn!("Token-classification NER batch failed: {}", e);
+                    log::warn!("Token-classification NER batch failed: {e}");
                     vec![Vec::new(); n]
                 }
             };
@@ -492,7 +492,7 @@ impl Detector {
         }
 
         // Sort each per matches by start then longer-first.
-        for matches in per_text.iter_mut() {
+        for matches in &mut per_text {
             matches.sort_by(|a, b| a.start.cmp(&b.start).then_with(|| b.len().cmp(&a.len())));
         }
         per_text
@@ -549,7 +549,7 @@ impl Detector {
     /// Check if NER detection is enabled and initialized.
     #[cfg(feature = "ner")]
     pub fn ner_enabled(&self) -> bool {
-        self.ner_detector.is_some()
+        self.ner.is_some()
     }
 
     /// Check if NER detection is enabled (always false without feature).

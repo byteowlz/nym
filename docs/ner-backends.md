@@ -202,13 +202,6 @@ Takeaways:
   structured identifiers and finds nothing free-form. See "Is regex still
   valuable?" below.
 
-Reproduce:
-
-```bash
-cargo build --features "ner,bench"
-nym bench ai4privacy/pii-masking-300k -n 1000 --ignore-labels --config nym.toml
-```
-
 Caveats: label-agnostic span scoring (label-keyed scores need a per-backend label
 mapping); ai4privacy is general-domain PII while OpenMed is tuned for
 clinical/HIPAA text — a clinical dataset would likely favour it further.

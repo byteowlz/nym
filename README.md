@@ -27,9 +27,6 @@ cargo install --path . --features ner
 
 # With NER + the decision-model adjudication gate
 cargo install --path . --features "ner,decision"
-
-# With all features (NER + bench)
-cargo install --path . --all-features
 ```
 
 ### Platform-Specific NER Builds

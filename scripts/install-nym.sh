@@ -23,7 +23,6 @@ echo ""
 # `ner` feature, already in nym's default feature set.
 FEATURES=""
 ENABLE_NER=true
-ENABLE_BENCH=false
 
 echo "NER is built in. Select hardware acceleration for it:"
 echo ""
@@ -76,26 +75,6 @@ case "${HW_CHOICE}" in
         FEATURES=""
         ;;
 esac
-
-# Ask about bench feature
-echo ""
-echo "Do you want benchmarking support for accuracy testing?"
-echo "Bench allows testing detection accuracy against HuggingFace datasets."
-echo ""
-echo "  1) No  - Skip benchmarking"
-echo "  2) Yes - Include bench command (downloads datasets from HuggingFace)"
-echo ""
-read -p "Enter choice [1]: " BENCH_CHOICE
-BENCH_CHOICE="${BENCH_CHOICE:-1}"
-
-if [[ "${BENCH_CHOICE}" == "2" ]]; then
-    ENABLE_BENCH=true
-    if [[ -n "${FEATURES}" ]]; then
-        FEATURES="${FEATURES},bench"
-    else
-        FEATURES="bench"
-    fi
-fi
 
 echo ""
 echo "=========================================="
@@ -188,12 +167,5 @@ if [[ "${ENABLE_NER}" == "true" ]]; then
     echo "  nym models pull [query]        # fuzzy-pick and download"
     echo "  nym models use [query]         # set the default model"
     echo "See docs/ner-backends.md for details."
-    echo ""
-fi
-
-if [[ "${ENABLE_BENCH}" == "true" ]]; then
-    echo "Benchmarking support enabled. Test accuracy with:"
-    echo "  nym bench ai4privacy/pii-masking-300k --ner -n 100"
-    echo "  nym bench /path/to/dataset.jsonl"
     echo ""
 fi

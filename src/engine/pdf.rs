@@ -197,6 +197,7 @@ impl FontCodec {
     }
 }
 
+#[expect(clippy::cast_possible_truncation, reason = "intentional byte extraction from a u32 code point")]
 fn code_to_bytes(code: u32, len: usize) -> Vec<u8> {
     match len {
         2 => vec![(code >> 8) as u8, (code & 0xff) as u8],
@@ -233,10 +234,7 @@ fn parse_tounicode_cmap(data: &[u8]) -> Option<(usize, HashMap<u32, String>)> {
                     match t {
                         Tok::Hex(lo) => {
                             code_len = code_len.max(lo.len().min(2));
-                            let hi = match toks.next() {
-                                Some(Tok::Hex(h)) => h,
-                                _ => break,
-                            };
+                            let Some(Tok::Hex(hi)) = toks.next() else { break };
                             match toks.next() {
                                 Some(Tok::Hex(dst)) => {
                                     let (lo, hi) = (bytes_to_code(&lo), bytes_to_code(&hi));
@@ -440,8 +438,7 @@ fn assemble_text(ops: &[Operation], fonts: &HashMap<Vec<u8>, FontCodec>) -> Stre
                 let ty = op.operands.get(1).and_then(object_as_f64).unwrap_or(0.0);
                 push_sep(&mut st, if ty.abs() > f64::EPSILON { '\n' } else { ' ' });
             }
-            "T*" | "ET" => push_sep(&mut st, '\n'),
-            "Tm" => push_sep(&mut st, '\n'),
+            "T*" | "ET" | "Tm" => push_sep(&mut st, '\n'),
             "Tj" | "'" | "\"" => {
                 let Some(idx) = text_operand_index(op.operator.as_str()) else {
                     continue;
@@ -489,6 +486,7 @@ fn assemble_text(ops: &[Operation], fonts: &HashMap<Vec<u8>, FontCodec>) -> Stre
     st
 }
 
+#[expect(clippy::cast_precision_loss, reason = "PDF integer coordinates cast to f64 for math; 2^53 range is sufficient")]
 fn object_as_f64(o: &Object) -> Option<f64> {
     match o {
         Object::Integer(i) => Some(*i as f64),
@@ -531,6 +529,7 @@ struct Cut {
 
 /// Apply detector+replacer to one stream's operations; returns edited ops and
 /// how many placeholders could be encoded into the font.
+#[expect(clippy::type_complexity, reason = "per-(op,elem) grouping key and range are internal to the pass")]
 fn redact_ops(
     ops: &mut [Operation],
     st: &StreamText,
@@ -790,6 +789,7 @@ fn scrub_text_value(
 
 /// Redact a PDF. Returns the new bytes, the replacement log, and a report.
 /// With `strict`, any undecodable text operator aborts the run.
+#[expect(clippy::type_complexity, reason = "return tuple is the public redaction contract")]
 pub fn redact(
     bytes: &[u8],
     detector: &Detector,

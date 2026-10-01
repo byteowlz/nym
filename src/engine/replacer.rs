@@ -931,7 +931,7 @@ impl Replacer {
 
         // Sort components by length (longest first) to avoid partial replacements
         let mut components: Vec<_> = self.component_cache.iter().collect();
-        components.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+        components.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
 
         for (orig, repl) in components {
             // Case-insensitive replacement

@@ -141,7 +141,7 @@ impl TokenClassDetector {
             .map(|c| dir.join(c))
             .find(|p| p.exists())
             .ok_or_else(|| {
-                format!("no ONNX model found in {dir:?} (looked for {MODEL_CANDIDATES:?})")
+                format!("no ONNX model found in {} (looked for {MODEL_CANDIDATES:?})", dir.display())
             })?;
         Self::build(&model_path, &dir.join("tokenizer.json"), &dir.join("config.json"), threshold)
     }
@@ -247,9 +247,16 @@ impl TokenClassDetector {
         let threads = std::thread::available_parallelism()
             .map_or(1, std::num::NonZero::get);
         // The builder is only reassigned inside the hardware-execution-provider
-        // feature blocks below (CoreML/CUDA/TensorRT); in a default build the
-        // `mut` is unused.
-        #[expect(unused_mut, reason = "assigned only when a hardware execution-provider feature is enabled")]
+        // feature blocks below (CoreML/CUDA/TensorRT); when none of those are
+        // enabled the `mut` is unused.
+        #[cfg_attr(
+            not(any(
+                feature = "ner-coreml",
+                feature = "ner-cuda",
+                feature = "ner-tensorrt"
+            )),
+            expect(unused_mut, reason = "assigned only when a hardware execution-provider feature is enabled")
+        )]
         let mut builder = Session::builder()?.with_intra_threads(threads)?;
         // On Apple Silicon, register the CoreML execution provider so the
         // token-classification model runs on the ANE/GPU instead of CPU. CoreML
@@ -277,7 +284,7 @@ impl TokenClassDetector {
         #[cfg(feature = "ner-tensorrt")]
         {
             builder = builder.with_execution_providers([
-                ort::execution_providers::TensorRtExecutionProvider::default().build(),
+                ort::execution_providers::TensorRTExecutionProvider::default().build(),
             ])?;
         }
         let session = builder.commit_from_file(model_path)?;
@@ -326,7 +333,7 @@ impl TokenClassDetector {
             let matches = self.detect_chunk(&chunk_text, chunk_offset)?;
             all_matches.extend(matches);
         }
-        self.deduplicate_matches(&mut all_matches);
+        Self::deduplicate_matches(&mut all_matches);
         all_matches.sort_by_key(|m| (m.start, std::cmp::Reverse(m.end - m.start)));
         Ok(all_matches)
     }
@@ -342,6 +349,11 @@ impl TokenClassDetector {
     /// offsets/special mask, so results are identical to N single (`detect`)
     /// calls.
     #[cfg(feature = "decision")]
+    #[expect(
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        reason = "n/seq and token counts are small positive dimensions; the i64/f32 casts for tensor shape and probability averaging cannot lose meaningful precision here"
+    )]
     pub fn detect_batch(
         &self,
         texts: &[&str],
@@ -377,12 +389,9 @@ impl TokenClassDetector {
                 encodings.push(None);
                 continue;
             }
-            let encoding = match self.tokenizer.encode(trimmed, true) {
-                Ok(e) => e,
-                Err(_) => {
-                    encodings.push(None);
-                    continue;
-                }
+            let Ok(encoding) = self.tokenizer.encode(trimmed, true) else {
+                encodings.push(None);
+                continue;
             };
             let ids = encoding.get_ids();
             if ids.is_empty() {
@@ -394,7 +403,7 @@ impl TokenClassDetector {
         }
 
         // If nothing encoded, return empties.
-        if encodings.iter().all(|e| e.is_none()) {
+        if encodings.iter().all(std::option::Option::is_none) {
             return Ok(out);
         }
 
@@ -487,6 +496,11 @@ impl TokenClassDetector {
     }
 
     /// Run inference on a single chunk and decode entities at `offset`.
+    #[expect(
+        clippy::cast_possible_wrap,
+        clippy::cast_precision_loss,
+        reason = "seq_len and token counts are small positive dimensions; the f32/f64 casts for tensor shape and probability averaging cannot lose meaningful precision here"
+    )]
     fn detect_chunk(
         &self,
         text: &str,
@@ -651,9 +665,8 @@ impl TokenClassDetector {
     /// Returns a single whole-text chunk when the text fits in one window, and
     /// on tokenizer failure (the caller then runs it unwindowed).
     fn split_into_chunks(&self, text: &str) -> Vec<(String, usize)> {
-        let encoding = match self.tokenizer.encode(text, false) {
-            Ok(e) => e,
-            Err(_) => return vec![(text.to_string(), 0)],
+        let Ok(encoding) = self.tokenizer.encode(text, false) else {
+            return vec![(text.to_string(), 0)];
         };
         let offsets = encoding.get_offsets();
         if offsets.is_empty() {
@@ -691,7 +704,7 @@ impl TokenClassDetector {
     }
 
     /// Remove duplicate/contained matches arising from chunk overlap.
-    fn deduplicate_matches(&self, matches: &mut Vec<PiiMatch>) {
+    fn deduplicate_matches(matches: &mut Vec<PiiMatch>) {
         if matches.len() <= 1 {
             return;
         }
@@ -1008,6 +1021,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::float_cmp,
+        reason = "a single-logit softmax yields exactly 0.0 remaining mass, so exact comparison is intended"
+    )]
     fn test_softmax_best_entity_only_o_label() {
         let (idx, mass) = softmax_best_entity(&[3.0], 0);
         assert_eq!(idx, 0);

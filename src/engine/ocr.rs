@@ -213,7 +213,7 @@ impl OcrEngine {
                     std::fs::write(&path, bytes)?;
                     paths.push(path);
                 }
-                let result = self.run_json_engine(template, &paths);
+                let result = Self::run_json_engine(template, &paths);
                 // Always clean up temp files, on both success and failure.
                 for p in &paths {
                     let _ = std::fs::remove_file(p);
@@ -244,7 +244,6 @@ impl OcrEngine {
     /// parse the output, accepting either a single `OcrOutput` or a JSON array
     /// of them (nym-ocr emits an array when given multiple images).
     fn run_json_engine(
-        &self,
         template: &[String],
         paths: &[PathBuf],
     ) -> Result<Vec<OcrOutput>, Error> {
@@ -270,12 +269,12 @@ impl OcrEngine {
         // A single object or an array of objects.
         let value: serde_json::Value =
             serde_json::from_slice(&output.stdout).map_err(|e| format!("invalid OCR engine JSON: {e}"))?;
-        self.parse_output_value(value)
+        Self::parse_output_value(value)
     }
 
     /// Parse engine output that is either a single `OcrOutput` or a JSON array
     /// of them (nym-ocr emits an array when given multiple images).
-    fn parse_output_value(&self, value: serde_json::Value) -> Result<Vec<OcrOutput>, Error> {
+    fn parse_output_value(value: serde_json::Value) -> Result<Vec<OcrOutput>, Error> {
         match value {
             serde_json::Value::Array(items) => items
                 .into_iter()
@@ -306,6 +305,7 @@ fn temp_path(ext: &str) -> PathBuf {
 }
 
 /// Parse tesseract TSV (level 5 rows are words; conf is 0-100).
+#[expect(clippy::many_single_char_names, reason = "tesseract TSV parser with inherently short locals (f/x,y,w,h,conf)")]
 fn parse_tesseract_tsv(tsv: &str) -> OcrOutput {
     let mut words = Vec::new();
     for line in tsv.lines().skip(1) {
@@ -398,6 +398,7 @@ pub struct Rect {
 /// `precise` paints a proportional slice of each overlapped region (expanded
 /// by ~1.5 average character widths on both sides); otherwise the full region
 /// box is used (the escalation path).
+#[expect(clippy::cast_precision_loss, reason = "box-coordinate ratios; usize cast to f64 loses precision only beyond 2^52, irrelevant for pixel boxes")]
 fn boxes_for_span(ocr: &OcrText, out: &OcrOutput, s: usize, e: usize, precise: bool) -> Vec<Rect> {
     let mut rects = Vec::new();
     for &(ws, we, idx) in &ocr.spans {
@@ -678,16 +679,17 @@ fn collect_pdf_jpegs(pdf_bytes: &[u8]) -> Result<Vec<Vec<u8>>, Error> {
 #[derive(Debug, Default)]
 pub struct PdfOcrReport {
     /// JPEG images that were OCR'd (and possibly painted).
-    pub images_scanned: usize,
+    pub scanned: usize,
     /// Images whose codec is unsupported for redaction (CCITT, JBIG2, ...).
-    pub images_unsupported: usize,
+    pub unsupported: usize,
     /// Images where PII was found and painted.
-    pub images_redacted: usize,
+    pub redacted: usize,
 }
 
 /// OCR-redact the raster images inside a PDF (first slice: DCTDecode/JPEG,
 /// the format consumer scanners produce). Unsupported codecs are counted and,
 /// with `strict`, cause a hard error.
+#[expect(clippy::type_complexity, reason = "return tuple is the engine's public contract")]
 pub fn redact_pdf_images(
     pdf_bytes: &[u8],
     engine: &OcrEngine,
@@ -748,18 +750,18 @@ pub fn redact_pdf_images(
                 if is_jpeg {
                     jpeg_ids.push(id);
                 } else {
-                    report.images_unsupported += 1;
+                    report.unsupported += 1;
                 }
             }
         }
     }
 
-    if strict && report.images_unsupported > 0 {
+    if strict && report.unsupported > 0 {
         return Err(format!(
             "{} raster image(s) use codecs not yet supported for OCR redaction \
              (e.g. CCITT/JBIG2); their pixels cannot be inspected. Refusing \
              (pass --no-strict-pdf to override).",
-            report.images_unsupported
+            report.unsupported
         )
         .into());
     }
@@ -774,7 +776,7 @@ pub fn redact_pdf_images(
             jpegs.push(stream.content.clone());
         }
     }
-    report.images_scanned = jpegs.len();
+    report.scanned = jpegs.len();
 
     let inputs: Vec<(Vec<u8>, String)> =
         jpegs.iter().map(|j| (j.clone(), "jpg".to_string())).collect();
@@ -785,7 +787,7 @@ pub fn redact_pdf_images(
         match redact_image_from_recognition(jpeg, RasterFormat::Jpeg, engine, output, detector, replacer)? {
             None => {}
             Some(red) => {
-                report.images_redacted += 1;
+                report.redacted += 1;
                 if let Ok(obj) = doc.get_object_mut(*id)
                     && let Ok(stream) = obj.as_stream_mut() {
                         // Re-encoded as RGB JPEG: keep DCTDecode, fix the
@@ -901,14 +903,9 @@ mod tests {
     fn run_json_engine_parses_single_object() {
         // A single-image engine emitting one OcrOutput object.
         let json = r#"{"engine":"e","words":[{"text":"hi","conf":0.9,"x":1,"y":2,"w":3,"h":4}]}"#;
-        let engine = OcrEngine {
-            kind: EngineKind::Json(vec!["cat".into()]),
-            min_confidence: 0.0,
-        };
-        // Write the JSON to a temp file path is not needed; instead we invoke
-        // the internal parser directly.
+        // The parser is an associated function; feed it the engine output JSON.
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
-        let parsed = engine.parse_output_value(value).unwrap();
+        let parsed = OcrEngine::parse_output_value(value).unwrap();
         assert_eq!(parsed.len(), 1);
         assert_eq!(parsed[0].words[0].text, "hi");
     }
@@ -920,12 +917,8 @@ mod tests {
           {"engine":"e","words":[{"text":"one","conf":0.9,"x":1,"y":2,"w":3,"h":4}]},
           {"engine":"e","words":[{"text":"two","conf":0.9,"x":1,"y":2,"w":3,"h":4}]}
         ]"#;
-        let engine = OcrEngine {
-            kind: EngineKind::Json(vec!["cat".into()]),
-            min_confidence: 0.0,
-        };
         let value: serde_json::Value = serde_json::from_str(json).unwrap();
-        let parsed = engine.parse_output_value(value).unwrap();
+        let parsed = OcrEngine::parse_output_value(value).unwrap();
         assert_eq!(parsed.len(), 2);
         assert_eq!(parsed[0].words[0].text, "one");
         assert_eq!(parsed[1].words[0].text, "two");

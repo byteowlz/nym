@@ -20,8 +20,6 @@ use clap_complete::Shell;
 use log::{debug, info};
 use serde::{Deserialize, Serialize};
 
-#[cfg(feature = "bench")]
-mod bench;
 mod config;
 mod engine;
 mod session;
@@ -69,14 +67,12 @@ fn try_main() -> Result<()> {
         Command::Deanon(cmd) => handle_deanon(&cli.common, cmd),
         Command::Detect(cmd) => handle_detect(&cli.common, &config, cmd),
         #[cfg(feature = "decision")]
-        Command::Decide(cmd) => handle_decide(&cli.common, &config, cmd),
+        Command::Decide(cmd) => handle_decide(&cli.common, &config, &cmd),
         Command::Patterns(cmd) => handle_patterns(&cli.common, cmd),
         Command::Config(cmd) => handle_config(&cli.common, &config, cmd),
         Command::Sessions(cmd) => handle_sessions(&cli.common, cmd),
         #[cfg(feature = "ner")]
         Command::Models(cmd) => handle_models(&cli.common, &config, cmd),
-        #[cfg(feature = "bench")]
-        Command::Bench(cmd) => handle_bench(&cli.common, &config, cmd),
         Command::Completions { shell } => handle_completions(shell),
     }
 }
@@ -273,10 +269,6 @@ enum Command {
     /// List, download, and select NER models
     #[cfg(feature = "ner")]
     Models(ModelsCommand),
-
-    /// Benchmark PII detection accuracy
-    #[cfg(feature = "bench")]
-    Bench(BenchCommand),
 
     /// Generate shell completions
     Completions {
@@ -598,6 +590,7 @@ struct DetectCommand {
 // -----------------------------------------------------------------------------
 
 /// Adjudicate detected spans with a decision model (keep/redact/flag).
+#[expect(clippy::struct_excessive_bools, reason = "clap CLI struct; splitting into enums would complicate flag parsing")]
 #[derive(Debug, Clone, Args)]
 struct DecideCommand {
     /// Input file (reads from stdin if not specified)
@@ -707,63 +700,6 @@ enum ConfigAction {
         #[arg(short, long)]
         force: bool,
     },
-}
-
-// -----------------------------------------------------------------------------
-// Bench Command
-// -----------------------------------------------------------------------------
-
-#[cfg(feature = "bench")]
-#[derive(Debug, Clone, Args)]
-struct BenchCommand {
-    /// Dataset source: HuggingFace dataset name or path to JSONL file
-    #[arg(value_name = "SOURCE")]
-    source: String,
-
-    /// Dataset split for HuggingFace datasets (train, validation, test)
-    #[arg(long, default_value = "train")]
-    split: String,
-
-    /// Number of examples to process (e.g., 100, 1000)
-    #[arg(long, short = 'n')]
-    num_examples: Option<usize>,
-
-    /// Percentage of dataset to sample (0.0-100.0)
-    #[arg(long, short = 'p', value_name = "PERCENT")]
-    sample: Option<f64>,
-
-    /// Use strict matching (exact span) instead of overlap
-    #[arg(long)]
-    strict: bool,
-
-    /// Ignore entity labels when matching (count any span overlap as a hit).
-    /// Fair when comparing NER backends with different label taxonomies.
-    #[arg(long)]
-    ignore_labels: bool,
-
-    /// Enable NER-based detection
-    #[arg(long)]
-    ner: bool,
-
-    /// Minimum confidence level
-    #[arg(long, value_enum, default_value_t = ConfidenceArg::Medium)]
-    min_confidence: ConfidenceArg,
-
-    /// Cache directory for downloaded datasets
-    #[arg(long, value_name = "DIR")]
-    cache_dir: Option<PathBuf>,
-
-    /// Number of rows to fetch from HuggingFace (default: 1000)
-    #[arg(long, default_value = "1000")]
-    fetch_limit: usize,
-
-    /// Show false negatives (missed detections) for a specific label
-    #[arg(long, value_name = "LABEL")]
-    show_misses: Option<String>,
-
-    /// Show false positives (incorrect detections) for a specific label
-    #[arg(long, value_name = "LABEL")]
-    show_false_positives: Option<String>,
 }
 
 // -----------------------------------------------------------------------------
@@ -1058,9 +994,9 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
             if !common.quiet {
                 eprintln!(
                     "OCR: scanned {} image(s), redacted {}, {} unsupported codec(s).",
-                    ocr_report.images_scanned,
-                    ocr_report.images_redacted,
-                    ocr_report.images_unsupported
+                    ocr_report.scanned,
+                    ocr_report.redacted,
+                    ocr_report.unsupported
                 );
             }
         }
@@ -1384,7 +1320,7 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
 
     // Sort by replacement length descending (replace longer strings first)
     // This prevents "Donald" from being replaced before "Donald Duck"
-    all_mappings.sort_by(|a, b| b.0.len().cmp(&a.0.len()));
+    all_mappings.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
 
     // Deduplicate mappings (same replacement -> same original)
     all_mappings.dedup_by(|a, b| a.0 == b.0);
@@ -1462,7 +1398,7 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
 ///
 /// The original input is never rewritten -- `decide` only reports decisions.
 #[cfg(feature = "decision")]
-fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> Result<()> {
+fn handle_decide(_common: &CommonOpts, config: &Config, cmd: &DecideCommand) -> Result<()> {
     use engine::DecisionGate;
 
     let input_text = read_input(cmd.input.as_ref())?;
@@ -1470,10 +1406,10 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
     // Resolve the decision configuration: CLI args override config.
     let mut dc = config.decision.clone();
     if let Some(ref ep) = cmd.endpoint {
-        dc.endpoint = ep.clone();
+        dc.endpoint.clone_from(ep);
     }
     if let Some(ref model) = cmd.model {
-        dc.model = model.clone();
+        dc.model.clone_from(model);
     }
     if let Some(t) = cmd.threshold {
         dc.threshold = t;
@@ -1482,9 +1418,10 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
         dc.max_candidates = n;
     }
     dc.enabled = true;
-    dc.api_key_env = config.decision.api_key_env.clone();
+    dc.api_key_env
+        .clone_from(&config.decision.api_key_env);
     if let Some(ref b) = cmd.backend {
-        dc.backend = b.clone();
+        dc.backend.clone_from(b);
     }
 
     // Batch mode: process each line of `{"text": ...}` input in one process,
@@ -1495,7 +1432,7 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
         // Build the Detector (and its NER model) ONCE and reuse it across every
         // chunk. Previously each chunk re-created the Detector, re-loading the
         // ONNX NER model (~2s) per line -- the real per-call cost.
-        let detector = build_decide_detector(config, &cmd);
+        let detector = build_decide_detector(config, cmd);
         // Collect all chunks, run the NER/token detector in one batched padded
         // forward pass, then adjudicate each span per chunk. The batched NER
         // amortizes ONNX per-call overhead across the whole input.
@@ -1514,7 +1451,7 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
                 Err(_) => line.to_string(),
             });
         }
-        let chunk_refs: Vec<&str> = chunks.iter().map(|s| s.as_str()).collect();
+        let chunk_refs: Vec<&str> = chunks.iter().map(std::string::String::as_str).collect();
         let all_matches = detector.detect_batch(&chunk_refs);
         for (i, chunk) in chunks.iter().enumerate() {
             let matches = all_matches.get(i).cloned().unwrap_or_default();
@@ -1526,7 +1463,7 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: DecideCommand) -> R
     }
 
     let gate = DecisionGate::new(dc);
-    let detector = build_decide_detector(config, &cmd);
+    let detector = build_decide_detector(config, cmd);
     let decisions = decide_one(&gate, &detector, &input_text)?;
 
     if cmd.output_json {
@@ -2734,182 +2671,6 @@ fn list_session_ids_only(search_dirs: &[PathBuf]) -> Vec<SessionInfo> {
 fn handle_completions(shell: Shell) -> Result<()> {
     let mut cmd = Cli::command();
     clap_complete::generate(shell, &mut cmd, APP_NAME, &mut io::stdout());
-    Ok(())
-}
-
-/// Handle the benchmark command.
-#[cfg(feature = "bench")]
-fn handle_bench(common: &CommonOpts, config: &Config, cmd: BenchCommand) -> Result<()> {
-    use bench::{BenchConfig, load_jsonl, run_benchmark};
-    use std::path::Path;
-
-    // Build detector config
-    let min_confidence = cmd.min_confidence.into();
-    let mut detector_config = DetectorConfig::default().with_min_confidence(min_confidence);
-
-    // Configure NER
-    let ner_enabled = cmd.ner || config.ner.enabled;
-    detector_config = detector_config.with_ner(ner_enabled);
-
-    if !config.ner.model.is_empty() {
-        detector_config = detector_config.with_ner_model(&config.ner.model);
-    }
-    if config.ner.threshold > 0.0 {
-        detector_config = detector_config.with_ner_threshold(config.ner.threshold);
-    }
-    if !config.ner.labels.is_empty() {
-        detector_config = detector_config.with_ner_labels(config.ner.labels.clone());
-    }
-
-    detector_config = apply_ner_backend(detector_config, &config.ner);
-
-    // Load examples
-    let source_path = Path::new(&cmd.source);
-    let examples = if source_path.exists()
-        && source_path
-            .extension()
-            .map(|e| e == "jsonl")
-            .unwrap_or(false)
-    {
-        // Load from local JSONL file
-        if !common.quiet {
-            eprintln!("Loading dataset from {}...", source_path.display());
-        }
-        load_jsonl(source_path)?
-    } else {
-        // Try to download from HuggingFace
-        #[cfg(feature = "bench")]
-        {
-            if !common.quiet {
-                eprintln!(
-                    "Fetching {} examples from {} (split: {})...",
-                    cmd.fetch_limit, cmd.source, cmd.split
-                );
-            }
-            bench::download_huggingface_dataset(
-                &cmd.source,
-                &cmd.split,
-                cmd.cache_dir.as_deref(),
-                cmd.fetch_limit,
-            )?
-        }
-        #[cfg(not(feature = "bench"))]
-        {
-            return Err(anyhow!(
-                "HuggingFace dataset download requires the 'bench' feature"
-            ));
-        }
-    };
-
-    // Apply sampling
-    let total_loaded = examples.len();
-    let max_examples = if let Some(pct) = cmd.sample {
-        // Percentage-based sampling
-        let pct = pct.clamp(0.0, 100.0);
-        Some((total_loaded as f64 * pct / 100.0).ceil() as usize)
-    } else {
-        cmd.num_examples
-    };
-
-    let bench_config = BenchConfig {
-        detector_config,
-        strict_matching: cmd.strict,
-        ignore_labels: cmd.ignore_labels,
-        max_examples,
-        track_misses_for: cmd.show_misses.clone(),
-        track_false_positives_for: cmd.show_false_positives.clone(),
-        ..Default::default()
-    };
-
-    let examples_to_run = max_examples.unwrap_or(total_loaded).min(total_loaded);
-
-    if !common.quiet {
-        eprintln!("Loaded {} examples", total_loaded);
-        if max_examples.is_some() {
-            eprintln!("Running benchmark on {} examples...", examples_to_run);
-        } else {
-            eprintln!("Running benchmark on all examples...");
-        }
-        if ner_enabled {
-            eprintln!("NER detection enabled");
-        }
-    }
-
-    // Run benchmark
-    let results = run_benchmark(&examples, &bench_config)?;
-
-    // Output results
-    if common.json {
-        println!("{}", serde_json::to_string_pretty(&results)?);
-    } else if common.yaml {
-        println!("{}", serde_yaml::to_string(&results)?);
-    } else {
-        println!("Benchmark Results");
-        println!("=================");
-        println!();
-        println!("Examples:      {}", results.total_examples);
-        println!("Ground Truth:  {}", results.total_ground_truth);
-        println!("Detected:      {}", results.total_detected);
-        println!();
-        println!("True Positives:  {}", results.true_positives);
-        println!("False Positives: {}", results.false_positives);
-        println!("False Negatives: {}", results.false_negatives);
-        println!();
-        println!("Precision: {:.2}%", results.precision * 100.0);
-        println!("Recall:    {:.2}%", results.recall * 100.0);
-        println!("F1 Score:  {:.2}%", results.f1 * 100.0);
-
-        if !results.by_label.is_empty() {
-            println!();
-            println!("By Label:");
-            println!("---------");
-            let mut labels: Vec<_> = results.by_label.iter().collect();
-            labels.sort_by(|a, b| a.0.cmp(b.0));
-            for (label, lr) in labels {
-                println!(
-                    "  {:<15} P: {:.1}%  R: {:.1}%  F1: {:.1}%  (TP:{} FP:{} FN:{})",
-                    label,
-                    lr.precision * 100.0,
-                    lr.recall * 100.0,
-                    lr.f1 * 100.0,
-                    lr.true_positives,
-                    lr.false_positives,
-                    lr.false_negatives
-                );
-            }
-        }
-
-        // Show missed detections if requested
-        if !results.missed_detections.is_empty() {
-            println!();
-            println!(
-                "Missed Detections ({}):",
-                cmd.show_misses.as_deref().unwrap_or("")
-            );
-            println!("-----------------------");
-            for miss in &results.missed_detections {
-                println!("  Text: {:?}", miss.text);
-                println!("  Context: ...{}...", miss.context.replace('\n', " "));
-                println!();
-            }
-        }
-
-        // Show false positives if requested
-        if !results.false_positive_detections.is_empty() {
-            println!();
-            println!(
-                "False Positives ({}):",
-                cmd.show_false_positives.as_deref().unwrap_or("")
-            );
-            println!("---------------------");
-            for fp in &results.false_positive_detections {
-                println!("  Text: {:?}", fp.text);
-                println!("  Context: ...{}...", fp.context.replace('\n', " "));
-                println!();
-            }
-        }
-    }
-
     Ok(())
 }
 
