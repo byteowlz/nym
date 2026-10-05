@@ -432,6 +432,12 @@ struct AnonCommand {
     #[arg(long)]
     tag: Option<String>,
 
+    /// Pseudonym context tag recorded in the key-file header, so a seeded
+    /// dataset build can be reproduced and verified later (e.g. a release
+    /// identifier or dataset label).
+    #[arg(long)]
+    context: Option<String>,
+
     /// Enable NER-based detection for names and addresses (requires 'ner' feature)
     #[arg(long)]
     ner: bool,
@@ -811,6 +817,10 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         .and_then(|n| n.to_str());
     let session = if let Some(ref tag) = cmd.tag {
         Session::with_tag(tag, source_filename)
+    } else if let Some(seed_val) = cmd.seed.or(config.replacement.seed) {
+        // A seeded (deterministic) build derives a stable session id so the
+        // pseudonym context is reproducible across runs and processes.
+        Session::with_seed(seed_val, source_filename)
     } else {
         Session::new(source_filename)
     };
@@ -959,7 +969,13 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
             return Ok(());
         }
         if let Some(ref key_path) = cmd.key_file {
-            write_key_file(key_path, &replacements, &session, &replacer_config, None)?;
+            write_key_file(
+                key_path,
+                &replacements,
+                &session,
+                &replacer_config,
+                cmd.context.as_deref(),
+            )?;
             if !common.quiet {
                 eprintln!("Key file written to: {}", key_path.display());
                 eprintln!("Session: {}", session.full_reference());
@@ -1013,7 +1029,7 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
                         &red.replacements,
                         &session,
                         &replacer_config,
-                        None,
+                        cmd.context.as_deref(),
                     )?;
                     if !common.quiet {
                         eprintln!("Key file written to: {}", key_path.display());
@@ -1124,7 +1140,13 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
             return Ok(());
         }
         if let Some(ref key_path) = cmd.key_file {
-            write_key_file(key_path, &replacements, &session, &replacer_config, None)?;
+            write_key_file(
+                key_path,
+                &replacements,
+                &session,
+                &replacer_config,
+                cmd.context.as_deref(),
+            )?;
             if !common.quiet {
                 eprintln!("Key file written to: {}", key_path.display());
                 eprintln!(
@@ -1182,7 +1204,13 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
 
     // Write key file if requested
     if let Some(ref key_path) = cmd.key_file {
-        write_key_file(key_path, &replacements, &session, &replacer_config, None)?;
+        write_key_file(
+            key_path,
+            &replacements,
+            &session,
+            &replacer_config,
+            cmd.context.as_deref(),
+        )?;
         if !common.quiet {
             eprintln!("Key file written to: {}", key_path.display());
             eprintln!("Session: {}", session.full_reference());
@@ -1260,6 +1288,8 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
     // Generate session
     let session = if let Some(ref tag) = cmd.tag {
         Session::with_tag(tag, None)
+    } else if let Some(seed_val) = cmd.seed.or(config.replacement.seed) {
+        Session::with_seed(seed_val, None)
     } else {
         Session::new(None)
     };
@@ -1384,7 +1414,7 @@ where
                 session.source.as_deref(),
                 Some(&format!("{:?}", replacer_config.strategy).to_lowercase()),
                 replacer_config.seed,
-                None,
+                cmd.context.as_deref(),
             );
             let existing = engine::load_key_file(key_path)?;
             engine::save_key_file(key_path, existing.as_ref(), &stats.replacements, &header)?;

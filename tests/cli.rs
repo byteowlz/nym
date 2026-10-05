@@ -426,3 +426,74 @@ fn summary_json_is_value_free() {
     );
     assert!(stdout.contains("by_category"), "summary groups by category");
 }
+
+#[test]
+fn context_recorded_in_key_file_header() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.json");
+    let key = dir.path().join("keys.jsonl");
+    write(&input, r#"{"email": "alice@example.com"}"#);
+
+    let (ok, _) = run(
+        &[
+            "anon",
+            input.to_str().unwrap(),
+            "--format",
+            "json",
+            "--strategy",
+            "consistent",
+            "--seed",
+            "42",
+            "--context",
+            "release-2026-10",
+            "-k",
+            key.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(ok);
+    let contents = fs::read_to_string(&key).unwrap();
+    let header: serde_json::Value =
+        serde_json::from_str(contents.lines().next().unwrap()).expect("header");
+    assert_eq!(header["context"].as_str().unwrap(), "release-2026-10");
+    assert_eq!(header["seed"].as_u64().unwrap(), 42);
+    assert_eq!(header["strategy"].as_str().unwrap(), "consistent");
+}
+
+#[test]
+fn seeded_build_is_reproducible_across_runs() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.json");
+    write(
+        &input,
+        r#"{"email": "alice@example.com", "user": {"name": "John Smith"}}"#,
+    );
+
+    let run_build = |out: &std::path::Path| {
+        run(
+            &[
+                "anon",
+                input.to_str().unwrap(),
+                "--format",
+                "json",
+                "--strategy",
+                "consistent",
+                "--seed",
+                "42",
+                "-o",
+                out.to_str().unwrap(),
+            ],
+            None,
+        )
+    };
+    let a = dir.path().join("a.json");
+    let b = dir.path().join("b.json");
+    let (ok1, _) = run_build(&a);
+    let (ok2, _) = run_build(&b);
+    assert!(ok1 && ok2);
+    assert_eq!(
+        fs::read_to_string(&a).unwrap(),
+        fs::read_to_string(&b).unwrap(),
+        "same seed+input+strategy must yield identical pseudonyms"
+    );
+}
