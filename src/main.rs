@@ -590,7 +590,10 @@ struct DetectCommand {
 // -----------------------------------------------------------------------------
 
 /// Adjudicate detected spans with a decision model (keep/redact/flag).
-#[expect(clippy::struct_excessive_bools, reason = "clap CLI struct; splitting into enums would complicate flag parsing")]
+#[expect(
+    clippy::struct_excessive_bools,
+    reason = "clap CLI struct; splitting into enums would complicate flag parsing"
+)]
 #[derive(Debug, Clone, Args)]
 struct DecideCommand {
     /// Input file (reads from stdin if not specified)
@@ -862,7 +865,16 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         email_domain: config.replacement.email_domain.clone(),
     };
 
-    let mut replacer = Replacer::new(replacer_config).with_session_id(session.id.clone());
+    let mut replacer = Replacer::new(replacer_config.clone()).with_session_id(session.id.clone());
+
+    // Load any existing replacement map so consistent/fake strategies reuse the
+    // recorded aliases across runs (safe, non-destructive key reuse).
+    if let Some(ref key_path) = cmd.key_file {
+        let loaded = seed_replacer_from_key_file(key_path, &mut replacer)?;
+        if loaded > 0 {
+            debug!("Loaded {loaded} existing mapping(s) into replacer");
+        }
+    }
 
     // Office documents: in-place redaction of the archive's text nodes.
     if let Some(fmt) = office_fmt {
@@ -893,7 +905,7 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
             return Ok(());
         }
         if let Some(ref key_path) = cmd.key_file {
-            write_key_file(key_path, &replacements, &session)?;
+            write_key_file(key_path, &replacements, &session, &replacer_config, None)?;
             if !common.quiet {
                 eprintln!("Key file written to: {}", key_path.display());
                 eprintln!("Session: {}", session.full_reference());
@@ -942,7 +954,13 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
                 fs::write(&out_path, &red.bytes)
                     .with_context(|| format!("Failed to write output: {}", out_path.display()))?;
                 if let Some(ref key_path) = cmd.key_file {
-                    write_key_file(key_path, &red.replacements, &session)?;
+                    write_key_file(
+                        key_path,
+                        &red.replacements,
+                        &session,
+                        &replacer_config,
+                        None,
+                    )?;
                     if !common.quiet {
                         eprintln!("Key file written to: {}", key_path.display());
                     }
@@ -970,13 +988,19 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
             .ok_or_else(|| anyhow!("PDF input requires a file path"))?;
         let bytes = fs::read(path)
             .with_context(|| format!("Failed to read input file: {}", path.display()))?;
-        #[cfg_attr(not(feature = "ocr"), expect(unused_mut, reason = "mutated only with the ocr feature"))]
+        #[cfg_attr(
+            not(feature = "ocr"),
+            expect(unused_mut, reason = "mutated only with the ocr feature")
+        )]
         let (out_bytes, mut replacements, report) =
             engine::pdf::redact(&bytes, &detector, &mut replacer, !cmd.no_strict_pdf)
                 .map_err(|e| anyhow!("PDF redaction failed: {e}"))?;
 
         // Optional OCR pass over raster images in the (already text-redacted) PDF.
-        #[cfg_attr(not(feature = "ocr"), expect(unused_mut, reason = "reassigned only with the ocr feature"))]
+        #[cfg_attr(
+            not(feature = "ocr"),
+            expect(unused_mut, reason = "reassigned only with the ocr feature")
+        )]
         let mut out_bytes = out_bytes;
         #[cfg(feature = "ocr")]
         if cmd.ocr || config.ocr.enabled {
@@ -994,9 +1018,7 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
             if !common.quiet {
                 eprintln!(
                     "OCR: scanned {} image(s), redacted {}, {} unsupported codec(s).",
-                    ocr_report.scanned,
-                    ocr_report.redacted,
-                    ocr_report.unsupported
+                    ocr_report.scanned, ocr_report.redacted, ocr_report.unsupported
                 );
             }
         }
@@ -1048,7 +1070,7 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
             return Ok(());
         }
         if let Some(ref key_path) = cmd.key_file {
-            write_key_file(key_path, &replacements, &session)?;
+            write_key_file(key_path, &replacements, &session, &replacer_config, None)?;
             if !common.quiet {
                 eprintln!("Key file written to: {}", key_path.display());
                 eprintln!(
@@ -1098,7 +1120,7 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
 
     // Write key file if requested
     if let Some(ref key_path) = cmd.key_file {
-        write_key_file(key_path, &replacements, &session)?;
+        write_key_file(key_path, &replacements, &session, &replacer_config, None)?;
         if !common.quiet {
             eprintln!("Key file written to: {}", key_path.display());
             eprintln!("Session: {}", session.full_reference());
@@ -1124,9 +1146,7 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
     reason = "CLI command struct consumed by handler"
 )]
 fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result<()> {
-    use streaming::StreamConfig;
-    use tokio::fs::File;
-    use tokio::io::BufWriter;
+    use streaming::{StreamConfig, StreamFormat};
 
     // Build detector config
     let min_confidence = cmd.min_confidence.into();
@@ -1182,51 +1202,61 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
         Session::new(None)
     };
 
+    // Honor the input/output/format flags in stream mode instead of silently
+    // ignoring them. Input defaults to stdin, output to stdout.
+    let format = cmd
+        .format
+        .unwrap_or_else(|| detect_format(cmd.input.as_ref()));
+    let stream_format = match format {
+        FormatArg::Json => StreamFormat::Json,
+        FormatArg::Text => StreamFormat::Text,
+    };
+
     let stream_config = StreamConfig {
         detector_config: detector_config.clone(),
-        replacer_config,
+        replacer_config: replacer_config.clone(),
         session_id: Some(session.id.clone()),
+        format: stream_format,
+        seed_mappings: load_seed_mappings(cmd.key_file.as_ref()),
     };
 
     // Create tokio runtime and run
     let rt = tokio::runtime::Runtime::new().with_context(|| "Failed to create async runtime")?;
 
     let stats = rt.block_on(async {
-        // Open key file if specified
-        let key_writer: Option<BufWriter<File>> = if let Some(ref key_path) = cmd.key_file {
-            // Write header first (synchronously to avoid complexity)
-            let header = session.to_key_file_header();
-            std::fs::write(key_path, format!("{header}\n"))
-                .with_context(|| format!("Failed to create key file: {}", key_path.display()))?;
-
-            // Open for appending
-            let file = tokio::fs::OpenOptions::new()
-                .append(true)
-                .open(key_path)
+        // Build the async reader/stream from INPUT (or stdin).
+        let input = cmd.input.as_ref();
+        let quiet = common.quiet;
+        let result = if let Some(path) = input {
+            let file = tokio::fs::File::open(path)
                 .await
-                .with_context(|| format!("Failed to open key file: {}", key_path.display()))?;
-            Some(BufWriter::new(file))
-        } else {
-            None
-        };
-
-        // Use smart NER streaming if NER is enabled, otherwise use basic line-by-line
-        #[cfg(feature = "ner")]
-        if ner_enabled {
-            return streaming_ner::stream_anon_ner(stream_config, key_writer)
-                .await
-                .map_err(|e| anyhow!("Streaming error: {e}"));
-        }
-
-        streaming::stream_anon(stream_config, key_writer)
+                .with_context(|| format!("Failed to open input file: {}", path.display()))?;
+            run_anon_stream(
+                ner_enabled,
+                stream_config,
+                &replacer_config,
+                &session,
+                quiet,
+                file,
+                &cmd,
+            )
             .await
-            .map_err(|e| anyhow!("Streaming error: {e}"))
+        } else {
+            run_anon_stream(
+                ner_enabled,
+                stream_config,
+                &replacer_config,
+                &session,
+                quiet,
+                tokio::io::stdin(),
+                &cmd,
+            )
+            .await
+        };
+        result.map_err(|e| anyhow!("{e}"))
     })?;
 
     if !common.quiet {
-        if let Some(ref key_path) = cmd.key_file {
-            eprintln!("Key file written to: {}", key_path.display());
-        }
         eprintln!("Session: {}", session.full_reference());
         eprintln!(
             "Processed {} lines, anonymized {} PII occurrences",
@@ -1235,6 +1265,73 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
     }
 
     Ok(())
+}
+
+/// Run the anon stream for a given async reader, writing to the output file
+/// (or stdout), and persisting any key file safely via the keyfile module.
+#[cfg(feature = "streaming")]
+#[allow(clippy::too_many_arguments)]
+async fn run_anon_stream<R>(
+    ner_enabled: bool,
+    stream_config: streaming::StreamConfig,
+    replacer_config: &ReplacerConfig,
+    session: &Session,
+    quiet: bool,
+    reader: R,
+    cmd: &AnonCommand,
+) -> Result<streaming::StreamStats>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    // Build the output writer: explicit -o file, else stdout.
+    let writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send> = match cmd.output.as_ref() {
+        Some(path) => Box::new(
+            tokio::fs::File::create(path)
+                .await
+                .with_context(|| format!("Failed to create output file: {}", path.display()))?,
+        ),
+        None => Box::new(tokio::io::stdout()),
+    };
+
+    let stats = if ner_enabled && stream_config.format == streaming::StreamFormat::Text {
+        #[cfg(feature = "ner")]
+        {
+            streaming_ner::stream_anon_ner(stream_config, reader, writer)
+                .await
+                .map_err(|e| anyhow!("Streaming error: {e}"))?
+        }
+        #[cfg(not(feature = "ner"))]
+        {
+            let _ = ner_enabled;
+            streaming::stream_anon(stream_config, reader, writer)
+                .await
+                .map_err(|e| anyhow!("Streaming error: {e}"))?
+        }
+    } else {
+        streaming::stream_anon(stream_config, reader, writer)
+            .await
+            .map_err(|e| anyhow!("Streaming error: {e}"))?
+    };
+
+    // Persist any collected replacements as a key file, non-destructively.
+    if let Some(ref key_path) = cmd.key_file {
+        if !stats.replacements.is_empty() {
+            let header = engine::KeyHeader::new(
+                &session.id,
+                session.source.as_deref(),
+                Some(&format!("{:?}", replacer_config.strategy).to_lowercase()),
+                replacer_config.seed,
+                None,
+            );
+            let existing = engine::load_key_file(key_path)?;
+            engine::save_key_file(key_path, existing.as_ref(), &stats.replacements, &header)?;
+            if !quiet {
+                eprintln!("Key file written to: {}", key_path.display());
+            }
+        }
+    }
+
+    Ok(stats)
 }
 
 #[expect(
@@ -1418,8 +1515,7 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: &DecideCommand) -> 
         dc.max_candidates = n;
     }
     dc.enabled = true;
-    dc.api_key_env
-        .clone_from(&config.decision.api_key_env);
+    dc.api_key_env.clone_from(&config.decision.api_key_env);
     if let Some(ref b) = cmd.backend {
         dc.backend.clone_from(b);
     }
@@ -1562,7 +1658,10 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
             .ok_or_else(|| anyhow!("PDF input requires a file path"))?;
         let bytes = fs::read(path)
             .with_context(|| format!("Failed to read input file: {}", path.display()))?;
-        #[cfg_attr(not(feature = "ocr"), expect(unused_mut, reason = "mutated only with the ocr feature"))]
+        #[cfg_attr(
+            not(feature = "ocr"),
+            expect(unused_mut, reason = "mutated only with the ocr feature")
+        )]
         let mut text =
             engine::pdf::extract_text(&bytes).map_err(|e| anyhow!("Failed to parse PDF: {e}"))?;
         #[cfg(feature = "ocr")]
@@ -1799,13 +1898,23 @@ fn handle_detect_streaming(common: &CommonOpts, config: &Config, cmd: DetectComm
         detector_config,
         replacer_config: ReplacerConfig::default(),
         session_id: None,
+        format: streaming::StreamFormat::Text,
+        seed_mappings: Vec::new(),
     };
 
     // Create tokio runtime and run
     let rt = tokio::runtime::Runtime::new().with_context(|| "Failed to create async runtime")?;
 
     let stats = rt.block_on(async {
-        streaming::stream_detect(stream_config)
+        let reader: Box<dyn tokio::io::AsyncRead + Unpin + Send> = match cmd.input.as_ref() {
+            Some(path) => Box::new(
+                tokio::fs::File::open(path)
+                    .await
+                    .with_context(|| format!("Failed to open input file: {}", path.display()))?,
+            ),
+            None => Box::new(tokio::io::stdin()),
+        };
+        streaming::stream_detect(stream_config, reader, tokio::io::stdout())
             .await
             .map_err(|e| anyhow!("Streaming error: {e}"))
     })?;
@@ -2304,10 +2413,14 @@ fn models_use(config: &Config, query: Option<&str>) -> Result<()> {
             eprintln!("Only one model downloaded; selecting it.");
             apply_default_model(config, &downloaded[0])
         }
-        _ => if let Some(m) = pick_catalog(&downloaded, query)? { apply_default_model(config, &m) } else {
-            eprintln!("nothing selected");
-            Ok(())
-        },
+        _ => {
+            if let Some(m) = pick_catalog(&downloaded, query)? {
+                apply_default_model(config, &m)
+            } else {
+                eprintln!("nothing selected");
+                Ok(())
+            }
+        }
     }
 }
 
@@ -2753,34 +2866,49 @@ fn write_output(path: Option<&PathBuf>, content: &str) -> Result<()> {
     }
 }
 
+/// Persist a key file non-destructively.
+///
+/// Loads and preserves any existing replacement map, validates compatibility
+/// with the current strategy/seed/context, and writes atomically under a lock
+/// so a second invocation extends (never truncates) the file.
 fn write_key_file(
     path: &PathBuf,
     replacements: &[engine::Replacement],
     session: &Session,
+    replacer_config: &ReplacerConfig,
+    context: Option<&str>,
 ) -> Result<()> {
-    use std::io::BufWriter;
+    let strategy = format!("{:?}", replacer_config.strategy).to_lowercase();
+    let header = engine::KeyHeader::new(
+        &session.id,
+        session.source.as_deref(),
+        Some(&strategy),
+        replacer_config.seed,
+        context,
+    );
+    let existing = engine::load_key_file(path)?;
+    engine::save_key_file(path, existing.as_ref(), replacements, &header).map(|_| ())
+}
 
-    let file = fs::File::create(path)
-        .with_context(|| format!("Failed to create key file: {}", path.display()))?;
-    let mut writer = BufWriter::new(file);
+/// Load an existing replacement map and seed the replacer so consistent/fake
+/// strategies reuse recorded aliases across runs and processes. Returns the
+/// number of mappings loaded (0 when the file is absent or empty).
+fn seed_replacer_from_key_file(key_path: &PathBuf, replacer: &mut Replacer) -> Result<usize> {
+    let mappings = load_seed_mappings(Some(key_path));
+    replacer.seed_mappings(&mappings);
+    Ok(mappings.len())
+}
 
-    // Write header with session info
-    let header = serde_json::json!({
-        "version": "1",
-        "created": chrono::Utc::now().to_rfc3339(),
-        "session": session.id,
-        "source": session.source,
-    });
-    serde_json::to_writer(&mut writer, &header)?;
-    writeln!(writer)?;
-
-    // Write each replacement
-    for r in replacements {
-        serde_json::to_writer(&mut writer, r)?;
-        writeln!(writer)?;
-    }
-
-    Ok(())
+/// Load the replacement mappings recorded in a key file (empty when absent).
+fn load_seed_mappings(key_path: Option<&PathBuf>) -> Vec<engine::Replacement> {
+    let Some(key_path) = key_path else {
+        return Vec::new();
+    };
+    engine::load_key_file(key_path)
+        .ok()
+        .flatten()
+        .map(|kf| kf.replacements)
+        .unwrap_or_default()
 }
 
 #[derive(Debug, Serialize)]

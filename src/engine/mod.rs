@@ -26,6 +26,7 @@
 pub mod decision;
 pub mod detector;
 pub mod formats;
+pub mod keyfile;
 #[cfg(feature = "ner")]
 pub mod model_catalog;
 pub mod ner;
@@ -42,6 +43,7 @@ pub use decision::{Decision, DecisionConfig, DecisionGate, Verdict};
 
 pub use detector::{Detector, DetectorConfig, PiiMatch};
 pub use formats::{JsonPiiMatch, detect_json, process_json};
+pub use keyfile::{KeyHeader, load_key_file, save_key_file};
 #[expect(unused_imports, reason = "Conditionally used with ner feature")]
 pub use ner::set_exit_code;
 pub use patterns::{BUILTIN_PATTERNS, Confidence, PiiCategory, PiiPattern, get_pattern};

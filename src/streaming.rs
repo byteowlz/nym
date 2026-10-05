@@ -20,10 +20,12 @@ use futures::Stream;
 #[cfg(feature = "streaming")]
 use std::sync::Arc;
 #[cfg(feature = "streaming")]
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 #[cfg(feature = "streaming")]
 use tokio::sync::Mutex;
 
+#[cfg(feature = "streaming")]
+use crate::engine::process_json;
 #[cfg(feature = "streaming")]
 use crate::engine::{Detector, DetectorConfig, Replacement, Replacer, ReplacerConfig};
 
@@ -71,6 +73,18 @@ pub struct ProcessedLine {
     pub replacements: Vec<Replacement>,
 }
 
+/// Streaming output format.
+#[cfg(feature = "streaming")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StreamFormat {
+    /// Plain text line-by-line.
+    #[default]
+    Text,
+    /// JSON per record (JSONL): each line is a JSON document whose string
+    /// values are anonymized; output is one JSON document per line.
+    Json,
+}
+
 /// Configuration for streaming processing.
 #[cfg(feature = "streaming")]
 #[derive(Debug, Clone, Default)]
@@ -81,6 +95,12 @@ pub struct StreamConfig {
     pub replacer_config: ReplacerConfig,
     /// Session ID for tracking
     pub session_id: Option<String>,
+    /// Output format for the stream (default: text).
+    pub format: StreamFormat,
+    /// Existing replacement mappings to seed the replacer with so consistent/
+    /// fake strategies reuse recorded aliases across runs.
+    #[cfg(feature = "streaming")]
+    pub seed_mappings: Vec<Replacement>,
 }
 
 /// Creates an async stream that processes lines from a reader.
@@ -112,6 +132,7 @@ where
         if let Some(ref session_id) = config.session_id {
             replacer = replacer.with_session_id(session_id.clone());
         }
+        replacer.seed_mappings(&config.seed_mappings);
 
         // Wrap replacer in Arc<Mutex> for shared mutable access
         let replacer = Arc::new(Mutex::new(replacer));
@@ -156,60 +177,78 @@ where
     }
 }
 
-/// Process stdin to stdout with streaming.
+/// Process a reader to a writer with streaming, collecting replacements.
 ///
-/// This is the main entry point for streaming mode. It reads from stdin,
-/// processes each line, writes to stdout, and optionally writes replacements
-/// to a key file.
+/// Unlike the old stdin/stdout-bound implementation, this accepts explicit
+/// reader/writer so file-to-file, file-to-stdout, stdin-to-file and
+/// stdin-to-stdout all work. Replacements are collected (not written
+/// incrementally) so the caller can persist a key file safely via the keyfile
+/// module, which never truncates an existing mapping.
 #[cfg(feature = "streaming")]
-pub async fn stream_anon<W>(
+pub async fn stream_anon<R, W>(
     config: StreamConfig,
-    mut key_writer: Option<W>,
+    reader: R,
+    writer: W,
 ) -> StreamResult<StreamStats>
 where
+    R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
     use futures::StreamExt;
-    use tokio::io::{stdin, stdout};
+    use tokio::io::AsyncWriteExt;
 
-    let stdin = stdin();
-    let mut stdout = stdout();
-
-    let stream = process_stream(stdin, config);
-    futures::pin_mut!(stream);
-
+    let mut writer = writer;
     let mut stats = StreamStats::default();
+
+    if config.format == StreamFormat::Json {
+        // JSONL: each line is a JSON document. Anonymize its string values
+        // and emit one JSON document per line.
+        let detector = Detector::new(&config.detector_config);
+        let mut replacer = Replacer::new(config.replacer_config.clone());
+        if let Some(ref session_id) = config.session_id {
+            replacer = replacer.with_session_id(session_id.clone());
+        }
+        replacer.seed_mappings(&config.seed_mappings);
+        let mut lines = BufReader::new(reader).lines();
+        while let Some(line) = lines.next_line().await? {
+            if line.trim().is_empty() {
+                continue;
+            }
+            stats.lines_processed += 1;
+            let (anonymized, replacements) = process_json(&line, &detector, &mut replacer)
+                .map_err(|e| StreamError::Detection(format!("JSON parse failed: {e}")))?;
+            stats.pii_found += replacements.len();
+            stats.replacements.extend(replacements);
+            // JSONL requires exactly one JSON document per line, so compact the
+            // pretty-printed output from `process_json`.
+            let compact = serde_json::from_str::<serde_json::Value>(&anonymized)
+                .map(|v| serde_json::to_string(&v).unwrap_or_else(|_| anonymized.clone()))
+                .unwrap_or(anonymized);
+            writer.write_all(compact.as_bytes()).await?;
+            writer.write_all(b"\n").await?;
+            writer.flush().await?;
+        }
+        return Ok(stats);
+    }
+
+    let stream = process_stream(reader, config);
+    futures::pin_mut!(stream);
 
     while let Some(result) = stream.next().await {
         match result {
             Ok(processed) => {
                 stats.lines_processed += 1;
                 stats.pii_found += processed.replacements.len();
+                stats.replacements.extend(processed.replacements);
 
-                // Write anonymized line to stdout
-                stdout.write_all(processed.content.as_bytes()).await?;
-                stdout.write_all(b"\n").await?;
-                stdout.flush().await?;
-
-                // Write replacements to key file if provided
-                if let Some(ref mut writer) = key_writer {
-                    for replacement in &processed.replacements {
-                        let json = serde_json::to_string(replacement)
-                            .map_err(|e| StreamError::Detection(e.to_string()))?;
-                        writer.write_all(json.as_bytes()).await?;
-                        writer.write_all(b"\n").await?;
-                    }
-                }
+                writer.write_all(processed.content.as_bytes()).await?;
+                writer.write_all(b"\n").await?;
+                writer.flush().await?;
             }
             Err(e) => {
                 return Err(e);
             }
         }
-    }
-
-    // Flush key writer
-    if let Some(ref mut writer) = key_writer {
-        writer.flush().await?;
     }
 
     Ok(stats)
@@ -223,18 +262,27 @@ pub struct StreamStats {
     pub lines_processed: usize,
     /// Total PII occurrences found
     pub pii_found: usize,
+    /// All replacement mappings collected while streaming (so the caller can
+    /// persist them safely through the keyfile module).
+    pub replacements: Vec<Replacement>,
 }
 
-/// Process stdin to stdout for detection only (no replacement).
+/// Process a reader to a writer for detection only (no replacement).
 #[cfg(feature = "streaming")]
-pub async fn stream_detect(config: StreamConfig) -> StreamResult<StreamStats> {
-    use tokio::io::{stdin, stdout};
+pub async fn stream_detect<R, W>(
+    config: StreamConfig,
+    reader: R,
+    writer: W,
+) -> StreamResult<StreamStats>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    use tokio::io::AsyncWriteExt;
 
-    let stdin = stdin();
-    let mut stdout = stdout();
-
+    let mut writer = writer;
     let detector = Detector::new(&config.detector_config);
-    let buf_reader = BufReader::new(stdin);
+    let buf_reader = BufReader::new(reader);
     let mut lines = buf_reader.lines();
 
     let mut stats = StreamStats::default();
@@ -262,9 +310,9 @@ pub async fn stream_detect(config: StreamConfig) -> StreamResult<StreamStats> {
                             format!("{:?}", m.confidence).to_lowercase(),
                             m.matched_text
                         );
-                        stdout.write_all(output.as_bytes()).await?;
+                        writer.write_all(output.as_bytes()).await?;
                     }
-                    stdout.flush().await?;
+                    writer.flush().await?;
                 }
             }
             Ok(None) => break,

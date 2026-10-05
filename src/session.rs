@@ -223,6 +223,7 @@ impl Session {
 
     /// Generate a JSON header line for a key file.
     #[cfg(feature = "streaming")]
+    #[expect(dead_code, reason = "kept for callers that emit the header directly")]
     pub fn to_key_file_header(&self) -> String {
         serde_json::json!({
             "version": "1",

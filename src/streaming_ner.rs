@@ -25,7 +25,7 @@ use async_stream::stream;
 #[cfg(all(feature = "streaming", feature = "ner"))]
 use futures::Stream;
 #[cfg(all(feature = "streaming", feature = "ner"))]
-use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, AsyncWriteExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 
 #[cfg(all(feature = "streaming", feature = "ner"))]
 use crate::engine::{Detector, Replacement, Replacer};
@@ -315,6 +315,7 @@ where
         if let Some(ref session_id) = config.session_id {
             replacer = replacer.with_session_id(session_id.clone());
         }
+        replacer.seed_mappings(&config.seed_mappings);
 
         let mut buffer = SentenceBuffer::new(10); // Max 10 lines before forcing flush
         let buf_reader = BufReader::new(reader);
@@ -353,22 +354,23 @@ where
     }
 }
 
-/// Process stdin to stdout with smart NER buffering.
+/// Process a reader to a writer with smart NER buffering, collecting
+/// replacements so the caller can persist a key file safely.
 #[cfg(all(feature = "streaming", feature = "ner"))]
-pub async fn stream_anon_ner<W>(
+pub async fn stream_anon_ner<R, W>(
     config: StreamConfig,
-    mut key_writer: Option<W>,
+    reader: R,
+    writer: W,
 ) -> StreamResult<StreamStats>
 where
+    R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
     use futures::StreamExt;
-    use tokio::io::{stdin, stdout};
+    use tokio::io::AsyncWriteExt;
 
-    let stdin = stdin();
-    let mut stdout = stdout();
-
-    let stream = process_stream_ner(stdin, config);
+    let mut writer = writer;
+    let stream = process_stream_ner(reader, config);
     futures::pin_mut!(stream);
 
     let mut stats = StreamStats::default();
@@ -378,31 +380,16 @@ where
             Ok((text, replacements)) => {
                 stats.lines_processed += 1;
                 stats.pii_found += replacements.len();
+                stats.replacements.extend(replacements);
 
-                // Write anonymized line to stdout
-                stdout.write_all(text.as_bytes()).await?;
-                stdout.write_all(b"\n").await?;
-                stdout.flush().await?;
-
-                // Write replacements to key file if provided
-                if let Some(ref mut writer) = key_writer {
-                    for replacement in &replacements {
-                        let json = serde_json::to_string(replacement)
-                            .map_err(|e| StreamError::Detection(e.to_string()))?;
-                        writer.write_all(json.as_bytes()).await?;
-                        writer.write_all(b"\n").await?;
-                    }
-                }
+                writer.write_all(text.as_bytes()).await?;
+                writer.write_all(b"\n").await?;
+                writer.flush().await?;
             }
             Err(e) => {
                 return Err(e);
             }
         }
-    }
-
-    // Flush key writer
-    if let Some(ref mut writer) = key_writer {
-        writer.flush().await?;
     }
 
     Ok(stats)

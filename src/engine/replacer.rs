@@ -211,6 +211,25 @@ impl Replacer {
         self
     }
 
+    /// Seed the consistency caches from an existing replacement map so that
+    /// consistent/fake strategies reuse the recorded aliases for the same
+    /// original value across runs and processes.
+    pub fn seed_mappings(&mut self, mappings: &[Replacement]) {
+        for r in mappings {
+            let cache_key = r.original.to_lowercase();
+            self.replacement_cache.insert(
+                cache_key,
+                CachedReplacement {
+                    replacement: r.replacement.clone(),
+                    components: r.components.clone(),
+                },
+            );
+            for c in &r.components {
+                self.register_component(&c.original, &c.replacement);
+            }
+        }
+    }
+
     /// Generate a replacement for a PII match.
     pub fn replace(&mut self, pii_match: &PiiMatch) -> Replacement {
         let (replacement, components) = match self.config.strategy {
