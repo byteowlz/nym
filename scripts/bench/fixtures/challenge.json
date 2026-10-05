@@ -1,0 +1,212 @@
+{
+  "version": "1",
+  "generated": "synthetic",
+  "note": "Fully synthetic challenge set. No private trace, credential, or real end-user data. Each fixture is independently labeled with expected PII spans (by value and class).",
+  "fixtures": [
+    {
+      "id": "cred-api-key",
+      "text": "GRAFANA_API_KEY=api_live_9f2c1b7e4d8a5f6b0123456789abcdef; AWS=AKIAIOSFODNN7EXAMPLE; JWT=eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.sig",
+      "spans": [
+        {
+          "value": "api_live_9f2c1b7e4d8a5f6b0123456789abcdef",
+          "class": "api_key"
+        },
+        {
+          "value": "AKIAIOSFODNN7EXAMPLE",
+          "class": "aws_key"
+        },
+        {
+          "value": "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjMifQ.sig",
+          "class": "jwt"
+        }
+      ],
+      "benign": [
+        "GRAFANA_API_KEY",
+        "JWT",
+        "AWS"
+      ]
+    },
+    {
+      "id": "cred-unlabeled-secret",
+      "text": "token = 5f4dcc3b5aa765d61d8327deb882cf99; please rotate this.",
+      "spans": [
+        {
+          "value": "5f4dcc3b5aa765d61d8327deb882cf99",
+          "class": "unlabeled_high_entropy"
+        }
+      ],
+      "benign": [
+        "token",
+        "please rotate this"
+      ],
+      "out_of_regex_scope": [
+        "unlabeled_high_entropy"
+      ]
+    },
+    {
+      "id": "person-names",
+      "text": "Contact Amy Westwood (amy.westwood@corp.example) or call Derek O'Malley.",
+      "spans": [
+        {
+          "value": "Amy Westwood",
+          "class": "person"
+        },
+        {
+          "value": "amy.westwood@corp.example",
+          "class": "email"
+        },
+        {
+          "value": "Derek O'Malley",
+          "class": "person"
+        }
+      ],
+      "benign": [
+        "Contact",
+        "or call"
+      ],
+      "out_of_regex_scope": [
+        "person"
+      ]
+    },
+    {
+      "id": "multilingual",
+      "text": "Kontakt: Jürgen Müller unter j.mueller@firma.de. 電話: 山田 太郎, bitte taro@example.co.jp.",
+      "spans": [
+        {
+          "value": "Jürgen Müller",
+          "class": "person"
+        },
+        {
+          "value": "j.mueller@firma.de",
+          "class": "email"
+        },
+        {
+          "value": "山田 太郎",
+          "class": "person"
+        },
+        {
+          "value": "taro@example.co.jp",
+          "class": "email"
+        }
+      ],
+      "benign": [
+        "Kontakt",
+        "電話"
+      ],
+      "out_of_regex_scope": [
+        "person"
+      ]
+    },
+    {
+      "id": "internal-hostname",
+      "text": "deploy to https://internal-svc-42.corp.local:8443 and api.internal.example.com.",
+      "spans": [
+        {
+          "value": "internal-svc-42.corp.local",
+          "class": "internal_hostname"
+        },
+        {
+          "value": "api.internal.example.com",
+          "class": "internal_hostname"
+        }
+      ],
+      "benign": [
+        "deploy to",
+        "and",
+        "8443"
+      ],
+      "out_of_regex_scope": [
+        "internal_hostname"
+      ]
+    },
+    {
+      "id": "project-codename",
+      "text": "the project codename is Project-Nightingale; schedule the cutover.",
+      "spans": [
+        {
+          "value": "Project-Nightingale",
+          "class": "codename"
+        }
+      ],
+      "benign": [
+        "the project codename is",
+        "schedule the cutover"
+      ],
+      "out_of_regex_scope": [
+        "codename"
+      ]
+    },
+    {
+      "id": "uuid-relationship",
+      "text": "{\"id\":\"550e8400-e29b-41d4-a716-446655440000\",\"parentId\":\"550e8400-e29b-41d4-a716-446655440001\"}",
+      "spans": [
+        {
+          "value": "550e8400-e29b-41d4-a716-446655440000",
+          "class": "uuid"
+        },
+        {
+          "value": "550e8400-e29b-41d4-a716-446655440001",
+          "class": "uuid"
+        }
+      ],
+      "benign": [
+        "id",
+        "parentId"
+      ]
+    },
+    {
+      "id": "escaped-nested-json",
+      "text": "{\"meta\":{\"email\":\"a\\\\@b.com\",\"note\":\"escaped \\\"quotes\\\" here\"},\"arr\":[{\"ssn\":\"123-45-6789\"}]}",
+      "spans": [
+        {
+          "value": "123-45-6789",
+          "class": "ssn"
+        }
+      ],
+      "benign": [
+        "note",
+        "escaped"
+      ],
+      "note": "email inside a JSON string value with an escaped @ is matched by the email pattern in the raw text path."
+    },
+    {
+      "id": "long-linewise",
+      "text": "line1 user=team@example.org\nline2 ip=10.0.0.5\nline3 card=4111-1111-1111-1111\nline4 ssn=123-45-6789",
+      "spans": [
+        {
+          "value": "team@example.org",
+          "class": "email"
+        },
+        {
+          "value": "10.0.0.5",
+          "class": "ipv4"
+        },
+        {
+          "value": "4111-1111-1111-1111",
+          "class": "credit_card"
+        },
+        {
+          "value": "123-45-6789",
+          "class": "ssn"
+        }
+      ],
+      "benign": [
+        "users",
+        "ips",
+        "carte",
+        "social"
+      ]
+    },
+    {
+      "id": "benign-code-literals",
+      "text": "const limit = 100; const api_path = \"/v1/users\"; const debug = false; const timeoutMs = 5000;",
+      "spans": [],
+      "benign": [
+        "const limit",
+        "const api_path",
+        "const debug",
+        "const timeoutMs"
+      ]
+    }
+  ]
+}

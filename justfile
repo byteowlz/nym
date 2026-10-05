@@ -213,3 +213,16 @@ fetch:
 # =============================================================================
 update-schema:
     @cd $(git rev-parse --show-toplevel) && ./scripts/copy_config_schema.sh
+
+# Run the offline synthetic recall/utility benchmark (regex-only, no model download)
+bench:
+    @bash scripts/bench/bench.sh
+
+# Run the benchmark with a regression gate on per-class recall, e.g.:
+#   just bench-gate 0.9
+bench-gate recall:
+    @bash scripts/bench/bench.sh --fail-on-recall {{recall}}
+
+# Show the fixture manifest size/version
+bench-fixtures:
+    @python3 -c "import json; d=json.load(open('scripts/bench/fixtures/challenge.json')); print('fixtures:', len(d['fixtures']), 'version:', d['version'])"
