@@ -31,7 +31,8 @@ mod streaming_ner;
 use config::Config;
 use engine::{
     BUILTIN_PATTERNS, Confidence, Detector, DetectorConfig, JsonPiiMatch, PiiMatch,
-    ReplacementStrategy, Replacer, ReplacerConfig, detect_json, process_json,
+    ReplacementStrategy, Replacer, ReplacerConfig, detect_json_with_selector,
+    process_json_with_selector,
 };
 use session::Session;
 
@@ -436,6 +437,20 @@ struct AnonCommand {
     /// (requires 'streaming' feature)
     #[arg(long)]
     stream: bool,
+
+    /// JSON only: only anonymize string values at these JSON paths
+    /// (repeatable; dot and array-index syntax, e.g. `session.user.email`,
+    /// `users[*].email`)
+    #[arg(long = "include-path", value_name = "PATH")]
+    include_paths: Vec<String>,
+
+    /// JSON only: skip string values at these JSON paths (repeatable)
+    #[arg(long = "exclude-path", value_name = "PATH")]
+    exclude_paths: Vec<String>,
+
+    /// JSON only: print a coverage report of scanned/skipped paths
+    #[arg(long)]
+    json_coverage: bool,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
@@ -583,6 +598,18 @@ struct DetectCommand {
     /// (requires 'streaming' feature)
     #[arg(long)]
     stream: bool,
+
+    /// JSON only: only detect string values at these JSON paths (repeatable)
+    #[arg(long = "include-path", value_name = "PATH")]
+    include_paths: Vec<String>,
+
+    /// JSON only: skip string values at these JSON paths (repeatable)
+    #[arg(long = "exclude-path", value_name = "PATH")]
+    exclude_paths: Vec<String>,
+
+    /// JSON only: print a coverage report of scanned/skipped paths
+    #[arg(long)]
+    json_coverage: bool,
 }
 
 // -----------------------------------------------------------------------------
@@ -1091,8 +1118,16 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
 
     // Process based on format
     let (anonymized, replacements) = match format {
-        FormatArg::Json => process_json(&input_text, &detector, &mut replacer)
-            .with_context(|| "Failed to parse input as JSON")?,
+        FormatArg::Json => {
+            let selector = build_path_selector(&cmd.include_paths, &cmd.exclude_paths)?;
+            let (out, reps, coverage) =
+                process_json_with_selector(&input_text, &detector, &mut replacer, &selector)
+                    .with_context(|| "Failed to parse input as JSON")?;
+            if cmd.json_coverage {
+                print_coverage(&coverage);
+            }
+            (out, reps)
+        }
         FormatArg::Text => {
             let matches = detector.detect(&input_text);
             info!("Found {} PII matches", matches.len());
@@ -1218,6 +1253,7 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
         session_id: Some(session.id.clone()),
         format: stream_format,
         seed_mappings: load_seed_mappings(cmd.key_file.as_ref()),
+        path_selector: build_path_selector(&cmd.include_paths, &cmd.exclude_paths)?,
     };
 
     // Create tokio runtime and run
@@ -1804,8 +1840,13 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
     // Detect based on format
     match format {
         FormatArg::Json => {
-            let json_matches = detect_json(&input_text, &detector)
-                .with_context(|| "Failed to parse input as JSON")?;
+            let selector = build_path_selector(&cmd.include_paths, &cmd.exclude_paths)?;
+            let (json_matches, coverage) =
+                detect_json_with_selector(&input_text, &detector, &selector)
+                    .with_context(|| "Failed to parse input as JSON")?;
+            if cmd.json_coverage {
+                print_coverage(&coverage);
+            }
 
             if cmd.summary {
                 let summary = create_json_summary(&json_matches);
@@ -1900,6 +1941,7 @@ fn handle_detect_streaming(common: &CommonOpts, config: &Config, cmd: DetectComm
         session_id: None,
         format: streaming::StreamFormat::Text,
         seed_mappings: Vec::new(),
+        path_selector: engine::PathSelector::default(),
     };
 
     // Create tokio runtime and run
@@ -2949,6 +2991,25 @@ fn detect_format(path: Option<&PathBuf>) -> FormatArg {
             _ => FormatArg::Text,
         },
         None => FormatArg::Text, // Default to text for stdin
+    }
+}
+
+/// Build a JSON path selector from CLI include/exclude flags. An empty
+/// selector scans everything (the historical default).
+fn build_path_selector(include: &[String], exclude: &[String]) -> Result<engine::PathSelector> {
+    engine::PathSelector::new(include, exclude).map_err(|e| anyhow!("invalid path selector: {e}"))
+}
+
+/// Print a coverage report of scanned/skipped JSON paths.
+fn print_coverage(coverage: &engine::CoverageReport) {
+    println!("JSON scan coverage:");
+    println!("  scanned: {} path(s)", coverage.scanned_count());
+    for p in &coverage.scanned {
+        println!("    + {p}");
+    }
+    println!("  skipped: {} path(s)", coverage.skipped_count());
+    for p in &coverage.skipped {
+        println!("    - {p}");
     }
 }
 

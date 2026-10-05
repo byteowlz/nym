@@ -37,14 +37,19 @@ pub mod office;
 pub mod patterns;
 pub mod pdf;
 pub mod replacer;
+pub mod selector;
 
 #[cfg(feature = "decision")]
 pub use decision::{Decision, DecisionConfig, DecisionGate, Verdict};
 
 pub use detector::{Detector, DetectorConfig, PiiMatch};
-pub use formats::{JsonPiiMatch, detect_json, process_json};
+#[allow(unused_imports)]
+pub use formats::{
+    JsonPiiMatch, detect_json, detect_json_with_selector, process_json, process_json_with_selector,
+};
 pub use keyfile::{KeyHeader, load_key_file, save_key_file};
 #[expect(unused_imports, reason = "Conditionally used with ner feature")]
 pub use ner::set_exit_code;
 pub use patterns::{BUILTIN_PATTERNS, Confidence, PiiCategory, PiiPattern, get_pattern};
 pub use replacer::{Replacement, ReplacementStrategy, Replacer, ReplacerConfig};
+pub use selector::{CoverageReport, PathSelector};

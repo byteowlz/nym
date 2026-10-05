@@ -267,3 +267,110 @@ fn streaming_does_not_truncate_existing_key_file() {
         "second mapping must be added"
     );
 }
+
+#[test]
+fn json_include_path_skips_structural_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.json");
+    let output = dir.path().join("out.json");
+    write(
+        &input,
+        r#"{"id": "11111111-2222-3333-4444-555555555555", "user": {"email": "alice@example.com", "id": "u-1"}}"#,
+    );
+
+    let (ok, stdout) = run(
+        &[
+            "anon",
+            input.to_str().unwrap(),
+            "--format",
+            "json",
+            "--strategy",
+            "placeholder",
+            "--include-path",
+            "user.email",
+            "--json-coverage",
+            "-o",
+            output.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(ok, "anon with include-path should succeed");
+    let out = fs::read_to_string(&output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    // structural id untouched
+    assert_eq!(
+        parsed["id"].as_str().unwrap(),
+        "11111111-2222-3333-4444-555555555555"
+    );
+    assert_eq!(parsed["user"]["id"].as_str().unwrap(), "u-1");
+    // email redacted
+    assert!(
+        parsed["user"]["email"]
+            .as_str()
+            .unwrap()
+            .contains("<EMAIL>")
+    );
+    // coverage report describes skipped structural ids
+    assert!(stdout.contains("JSON scan coverage"));
+}
+
+#[test]
+fn json_exclude_path_skips_structural_ids() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.json");
+    let output = dir.path().join("out.json");
+    write(
+        &input,
+        r#"{"id": "11111111-2222-3333-4444-555555555555", "user": {"email": "alice@example.com"}}"#,
+    );
+
+    let (ok, _) = run(
+        &[
+            "anon",
+            input.to_str().unwrap(),
+            "--format",
+            "json",
+            "--strategy",
+            "placeholder",
+            "--exclude-path",
+            "id",
+            "-o",
+            output.to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(ok);
+    let out = fs::read_to_string(&output).unwrap();
+    let parsed: serde_json::Value = serde_json::from_str(&out).unwrap();
+    assert_eq!(
+        parsed["id"].as_str().unwrap(),
+        "11111111-2222-3333-4444-555555555555"
+    );
+    assert!(
+        parsed["user"]["email"]
+            .as_str()
+            .unwrap()
+            .contains("<EMAIL>")
+    );
+}
+
+#[test]
+fn invalid_path_selector_fails_loudly() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.json");
+    write(&input, r#"{"user": {"email": "a@b.com"}}"#);
+    let (ok, _) = run(
+        &[
+            "anon",
+            input.to_str().unwrap(),
+            "--format",
+            "json",
+            "--include-path",
+            "a[",
+            "-o",
+            dir.path().join("out.json").to_str().unwrap(),
+        ],
+        None,
+    );
+    assert!(!ok, "malformed path selector must be rejected");
+}

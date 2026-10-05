@@ -25,8 +25,6 @@ use tokio::io::{AsyncBufReadExt, AsyncRead, AsyncWrite, BufReader};
 use tokio::sync::Mutex;
 
 #[cfg(feature = "streaming")]
-use crate::engine::process_json;
-#[cfg(feature = "streaming")]
 use crate::engine::{Detector, DetectorConfig, Replacement, Replacer, ReplacerConfig};
 
 /// Result type for streaming operations.
@@ -101,6 +99,9 @@ pub struct StreamConfig {
     /// fake strategies reuse recorded aliases across runs.
     #[cfg(feature = "streaming")]
     pub seed_mappings: Vec<Replacement>,
+    /// JSON path selector for JSONL streaming (default: scan everything).
+    #[cfg(feature = "streaming")]
+    pub path_selector: crate::engine::PathSelector,
 }
 
 /// Creates an async stream that processes lines from a reader.
@@ -215,8 +216,13 @@ where
                 continue;
             }
             stats.lines_processed += 1;
-            let (anonymized, replacements) = process_json(&line, &detector, &mut replacer)
-                .map_err(|e| StreamError::Detection(format!("JSON parse failed: {e}")))?;
+            let (anonymized, replacements, _coverage) = crate::engine::process_json_with_selector(
+                &line,
+                &detector,
+                &mut replacer,
+                &config.path_selector,
+            )
+            .map_err(|e| StreamError::Detection(format!("JSON parse failed: {e}")))?;
             stats.pii_found += replacements.len();
             stats.replacements.extend(replacements);
             // JSONL requires exactly one JSON document per line, so compact the
