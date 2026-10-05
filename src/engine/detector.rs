@@ -8,6 +8,8 @@ use std::sync::LazyLock;
 use regex::{Regex, RegexSet};
 use serde::{Deserialize, Serialize};
 
+use crate::config::NerProvider;
+
 use super::patterns::{BUILTIN_PATTERNS, Confidence, PiiCategory, PiiPattern};
 
 /// Static regex for TLD detection in social handle validation.
@@ -102,6 +104,8 @@ pub struct DetectorConfig {
     pub ner_cache_dir: Option<std::path::PathBuf>,
     /// Which NER backend(s) to run.
     pub ner_backend: NerBackend,
+    /// Execution provider for token-classification NER.
+    pub ner_provider: NerProvider,
     /// Path to the token-classification model: a local dir (model.onnx + tokenizer.json
     /// + config.json) or a HuggingFace repo id. Used for the TokenClass/Both backends.
     pub ner_token_model: Option<std::path::PathBuf>,
@@ -120,6 +124,7 @@ impl Default for DetectorConfig {
             ner_labels: None,
             ner_cache_dir: None,
             ner_backend: NerBackend::default(),
+            ner_provider: NerProvider::default(),
             ner_token_model: None,
         }
     }
@@ -207,6 +212,12 @@ impl DetectorConfig {
     /// Select which NER backend(s) to run.
     pub fn with_ner_backend(mut self, backend: NerBackend) -> Self {
         self.ner_backend = backend;
+        self
+    }
+
+    /// Select the token-classification NER execution provider.
+    pub fn with_ner_provider(mut self, provider: NerProvider) -> Self {
+        self.ner_provider = provider;
         self
     }
 
@@ -314,9 +325,7 @@ impl Detector {
         let paths = match model_config.download() {
             Ok(p) => p,
             Err(e) => {
-                warn!(
-                    "Failed to download NER model: {e}. NER detection disabled."
-                );
+                warn!("Failed to download NER model: {e}. NER detection disabled.");
                 return None;
             }
         };
@@ -332,9 +341,7 @@ impl Detector {
         ) {
             Ok(detector) => Some(detector),
             Err(e) => {
-                warn!(
-                    "Failed to initialize NER detector: {e}. NER detection disabled."
-                );
+                warn!("Failed to initialize NER detector: {e}. NER detection disabled.");
                 None
             }
         }
@@ -350,12 +357,13 @@ impl Detector {
         // When unset, fall back to the default published model repo.
         let result = match config.ner_token_model {
             Some(ref model) if model.is_dir() => {
-                TokenClassDetector::from_dir(model, config.ner_threshold)
+                TokenClassDetector::from_dir(model, config.ner_threshold, config.ner_provider)
             }
             Some(ref model) => TokenClassDetector::from_repo(
                 &model.to_string_lossy(),
                 config.ner_cache_dir.as_deref(),
                 config.ner_threshold,
+                config.ner_provider,
             ),
             None => {
                 info!(
@@ -366,6 +374,7 @@ impl Detector {
                     super::ner_token::DEFAULT_TOKEN_MODEL,
                     config.ner_cache_dir.as_deref(),
                     config.ner_threshold,
+                    config.ner_provider,
                 )
             }
         };
@@ -380,9 +389,7 @@ impl Detector {
                 Some(detector)
             }
             Err(e) => {
-                warn!(
-                    "Failed to initialize token-classification detector: {e}. Disabled."
-                );
+                warn!("Failed to initialize token-classification detector: {e}. Disabled.");
                 None
             }
         }
@@ -430,9 +437,7 @@ impl Detector {
             match token.detect(text) {
                 Ok(token_matches) => {
                     for nm in token_matches {
-                        let overlaps = matches
-                            .iter()
-                            .any(|m| nm.start < m.end && nm.end > m.start);
+                        let overlaps = matches.iter().any(|m| nm.start < m.end && nm.end > m.start);
                         if !overlaps {
                             matches.push(nm);
                         }

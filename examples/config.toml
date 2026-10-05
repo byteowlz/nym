@@ -64,6 +64,10 @@ enabled = false
 #   both   = run both and merge (best recall, but also loads the ~1.1 GB GLiNER model)
 backend = "tokens"
 
+# Token backend only (including the token portion of "both"); GLiNER is unaffected.
+# "auto" uses compiled accelerators with CPU fallback; "cpu" bypasses accelerators.
+provider = "auto"
+
 # Token-classification model for the "tokens"/"both" backends. A HuggingFace repo
 # id (auto-downloaded + cached with a progress bar) or a local dir with
 # model.onnx/tokenizer.json/config.json.

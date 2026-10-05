@@ -224,6 +224,17 @@ impl Default for OcrConfig {
     }
 }
 
+/// Token NER execution-provider policy. CPU bypasses accelerator registration.
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, Default, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum NerProvider {
+    /// Use compiled-in accelerators, retrying on CPU if session setup fails.
+    #[default]
+    Auto,
+    /// Use ONNX Runtime's CPU provider even in accelerator-enabled builds.
+    Cpu,
+}
+
 /// NER (Named Entity Recognition) configuration.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
@@ -251,6 +262,10 @@ pub struct NerConfig {
     pub recall_first: bool,
     /// Which NER backend(s) to run: `tokens` (default), `gliner`, or `both`.
     pub backend: NerBackend,
+    /// Token NER only: `auto` (default) or explicit `cpu`; GLiNER is unaffected.
+    /// For `both`, this controls only the token-classification session.
+    /// Environment override: NYM_NER_PROVIDER when loading layered config.
+    pub provider: NerProvider,
     /// Token-classification model for the `tokens`/`both` backends: a local dir
     /// (`model.onnx` + `tokenizer.json` + `config.json`) or a HuggingFace repo id
     /// (e.g. `Wismut/openmed-onnx/small`, `nationaldesignstudio/rampart`).
@@ -276,6 +291,7 @@ impl Default for NerConfig {
             ],
             recall_first: false,
             backend: NerBackend::default(),
+            provider: NerProvider::default(),
             token_model: None,
         }
     }

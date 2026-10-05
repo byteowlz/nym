@@ -39,13 +39,58 @@ use session::Session;
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
 
 /// Apply the configured NER backend selection (`gliner`/`tokens`/`both`) and
-/// the token-classification model onto a detector config.
+/// the token-classification model/provider onto a detector config.
 fn apply_ner_backend(mut dc: DetectorConfig, ner: &config::NerConfig) -> DetectorConfig {
-    dc = dc.with_ner_backend(ner.backend);
+    dc = dc
+        .with_ner_backend(ner.backend)
+        .with_ner_provider(ner.provider);
     if let Some(ref model) = ner.token_model {
         dc = dc.with_ner_token_model(shellexpand::tilde(model).into_owned());
     }
     dc
+}
+
+#[cfg(test)]
+mod provider_wiring_tests {
+    use super::*;
+
+    #[test]
+    fn detector_provider_defaults_to_auto_and_can_be_overridden() {
+        assert_eq!(
+            (
+                DetectorConfig::default().ner_provider,
+                DetectorConfig::default()
+                    .with_ner_provider(config::NerProvider::Cpu)
+                    .ner_provider,
+            ),
+            (config::NerProvider::Auto, config::NerProvider::Cpu)
+        );
+    }
+
+    #[test]
+    fn configured_provider_reaches_detector_without_overwriting_other_ner_options() {
+        for provider in [config::NerProvider::Auto, config::NerProvider::Cpu] {
+            let ner = config::NerConfig {
+                provider,
+                backend: engine::detector::NerBackend::Both,
+                token_model: Some("synthetic-model".into()),
+                ..Default::default()
+            };
+            let detector = apply_ner_backend(DetectorConfig::default(), &ner);
+            assert_eq!(
+                (
+                    detector.ner_provider,
+                    detector.ner_backend,
+                    detector.ner_token_model
+                ),
+                (
+                    provider,
+                    ner.backend,
+                    Some(PathBuf::from("synthetic-model"))
+                )
+            );
+        }
+    }
 }
 
 fn main() {
@@ -1275,6 +1320,8 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
     }
     detector_config = detector_config.with_ner_recall_first(config.ner.recall_first);
 
+    detector_config = apply_ner_backend(detector_config, &config.ner);
+
     // Build replacer config
     let strategy: ReplacementStrategy = cmd.strategy.into();
     let seed = cmd.seed.or(config.replacement.seed);
@@ -1303,6 +1350,11 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
         FormatArg::Json => StreamFormat::Json,
         FormatArg::Text => StreamFormat::Text,
     };
+    if cmd.json_coverage && stream_format != StreamFormat::Json {
+        return Err(anyhow!(
+            "--json-coverage requires --format json with --stream"
+        ));
+    }
 
     let stream_config = StreamConfig {
         detector_config: detector_config.clone(),
@@ -1311,6 +1363,7 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
         format: stream_format,
         seed_mappings: load_seed_mappings(cmd.key_file.as_ref()),
         path_selector: build_path_selector(&cmd.include_paths, &cmd.exclude_paths)?,
+        json_coverage: cmd.json_coverage,
     };
 
     // Create tokio runtime and run
@@ -1427,13 +1480,81 @@ where
     Ok(stats)
 }
 
+/// Full aliases override components; conflicting component originals are omitted.
+/// The same filtered dictionary is used for text and office restoration.
+fn restoration_mappings(replacements: &[engine::Replacement]) -> Result<Vec<(&str, &str)>> {
+    if replacements
+        .iter()
+        .any(|entry| entry.replacement.is_empty())
+    {
+        return Err(anyhow!("key file contains an empty restoration alias"));
+    }
+    let full: std::collections::HashMap<&str, &str> = replacements
+        .iter()
+        .map(|entry| (entry.replacement.as_str(), entry.original.as_str()))
+        .collect();
+    let mut components: std::collections::HashMap<&str, Option<&str>> =
+        std::collections::HashMap::new();
+    for component in replacements.iter().flat_map(|entry| &entry.components) {
+        let alias = component.replacement.as_str();
+        if alias.is_empty() || full.contains_key(alias) {
+            continue;
+        }
+        let original = component.original.as_str();
+        components
+            .entry(alias)
+            .and_modify(|previous| {
+                if *previous != Some(original) {
+                    *previous = None;
+                }
+            })
+            .or_insert(Some(original));
+    }
+    let mut mappings: Vec<_> = full
+        .into_iter()
+        .chain(
+            components
+                .into_iter()
+                .filter_map(|(alias, original)| original.map(|original| (alias, original))),
+        )
+        .collect();
+    mappings.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(b.0)));
+    Ok(mappings)
+}
+
+/// Restore aliases against the input once; inserted originals are never scanned.
+fn restore_text_once(text: &str, mappings: &[(&str, &str)]) -> Result<(String, usize)> {
+    if mappings.is_empty() {
+        return Ok((text.to_string(), 0));
+    }
+    let originals: std::collections::HashMap<&str, &str> = mappings.iter().copied().collect();
+    let alternatives: Vec<String> = mappings
+        .iter()
+        .map(|(alias, _)| {
+            let escaped = regex::escape(alias);
+            if alias.len() <= 3 {
+                format!(r"\b{escaped}\b")
+            } else {
+                escaped
+            }
+        })
+        .collect();
+    let pattern = regex::Regex::new(&alternatives.join("|"))
+        .context("Failed to compile restoration aliases")?;
+    let mut count = 0;
+    let restored = pattern.replace_all(text, |matched: &regex::Captures<'_>| {
+        count += 1;
+        // Every matched branch is one of the escaped literal aliases above.
+        originals[&matched[0]].to_string()
+    });
+    Ok((restored.into_owned(), count))
+}
+
 #[expect(
     clippy::needless_pass_by_value,
     reason = "CLI command struct consumed by handler"
 )]
 fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
-    use std::io::BufRead;
-
     // PDF and raster-image redaction are destructive by design.
     if cmd
         .input
@@ -1460,33 +1581,15 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
         .and_then(|p| engine::office::sniff_path(p));
 
     // Read input
-    let mut input_text = if office_fmt.is_some() {
+    let input_text = if office_fmt.is_some() {
         String::new()
     } else {
         read_input(cmd.input.as_ref())?
     };
 
-    // Read and parse key file
-    let key_file = fs::File::open(&cmd.key_file)
-        .with_context(|| format!("Failed to open key file: {}", cmd.key_file.display()))?;
-    let reader = io::BufReader::new(key_file);
-
-    let mut replacements: Vec<engine::Replacement> = Vec::new();
-
-    for (line_num, line) in reader.lines().enumerate() {
-        let line_num = line_num + 1;
-        let line = line.with_context(|| format!("Failed to read line {line_num} from key file"))?;
-
-        if line.trim().is_empty() {
-            continue;
-        }
-
-        // Try to parse as replacement entry
-        if let Ok(replacement) = serde_json::from_str::<engine::Replacement>(&line) {
-            replacements.push(replacement);
-        }
-        // Skip header lines (version info, etc.)
-    }
+    // Use the shared loader: malformed or ambiguous mappings must fail before
+    // any payload is restored, rather than silently skipping invalid entries.
+    let (_, replacements) = engine::keyfile::read_replacements(&cmd.key_file)?;
 
     if replacements.is_empty() {
         return Err(anyhow!("No replacement mappings found in key file"));
@@ -1494,26 +1597,7 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
 
     info!("Loaded {} replacement mappings", replacements.len());
 
-    // Build a list of all replacements including component mappings
-    // Sort by replacement length (longest first) to avoid partial replacement issues
-    let mut all_mappings: Vec<(&str, &str)> = Vec::new();
-
-    for r in &replacements {
-        // Add the full replacement
-        all_mappings.push((&r.replacement, &r.original));
-
-        // Add component mappings (e.g., first name, last name)
-        for c in &r.components {
-            all_mappings.push((&c.replacement, &c.original));
-        }
-    }
-
-    // Sort by replacement length descending (replace longer strings first)
-    // This prevents "Donald" from being replaced before "Donald Duck"
-    all_mappings.sort_by_key(|b| std::cmp::Reverse(b.0.len()));
-
-    // Deduplicate mappings (same replacement -> same original)
-    all_mappings.dedup_by(|a, b| a.0 == b.0);
+    let all_mappings = restoration_mappings(&replacements)?;
 
     debug!(
         "Total mappings (including components): {}",
@@ -1546,30 +1630,8 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
         return Ok(());
     }
 
-    // Apply replacements in reverse (replace anonymized values with originals)
-    let mut restored_count = 0;
-    for (replacement, original) in &all_mappings {
-        if input_text.contains(*replacement) {
-            // Use word-boundary aware replacement for short strings to avoid false positives
-            if replacement.len() <= 3 {
-                // For very short replacements (initials like "D."), use word boundary matching
-                let pattern = format!(r"\b{}\b", regex::escape(replacement));
-                if let Ok(re) = regex::Regex::new(&pattern) {
-                    let before_len = input_text.len();
-                    input_text = re.replace_all(&input_text, *original).to_string();
-                    if input_text.len() != before_len {
-                        restored_count += 1;
-                    }
-                }
-            } else {
-                input_text = input_text.replace(*replacement, original);
-                restored_count += 1;
-            }
-        }
-    }
-
-    // Write output
-    write_output(cmd.output.as_ref(), &input_text)?;
+    let (restored, restored_count) = restore_text_once(&input_text, &all_mappings)?;
+    write_output(cmd.output.as_ref(), &restored)?;
 
     if !common.quiet {
         eprintln!("Restored {restored_count} PII values");
@@ -1894,8 +1956,16 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
 
     let detector = Detector::new(&detector_config);
 
-    // Build the audit fail-on policy (opt-in; empty by default).
-    let fail_policy = engine::FailOnPolicy::new(&cmd.fail_on);
+    // Validate the complete policy before emitting findings or a clean manifest.
+    let fail_policy = engine::FailOnPolicy::new(
+        &cmd.fail_on,
+        config
+            .ner
+            .labels
+            .iter()
+            .filter(|_| ner_enabled)
+            .map(String::as_str),
+    )?;
 
     // Detect based on format
     match format {
@@ -1986,6 +2056,12 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
 fn handle_detect_streaming(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Result<()> {
     use streaming::StreamConfig;
 
+    if cmd.json_coverage || !cmd.fail_on.is_empty() || cmd.summary_json {
+        return Err(anyhow!(
+            "--json-coverage, --fail-on and --summary-json are not supported with detect --stream; omit --stream to use them"
+        ));
+    }
+
     // Build detector config
     let min_confidence = cmd.min_confidence.into();
     let mut detector_config = DetectorConfig::default().with_min_confidence(min_confidence);
@@ -2022,6 +2098,8 @@ fn handle_detect_streaming(common: &CommonOpts, config: &Config, cmd: DetectComm
         detector_config = detector_config.with_ner_threshold(threshold);
     }
 
+    detector_config = apply_ner_backend(detector_config, &config.ner);
+
     let stream_config = StreamConfig {
         detector_config,
         replacer_config: ReplacerConfig::default(),
@@ -2029,6 +2107,7 @@ fn handle_detect_streaming(common: &CommonOpts, config: &Config, cmd: DetectComm
         format: streaming::StreamFormat::Text,
         seed_mappings: Vec::new(),
         path_selector: engine::PathSelector::default(),
+        json_coverage: false,
     };
 
     // Create tokio runtime and run
@@ -3087,16 +3166,16 @@ fn build_path_selector(include: &[String], exclude: &[String]) -> Result<engine:
     engine::PathSelector::new(include, exclude).map_err(|e| anyhow!("invalid path selector: {e}"))
 }
 
-/// Print a coverage report of scanned/skipped JSON paths.
+/// Report private scanned/skipped paths on stderr, never the payload channel.
 fn print_coverage(coverage: &engine::CoverageReport) {
-    println!("JSON scan coverage:");
-    println!("  scanned: {} path(s)", coverage.scanned_count());
+    eprintln!("JSON scan coverage:");
+    eprintln!("  scanned: {} path(s)", coverage.scanned_count());
     for p in &coverage.scanned {
-        println!("    + {p}");
+        eprintln!("    + {p}");
     }
-    println!("  skipped: {} path(s)", coverage.skipped_count());
+    eprintln!("  skipped: {} path(s)", coverage.skipped_count());
     for p in &coverage.skipped {
-        println!("    - {p}");
+        eprintln!("    - {p}");
     }
 }
 

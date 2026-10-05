@@ -169,8 +169,10 @@ struct CachedReplacement {
 pub struct Replacer {
     config: ReplacerConfig,
     /// Cache for consistent replacements (used by Consistent and Fake strategies)
-    /// Key is the normalized original text
+    /// Key is the exact original text, preserving case-distinct round trips
     replacement_cache: HashMap<String, CachedReplacement>,
+    /// Aliases already emitted or imported; never allocate them to new inputs.
+    reserved_aliases: HashMap<String, String>,
     /// Cache for name component mappings (normalized original → normalized replacement)
     /// Used for linking derived PII (e.g., email local parts containing names)
     component_cache: HashMap<String, String>,
@@ -193,6 +195,7 @@ impl Replacer {
         Self {
             config,
             replacement_cache: HashMap::new(),
+            reserved_aliases: HashMap::new(),
             component_cache: HashMap::new(),
             counter: 0,
             rng,
@@ -216,7 +219,9 @@ impl Replacer {
     /// original value across runs and processes.
     pub fn seed_mappings(&mut self, mappings: &[Replacement]) {
         for r in mappings {
-            let cache_key = r.original.to_lowercase();
+            self.reserved_aliases
+                .insert(r.replacement.clone(), r.original.clone());
+            let cache_key = r.original.clone();
             self.replacement_cache.insert(
                 cache_key,
                 CachedReplacement {
@@ -425,27 +430,7 @@ impl Replacer {
     }
 
     fn consistent_replacement(&mut self, pii_match: &PiiMatch) -> (String, Vec<ComponentMapping>) {
-        // Normalize text for cache lookup (lowercase, trimmed)
-        let cache_key = pii_match.matched_text.to_lowercase();
-
-        // Check cache first
-        if let Some(cached) = self.replacement_cache.get(&cache_key) {
-            return (cached.replacement.clone(), cached.components.clone());
-        }
-
-        // Generate new replacement using fake data (not random placeholders)
-        let (replacement, components) = self.generate_fake_replacement(pii_match);
-
-        // Cache it
-        self.replacement_cache.insert(
-            cache_key,
-            CachedReplacement {
-                replacement: replacement.clone(),
-                components: components.clone(),
-            },
-        );
-
-        (replacement, components)
+        self.fake_replacement_with_components(pii_match)
     }
 
     fn fake_replacement(&mut self, pii_match: &PiiMatch) -> String {
@@ -1290,16 +1275,16 @@ impl Replacer {
         &mut self,
         pii_match: &PiiMatch,
     ) -> (String, Vec<ComponentMapping>) {
-        // Normalize text for cache lookup (lowercase, trimmed)
-        let cache_key = pii_match.matched_text.to_lowercase();
+        // Full mappings must preserve exact originals, including letter case.
+        let cache_key = pii_match.matched_text.clone();
 
         // Check cache first - same text should always get same replacement
         if let Some(cached) = self.replacement_cache.get(&cache_key) {
             return (cached.replacement.clone(), cached.components.clone());
         }
 
-        // Generate new replacement
-        let (replacement, components) = self.generate_fake_replacement(pii_match);
+        // Allocate against both this run and imported aliases.
+        let (replacement, components) = self.unique_fake_replacement(pii_match);
 
         // Cache it for consistency
         self.replacement_cache.insert(
@@ -1311,6 +1296,44 @@ impl Replacer {
         );
 
         (replacement, components)
+    }
+
+    /// Reserve aliases before caching. Rejected candidates must not leak their
+    /// component mappings into later derived replacements. Some finite fake
+    /// domains or linked components cannot produce a fresh value; use a unique
+    /// placeholder after bounded retries rather than loop forever or collide.
+    fn unique_fake_replacement(&mut self, pii_match: &PiiMatch) -> (String, Vec<ComponentMapping>) {
+        let previous_components = self.component_cache.clone();
+        for _ in 0..64 {
+            let (mut replacement, components) = self.generate_fake_replacement(pii_match);
+            // Keep case-linked names/locations recognizable when their casing
+            // yields a distinct alias; otherwise retry instead of conflating originals.
+            if let Some(owner) = self.reserved_aliases.get(&replacement)
+                && owner.to_lowercase() == pii_match.matched_text.to_lowercase()
+            {
+                replacement = Self::match_case_pattern(&pii_match.matched_text, &replacement);
+            }
+            if self.reserve_alias(&pii_match.matched_text, &replacement) {
+                return (replacement, components);
+            }
+            self.component_cache.clone_from(&previous_components);
+        }
+        loop {
+            self.counter += 1;
+            let replacement = format!("<NYM_{}>", self.counter);
+            if self.reserve_alias(&pii_match.matched_text, &replacement) {
+                return (replacement, Vec::new());
+            }
+        }
+    }
+
+    fn reserve_alias(&mut self, original: &str, replacement: &str) -> bool {
+        if original == replacement || self.reserved_aliases.contains_key(replacement) {
+            return false;
+        }
+        self.reserved_aliases
+            .insert(replacement.to_string(), original.to_string());
+        true
     }
 
     /// Internal method to generate fake replacement (not cached).
@@ -1574,6 +1597,7 @@ impl Default for Replacer {
 mod tests {
     use crate::engine::patterns::Confidence;
     use crate::engine::patterns::PiiCategory;
+    use std::collections::HashSet;
 
     use super::*;
 
@@ -1585,6 +1609,92 @@ mod tests {
             end: text.len(),
             confidence: Confidence::High,
             category: PiiCategory::Contact,
+        }
+    }
+
+    #[test]
+    fn test_imported_case_distinct_originals_keep_exact_aliases() {
+        let mut replacer = Replacer::new(ReplacerConfig {
+            strategy: ReplacementStrategy::Fake,
+            seed: Some(42),
+            ..Default::default()
+        });
+        let mappings: Vec<_> = [
+            ("Jörg Beispiel", "Alias One"),
+            ("JÖRG BEISPIEL", "Alias Two"),
+        ]
+        .into_iter()
+        .map(|(original, replacement)| Replacement {
+            original: original.into(),
+            replacement: replacement.into(),
+            pattern_name: "person".into(),
+            components: Vec::new(),
+        })
+        .collect();
+        replacer.seed_mappings(&mappings);
+        for mapping in mappings {
+            let actual = replacer.replace(&make_match("person", &mapping.original));
+            assert_eq!(
+                serde_json::to_value(actual).unwrap(),
+                serde_json::to_value(mapping).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn test_seeded_resumed_fake_aliases_are_reserved() {
+        for strategy in [ReplacementStrategy::Fake, ReplacementStrategy::Consistent] {
+            let config = ReplacerConfig {
+                strategy,
+                seed: Some(42),
+                ..Default::default()
+            };
+            let mut first = Replacer::new(config.clone());
+            let alpha = first.replace(&make_match("email", "alpha@example.invalid"));
+            let beta = first.replace(&make_match("email", "beta@example.invalid"));
+            let mut resumed = Replacer::new(config.clone());
+            resumed.seed_mappings(&[alpha.clone(), beta.clone()]);
+            let imported_beta = resumed.replace(&make_match("email", "beta@example.invalid"));
+            assert_eq!(
+                serde_json::to_value(imported_beta).unwrap(),
+                serde_json::to_value(&beta).unwrap()
+            );
+            let gamma = resumed.replace(&make_match("email", "gamma@example.invalid"));
+            assert_ne!(gamma.replacement, alpha.replacement);
+            assert_ne!(gamma.replacement, beta.replacement);
+            let mut final_run = Replacer::new(config);
+            final_run.seed_mappings(&[alpha.clone(), beta, gamma.clone()]);
+            assert_eq!(
+                serde_json::to_value(
+                    final_run.replace(&make_match("email", "gamma@example.invalid"))
+                )
+                .unwrap(),
+                serde_json::to_value(gamma).unwrap()
+            );
+            assert_eq!(
+                serde_json::to_value(
+                    final_run.replace(&make_match("email", "alpha@example.invalid"))
+                )
+                .unwrap(),
+                serde_json::to_value(alpha).unwrap()
+            );
+        }
+    }
+
+    #[test]
+    fn test_finite_fake_domain_falls_back_without_colliding() {
+        let mut replacer = Replacer::new(ReplacerConfig {
+            strategy: ReplacementStrategy::Fake,
+            seed: Some(42),
+            ..Default::default()
+        });
+        let mut aliases = HashSet::new();
+        for index in 0..100 {
+            let result = replacer.replace(&make_match(
+                "country",
+                &format!("fictional-country-{index}"),
+            ));
+            assert!(aliases.insert(result.replacement));
         }
     }
 

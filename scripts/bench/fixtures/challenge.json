@@ -191,11 +191,26 @@
         }
       ],
       "benign": [
-        "users",
-        "ips",
-        "carte",
-        "social"
+        "line1",
+        "line2",
+        "line3",
+        "line4"
       ]
+    },
+    {
+      "id": "social-accounts",
+      "text": "Follow @johndoe, @John_Doe123, @user.name, @jack and @_underscore. username=john_doe; login: alice42; account user123.",
+      "spans": [
+        {"value": "@johndoe", "class": "social_handle"},
+        {"value": "@John_Doe123", "class": "social_handle"},
+        {"value": "@user.name", "class": "social_handle"},
+        {"value": "@jack", "class": "twitter_handle"},
+        {"value": "@_underscore", "class": "twitter_handle"},
+        {"value": "john_doe", "class": "username"},
+        {"value": "alice42", "class": "username"},
+        {"value": "user123", "class": "username"}
+      ],
+      "benign": ["Follow", "account"]
     },
     {
       "id": "benign-code-literals",

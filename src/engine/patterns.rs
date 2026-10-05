@@ -210,11 +210,18 @@ static TIME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     )
 });
 
-// Username (without @, for matching dataset usernames)
+// Bare numeric/underscore tokens are usually code, not evidence of an account.
+// Keep conventional userNNN identifiers; require an explicit account label for
+// other usernames. The labeled form deliberately matches the whole field: the
+// detector uses find_iter (not captures), so a capture would not narrow redaction.
 static USERNAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    // Common username patterns: user123, john_doe, etc.
-    // Only match if it looks like a username (has numbers or underscores, or is in a context)
-    regex(r"\b[a-zA-Z][a-zA-Z0-9_]{2,20}\d+[a-zA-Z0-9_]*\b|\b[a-zA-Z][a-zA-Z0-9]*_[a-zA-Z0-9_]+\b")
+    regex(
+        r#"(?x)
+        \buser\d{1,20}\b |
+        ["']?\b(?i:username|user_name|login|handle)["']?\s*[:=]\s*["']?
+        [a-zA-Z][a-zA-Z0-9_.-]{2,31}\b["']?
+        "#,
+    )
 });
 
 // Home-directory paths: /Users/<user>/..., /home/<user>/..., /Volumes/<name>/...,
@@ -234,7 +241,9 @@ static HOME_DIR_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 // chars accept Unicode letters/marks so hostnames and config names in any
 // script are captured whole.
 static UNIX_PATH_REGEX: LazyLock<Regex> = LazyLock::new(|| {
-    regex(r"(?i)/(?:etc|var|opt|usr|srv|root|dev|proc|sys|lib|bin|sbin|tmp|mnt|media)/[\p{L}\p{N}\p{M}._-]+")
+    regex(
+        r"(?i)/(?:etc|var|opt|usr|srv|root|dev|proc|sys|lib|bin|sbin|tmp|mnt|media)/[\p{L}\p{N}\p{M}._-]+",
+    )
 });
 
 // Social media handles
@@ -501,7 +510,7 @@ pub static BUILTIN_PATTERNS: &[PiiPattern] = &[
     },
     PiiPattern {
         name: "username",
-        description: "Username (user123, john_doe style)",
+        description: "Username (user123 or explicitly labeled account)",
         regex: &USERNAME_REGEX,
         confidence: Confidence::Low,
         category: PiiCategory::Social,
@@ -752,6 +761,34 @@ mod tests {
         // Non-ASCII host/config names captured whole.
         assert!(re.is_match("/var/www/münchen/index.html"));
         assert!(!re.is_match("vim"));
+    }
+
+    #[test]
+    fn test_username_code_false_positives() {
+        use crate::engine::detector::{Detector, DetectorConfig};
+
+        let detector = Detector::new(
+            &DetectorConfig::default()
+                .with_patterns(["username"])
+                .with_min_confidence(Confidence::Low),
+        );
+        let text = "line1 line2 line3 line4 api_path GRAFANA_API_KEY \
+                    550e8400-e29b-41d4-a716-446655440000 timeoutMs";
+        assert!(detector.detect(text).is_empty());
+    }
+
+    #[test]
+    fn test_username_explicit_accounts() {
+        let re = &*USERNAME_REGEX;
+        for text in [
+            "user123",
+            "user7",
+            "username=john_doe",
+            "login: alice42",
+            "\"username\":\"john_doe\"",
+        ] {
+            assert_eq!(re.find(text).map(|m| m.as_str()), Some(text));
+        }
     }
 
     #[test]

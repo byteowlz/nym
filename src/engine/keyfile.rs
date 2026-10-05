@@ -155,37 +155,7 @@ impl KeyFile {
 
         let header = header.ok_or_else(|| anyhow!("key file is missing a header line"))?;
 
-        // Detect conflicting entries: same original resolving to different
-        // replacements (or the reverse), which would make deanonymization
-        // ambiguous. Reject rather than silently picking one.
-        let mut by_original: std::collections::HashMap<&str, &str> =
-            std::collections::HashMap::new();
-        let mut by_replacement: std::collections::HashMap<&str, &str> =
-            std::collections::HashMap::new();
-        for r in &replacements {
-            if let Some(prev) = by_original.get(r.original.as_str()) {
-                if *prev != r.replacement {
-                    return Err(anyhow!(
-                        "conflicting key-file entries for '{}': '{}' vs '{}'",
-                        r.original,
-                        prev,
-                        r.replacement
-                    ));
-                }
-            }
-            by_original.insert(&r.original, &r.replacement);
-            if let Some(prev) = by_replacement.get(r.replacement.as_str()) {
-                if *prev != r.original {
-                    return Err(anyhow!(
-                        "conflicting key-file entries for replacement '{}': '{}' vs '{}'",
-                        r.replacement,
-                        prev,
-                        r.original
-                    ));
-                }
-            }
-            by_replacement.insert(&r.replacement, &r.original);
-        }
+        validate_mappings(&replacements)?;
 
         Ok(Some(Self {
             header,
@@ -208,47 +178,58 @@ impl KeyFile {
     }
 }
 
-/// Lock file suffix used to serialise concurrent writers.
-
-/// Acquire an exclusive lock guarding `path`, returning a guard that releases
-/// the lock on drop. Uses an advisory lock file created with `create_new` and
-/// a stale-lock timeout so a crashed writer cannot deadlock future runs.
-fn acquire_lock(path: &Path, timeout: Duration) -> Result<LockGuard> {
-    let lock_path = lock_path_for(path);
-    let start = Instant::now();
-
-    loop {
-        match fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&lock_path)
+/// Validate one-to-one reversibility before reading or committing mappings.
+fn validate_mappings(entries: &[Replacement]) -> Result<()> {
+    let mut by_original = std::collections::HashMap::new();
+    let mut by_replacement = std::collections::HashMap::new();
+    for entry in entries {
+        if let Some(previous) = by_original.insert(&entry.original, &entry.replacement)
+            && previous != &entry.replacement
         {
-            Ok(_file) => return Ok(LockGuard { path: lock_path }),
-            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {
-                // Stale-lock recovery: if the lock is older than the timeout,
-                // break it and retry once.
-                let should_break = fs::metadata(&lock_path)
-                    .and_then(|m| m.modified())
-                    .ok()
-                    .and_then(|modified| modified.elapsed().ok())
-                    .map(|age| age >= timeout)
-                    .unwrap_or(false);
-                if should_break {
-                    let _ = fs::remove_file(&lock_path);
-                    continue;
-                }
+            return Err(anyhow!(
+                "conflicting key-file entries for an original value"
+            ));
+        }
+        if let Some(previous) = by_replacement.insert(&entry.replacement, &entry.original)
+            && previous != &entry.original
+        {
+            return Err(anyhow!(
+                "conflicting key-file entries for a replacement value"
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// OS advisory locks are released on exit, including a crashed writer. Keep
+/// the empty lock file in place: unlinking it can split concurrent lock owners.
+fn acquire_lock(path: &Path, timeout: Duration) -> Result<File> {
+    let lock_path = lock_path_for(path);
+    if fs::symlink_metadata(&lock_path).is_ok_and(|meta| meta.file_type().is_symlink()) {
+        return Err(anyhow!("key-file lock must not be a symbolic link"));
+    }
+    let mut options = fs::OpenOptions::new();
+    options.read(true).write(true).create(true).truncate(false);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let file = options
+        .open(&lock_path)
+        .context("Failed to open key-file lock")?;
+    let start = Instant::now();
+    loop {
+        match file.try_lock() {
+            Ok(()) => return Ok(file),
+            Err(std::fs::TryLockError::WouldBlock) => {
                 if start.elapsed() >= timeout {
-                    return Err(anyhow!(
-                        "timed out waiting for key-file lock: {}",
-                        lock_path.display()
-                    ));
+                    return Err(anyhow!("timed out waiting for key-file lock"));
                 }
                 std::thread::sleep(Duration::from_millis(20));
             }
-            Err(e) => {
-                return Err(e).with_context(|| {
-                    format!("Failed to acquire key-file lock: {}", lock_path.display())
-                });
+            Err(std::fs::TryLockError::Error(error)) => {
+                return Err(error).context("Failed to acquire key-file lock");
             }
         }
     }
@@ -261,70 +242,30 @@ fn lock_path_for(path: &Path) -> PathBuf {
     PathBuf::from(os)
 }
 
-/// Held lock file; removed on drop.
-struct LockGuard {
-    path: PathBuf,
-}
-
-impl Drop for LockGuard {
-    fn drop(&mut self) {
-        let _ = fs::remove_file(&self.path);
-    }
-}
-
-/// Persist a finished key file atomically under a lock.
-///
-/// `existing` is the prior contents (or `None` on first run); `new` are the
-/// replacement entries produced this run. Existing entries are preserved and
-/// new entries are appended (deduplicating exact repeats), so a second
-/// invocation extends rather than overwrites.
+/// Persist under the caller's lock using an exclusively created, random,
+/// owner-only temp file. Drop cleans up the temp on serialization/write errors.
 fn write_atomic(path: &Path, header: &KeyHeader, entries: &[Replacement]) -> Result<()> {
-    let _lock = acquire_lock(path, Duration::from_secs(10))?;
-
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("Failed to create key-file dir: {}", parent.display()))?;
-    }
-
-    // Merged entry list, preserving existing order then appending new ones,
-    // deduplicating on (original -> replacement) to avoid re-recording.
-    let mut merged: Vec<Replacement> = Vec::new();
-    let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-    for r in entries {
-        if seen.insert((r.original.clone(), r.replacement.clone())) {
-            merged.push(r.clone());
-        }
-    }
-
-    // Serialise to a temp file in the same directory, then atomically rename.
-    let temp = temp_path(path);
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."));
+    let mut temp = tempfile::NamedTempFile::new_in(parent)
+        .context("Failed to create private temp key file")?;
     {
-        let file = File::create(&temp)
-            .with_context(|| format!("Failed to create temp key file: {}", temp.display()))?;
-        let mut writer = BufWriter::new(file);
+        let mut writer = BufWriter::new(temp.as_file_mut());
         serde_json::to_writer(&mut writer, header)?;
         writeln!(writer)?;
-        for r in &merged {
-            serde_json::to_writer(&mut writer, r)?;
+        for entry in entries {
+            serde_json::to_writer(&mut writer, entry)?;
             writeln!(writer)?;
         }
         writer.flush()?;
-        writer
-            .get_ref()
-            .sync_all()
-            .with_context(|| format!("Failed to sync temp key file: {}", temp.display()))?;
     }
-    fs::rename(&temp, path)
-        .with_context(|| format!("Failed to write key file: {}", path.display()))?;
-
+    temp.as_file()
+        .sync_all()
+        .context("Failed to sync temp key file")?;
+    temp.persist(path).context("Failed to replace key file")?;
     Ok(())
-}
-
-/// Derive the temp path used for an atomic write.
-fn temp_path(path: &Path) -> PathBuf {
-    let mut os = path.as_os_str().to_os_string();
-    os.push(".tmp");
-    PathBuf::from(os)
 }
 
 /// High-level write: load-or-create, validate compatibility, seed a replacer
@@ -337,9 +278,13 @@ pub fn save_key_file(
     new_entries: &[Replacement],
     header: &KeyHeader,
 ) -> Result<KeyFile> {
+    if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
+        fs::create_dir_all(parent).context("Failed to create key-file directory")?;
+    }
     let _lock = acquire_lock(path, Duration::from_secs(10))?;
+    let latest = KeyFile::load(path)?;
 
-    if let Some(existing) = existing {
+    for existing in latest.as_ref().into_iter().chain(existing) {
         existing.header.check_compatible(
             header.strategy.as_deref(),
             header.seed,
@@ -350,7 +295,7 @@ pub fn save_key_file(
     // Merge: existing first, then new entries not already recorded.
     let mut entries: Vec<Replacement> = Vec::new();
     let mut seen: std::collections::HashSet<(String, String)> = std::collections::HashSet::new();
-    if let Some(existing) = existing {
+    for existing in latest.as_ref().into_iter().chain(existing) {
         for r in &existing.replacements {
             if seen.insert((r.original.clone(), r.replacement.clone())) {
                 entries.push(r.clone());
@@ -363,6 +308,8 @@ pub fn save_key_file(
         }
     }
 
+    validate_mappings(&entries)?;
+    let header = latest.as_ref().map_or(header, |file| &file.header);
     write_atomic(path, header, &entries)?;
 
     Ok(KeyFile {
@@ -397,6 +344,193 @@ mod tests {
             pattern_name: "email".to_string(),
             components: Vec::new(),
         }
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_private_atomic_creation_and_replacement() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.jsonl");
+        let header = KeyHeader::new("s1", None, Some("fake"), Some(42), None);
+        save_key_file(
+            &path,
+            None,
+            &[sample_replacement("alpha", "alias-a")],
+            &header,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        let existing = KeyFile::load(&path).unwrap().unwrap();
+        save_key_file(
+            &path,
+            Some(&existing),
+            &[sample_replacement("beta", "alias-b")],
+            &header,
+        )
+        .unwrap();
+        assert_eq!(
+            fs::metadata(&path).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+
+    #[test]
+    fn test_conflicting_append_preserves_old_bytes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.jsonl");
+        let header = KeyHeader::new("s1", None, Some("fake"), Some(42), None);
+        save_key_file(
+            &path,
+            None,
+            &[sample_replacement("alpha", "alias-a")],
+            &header,
+        )
+        .unwrap();
+        let existing = KeyFile::load(&path).unwrap().unwrap();
+        let bytes = fs::read(&path).unwrap();
+        for entry in [
+            sample_replacement("beta", "alias-a"),
+            sample_replacement("alpha", "alias-b"),
+        ] {
+            assert!(save_key_file(&path, Some(&existing), &[entry], &header).is_err());
+            assert_eq!(fs::read(&path).unwrap(), bytes);
+        }
+    }
+
+    #[test]
+    fn test_concurrent_writers_reload_latest_under_lock() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("nested/keys.jsonl");
+        let header = KeyHeader::new("s1", None, Some("fake"), Some(42), None);
+        save_key_file(
+            &path,
+            None,
+            &[sample_replacement("initial", "alias-initial")],
+            &header,
+        )
+        .unwrap();
+        let snapshot = KeyFile::load(&path).unwrap().unwrap();
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(8));
+        std::thread::scope(|scope| {
+            for index in 0..8 {
+                let barrier = barrier.clone();
+                let (path, header, snapshot) = (&path, &header, &snapshot);
+                scope.spawn(move || {
+                    barrier.wait();
+                    save_key_file(
+                        path,
+                        Some(snapshot),
+                        &[sample_replacement(
+                            &format!("original-{index}"),
+                            &format!("alias-{index}"),
+                        )],
+                        header,
+                    )
+                    .unwrap();
+                });
+            }
+        });
+        let loaded = KeyFile::load(&path).unwrap().unwrap();
+        let mut actual: Vec<_> = loaded
+            .replacements
+            .iter()
+            .map(|r| (r.original.clone(), r.replacement.clone()))
+            .collect();
+        actual.sort();
+        let mut expected = vec![("initial".to_string(), "alias-initial".to_string())];
+        expected
+            .extend((0..8).map(|index| (format!("original-{index}"), format!("alias-{index}"))));
+        expected.sort();
+        assert_eq!(actual, expected);
+        let old = fs::read(&path).unwrap();
+        let incompatible = KeyHeader::new("s2", None, Some("hash"), Some(42), None);
+        assert!(save_key_file(&path, None, &[], &incompatible).is_err());
+        assert_eq!(fs::read(&path).unwrap(), old);
+    }
+
+    #[test]
+    fn test_concurrent_conflicting_alias_never_corrupts_file() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("keys.jsonl");
+        let header = KeyHeader::new("s1", None, Some("fake"), Some(42), None);
+        let barrier = std::sync::Arc::new(std::sync::Barrier::new(2));
+        let results = std::thread::scope(|scope| {
+            let handles: Vec<_> = ["alpha", "beta"]
+                .into_iter()
+                .map(|original| {
+                    let barrier = barrier.clone();
+                    let (path, header) = (&path, &header);
+                    scope.spawn(move || {
+                        barrier.wait();
+                        save_key_file(
+                            path,
+                            None,
+                            &[sample_replacement(original, "same-alias")],
+                            header,
+                        )
+                        .is_ok()
+                    })
+                })
+                .collect();
+            handles
+                .into_iter()
+                .map(|handle| handle.join().unwrap())
+                .collect::<Vec<_>>()
+        });
+        assert_eq!(results.into_iter().filter(|ok| *ok).count(), 1);
+        assert_eq!(KeyFile::load(&path).unwrap().unwrap().replacements.len(), 1);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_temp_and_destination_symlinks_cannot_clobber_other_files() {
+        use std::os::unix::fs::symlink;
+        let dir = tempfile::tempdir().unwrap();
+        let victim = dir.path().join("victim");
+        fs::write(&victim, "unchanged").unwrap();
+        let path = dir.path().join("keys.jsonl");
+        let predictable_temp = dir.path().join("keys.jsonl.tmp");
+        symlink(&victim, &predictable_temp).unwrap();
+        let header = KeyHeader::new("s1", None, None, None, None);
+        save_key_file(
+            &path,
+            None,
+            &[sample_replacement("alpha", "alias-a")],
+            &header,
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(&victim).unwrap(), "unchanged");
+        // A destination symlink pointing at a valid key file is replaced, not followed on write.
+        let other = dir.path().join("other.jsonl");
+        symlink(&path, &other).unwrap();
+        let old = fs::read(&path).unwrap();
+        save_key_file(
+            &other,
+            None,
+            &[sample_replacement("beta", "alias-b")],
+            &header,
+        )
+        .unwrap();
+        assert_eq!(fs::read(&path).unwrap(), old);
+        assert!(
+            !fs::symlink_metadata(&other)
+                .unwrap()
+                .file_type()
+                .is_symlink()
+        );
+        let files: Vec<_> = fs::read_dir(dir.path())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert!(
+            files
+                .iter()
+                .all(|name| !name.to_string_lossy().starts_with(".tmp"))
+        );
     }
 
     #[test]
@@ -533,9 +667,7 @@ mod tests {
 
     #[test]
     fn test_seed_replacer_reuses_alias() {
-        use super::super::{
-            Detector, DetectorConfig, PiiMatch, ReplacementStrategy, ReplacerConfig,
-        };
+        use super::super::{PiiMatch, ReplacementStrategy, ReplacerConfig};
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("keys.jsonl");
         let header = KeyHeader::new("s1", None, Some("consistent"), Some(42), None);

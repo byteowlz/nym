@@ -18,6 +18,8 @@ enum Segment {
     Index(usize),
     /// A wildcard matching one segment (object key or any array index).
     Wildcard,
+    /// A recursive wildcard matching zero or more segments.
+    Recursive,
 }
 
 /// A compiled path selector pattern (e.g. `users[*].email`).
@@ -30,7 +32,8 @@ pub struct PathPattern {
 
 impl PathPattern {
     /// Compile a selector string. Accepts dot-separated keys, array indices
-    /// (`users[0]`, `[0]`, `users[]`, `users[*]`) and the wildcard `*`.
+    /// (`users[0]`, `[0]`, `users[]`, `users[*]`), `*` for one segment,
+    /// and `**` for zero or more segments (e.g. `**.id`).
     pub fn parse(s: &str) -> Result<Self, String> {
         let trimmed = s.trim();
         if trimmed.is_empty() {
@@ -61,7 +64,12 @@ impl PathPattern {
                         segments.push(Segment::Key(key_buf.clone()));
                         key_buf.clear();
                     }
-                    segments.push(Segment::Wildcard);
+                    if chars.peek() == Some(&'*') {
+                        chars.next();
+                        segments.push(Segment::Recursive);
+                    } else {
+                        segments.push(Segment::Wildcard);
+                    }
                 }
                 '[' => {
                     // Flush any pending key.
@@ -109,26 +117,21 @@ impl PathPattern {
 
     /// Whether this pattern matches the given path string.
     pub fn matches(&self, path: &str) -> bool {
-        if self.catch_all {
-            return true;
-        }
-        // Root is represented as "(root)" internally.
-        let path_segments = parse_path_segments(path);
-        segments_match(&self.segments, &path_segments)
+        self.match_path(path, false)
     }
 
     /// Whether this pattern matches the given path or a strict prefix of it
     /// (i.e. the path is a descendant of the selected path).
     pub fn matches_subtree(&self, path: &str) -> bool {
+        self.match_path(path, true)
+    }
+
+    fn match_path(&self, path: &str, subtree: bool) -> bool {
         if self.catch_all {
             return true;
         }
         let path_segments = parse_path_segments(path);
-        if path_segments.len() < self.segments.len() {
-            return false;
-        }
-        let prefix = &path_segments[..self.segments.len()];
-        segments_match(&self.segments, prefix)
+        segments_match(&self.segments, &path_segments, subtree)
     }
 }
 
@@ -183,30 +186,40 @@ fn parse_path_segments(path: &str) -> Vec<Segment> {
     segments
 }
 
-fn segments_match(pattern: &[Segment], path: &[Segment]) -> bool {
-    if pattern.len() != path.len() {
-        return false;
-    }
-    for (p, a) in pattern.iter().zip(path.iter()) {
-        let ok = match (p, a) {
-            (Segment::Wildcard, _) => true,
-            (Segment::Key(pk), Segment::Key(ak)) => pk == ak,
-            // A numeric-index selector matches only the same index; a
-            // wildcard key matches any index.
-            (Segment::Index(pi), Segment::Index(ai)) => pi == ai,
-            (Segment::Index(pi), Segment::Wildcard) => {
-                // Path segment is wildcard (array index form we could not
-                // resolve) — treat as matching any index.
-                let _ = pi;
-                true
+/// Track reachable path prefixes in O(pattern × path) time and O(path) space.
+/// This avoids exponential backtracking with consecutive recursive wildcards.
+fn segments_match(pattern: &[Segment], path: &[Segment], subtree: bool) -> bool {
+    let mut reachable = vec![false; path.len() + 1];
+    reachable[0] = true;
+    for segment in pattern {
+        let mut next = vec![false; path.len() + 1];
+        if *segment == Segment::Recursive {
+            next[0] = reachable[0];
+            for index in 1..=path.len() {
+                next[index] = reachable[index] || next[index - 1];
             }
-            _ => false,
-        };
-        if !ok {
-            return false;
+        } else {
+            for (index, actual) in path.iter().enumerate() {
+                next[index + 1] = reachable[index] && segment_matches(segment, actual);
+            }
         }
+        reachable = next;
     }
-    true
+    if subtree {
+        reachable.into_iter().any(|matched| matched)
+    } else {
+        reachable[path.len()]
+    }
+}
+
+/// Match a single concrete path step; recursion is handled by the prefix walk.
+fn segment_matches(pattern: &Segment, actual: &Segment) -> bool {
+    match (pattern, actual) {
+        (Segment::Wildcard, _) | (Segment::Index(_), Segment::Wildcard) => true,
+        (Segment::Key(key), Segment::Key(other)) => key == other,
+        (Segment::Index(index), Segment::Index(other)) => index == other,
+        _ => false,
+    }
 }
 
 /// A set of include/exclude path selectors controlling how JSON is scanned.
@@ -282,6 +295,50 @@ impl CoverageReport {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn test_recursive_wildcard_zero_or_more_segments() {
+        for (selector, yes, no) in [
+            (
+                "**.id",
+                vec!["id", "meta.id", "messages[0].id", "資料[3].情報.id"],
+                vec!["ids", "meta.id.child", "meta.identity"],
+            ),
+            (
+                "messages.**.id",
+                vec!["messages.id", "messages[0].id", "messages[0].meta.id"],
+                vec!["meta.id", "messages[0].ids"],
+            ),
+            (
+                "meta.**",
+                vec!["meta", "meta.id", "meta[0].nested.id"],
+                vec!["metadata.id", "user.meta"],
+            ),
+            (
+                "**.**.id",
+                vec!["id", "meta.id", "messages[0].meta.id"],
+                vec!["id.child"],
+            ),
+            ("**", vec!["(root)", "id", "資料[3].情報.id"], vec![]),
+        ] {
+            let pattern = PathPattern::parse(selector).unwrap();
+            for path in yes {
+                assert!(pattern.matches(path), "{selector} should match {path}");
+            }
+            for path in no {
+                assert!(!pattern.matches(path), "{selector} should not match {path}");
+            }
+        }
+        assert!(
+            !PathPattern::parse("*.id")
+                .unwrap()
+                .matches("messages[0].id")
+        );
+        let selector = PathSelector::new(&[], &["**.id".to_string()]).unwrap();
+        assert!(!selector.should_scan("messages[0].id.child"));
+        assert!(!selector.should_scan("meta.id"));
+        assert!(selector.should_scan("meta.content"));
+    }
 
     #[test]
     fn test_parse_dot_path() {

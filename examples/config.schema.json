@@ -135,6 +135,12 @@
           "description": "Enable NER-based detection for names, addresses, etc.",
           "default": false
         },
+        "provider": {
+          "type": "string",
+          "enum": ["auto", "cpu"],
+          "description": "Token backend only (tokens, or token portion of both): auto uses compiled accelerators with CPU fallback; cpu bypasses accelerators. Does not control GLiNER.",
+          "default": "auto"
+        },
         "model": {
           "type": "string",
           "description": "HuggingFace model repository for GLiNER",

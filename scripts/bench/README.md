@@ -1,68 +1,75 @@
-# nym synthetic session-fixture benchmark
+# Synthetic session-fixture benchmark
 
-Reproducible, offline recall / false-positive / utility-preservation harness
-for nym on a versioned, independently labeled synthetic coding-agent session
-challenge set. Emits **only safe aggregate results** — no matched PII values,
-no source paths, no reversible mappings — so the output is suitable for a
-public run manifest or CI.
+Offline, independently labeled synthetic fixtures. Reports contain only
+aggregates and hashes: no matched values, source paths, or reversible mappings.
 
-## Files
-
-- `fixtures/challenge.json` — the labeled challenge set (versioned).
-- `run_bench.py` — the runner (invokes the nym binary, measures, reports).
-- `bench.sh` — wrapper that builds a release binary and records pinned versions.
-
-## Usage
+## Run
 
 ```bash
-# Offline regex-only (default; no model download, no network egress)
 just bench
-
-# With a regression gate on per-class recall (in-scope classes only)
-just bench-gate --fail-on-recall 0.9
-
-# Machine-readable aggregate output
-NYM_BIN=target/release/nym python3 scripts/bench/run_bench.py --json
+just bench-gate 0.9
+bash scripts/bench/bench.sh --json --fail-on-benign
+uv run --no-project -m unittest discover -s scripts/bench -v
 ```
 
-Every run records the fixture version, nym binary version, git rev, and the
-mode so results are reproducible and attributable.
+The wrapper runs Cargo's freshness check with `--no-default-features` in the
+isolated `target/bench/` build directory, then invokes the runner through `uv`.
+`NYM_BIN` overrides the binary and skips building; its hash identifies the
+actual executable rather than claiming it came from the current source.
 
-## Model-backed modes (optional)
+Direct invocation (after building):
 
-The default recipe is regex-only and requires no downloads. NER and
-decision-model recall are out of scope for the offline recipe because they need
-a locally cached model (NER) or an external endpoint (decision). Those recipes
-must be enabled explicitly and **declare** their requirements:
+```bash
+NYM_BIN=target/bench/release/nym uv run --no-project scripts/bench/run_bench.py --json
+```
 
-- `NYM_NER_CONFIG` — a config file that enables NER, run with `... --ner`.
-  Requires a locally cached model; do not install one into git.
-- Decision-backed review requires an OpenAI-compatible endpoint, which needs
-  explicit egress approval and is **not** exercised here.
+## Validation and metrics
 
-## What is measured
+- Empty or absent gold/benign literals, conflicting labels, malformed fixtures,
+  and invalid finding byte offsets fail the run before misleading metrics can
+  be accepted. Fixture validation occurs before invoking nym.
+- Gold values label every occurrence in the input. Recall uses the union of
+  overlapping UTF-8 byte ranges at their actual positions, never substring
+  similarity. Duplicate findings cannot inflate coverage.
+- `recall` counts **fully covered** gold occurrences only. `partial_spans` and
+  `partial_recall` count occurrences with some but incomplete byte coverage.
+- False positives are findings with no positional overlap with any gold span,
+  counted by detector category. A distinct benign annotation counts once per
+  fixture, regardless of repeated occurrences or overlapping findings.
+- `benign_literals_flagged` measures detection overlap. `benign_preservation`
+  independently measures actual `anon` output: every occurrence of each benign
+  literal must survive. Anonymization uses deterministic placeholders with the
+  same format, confidence, ruleset, and NER settings as detection. Literal counts
+  measure preservation, not positional identity or universal redaction safety.
+- Every run reads the invocation checkout's full Git revision and dirty status,
+  hashes the executed binary and fixture file, and includes ordered SHA-256
+  hashes of canonical fixture objects. No shared `/tmp` provenance is consulted.
+  Git revision describes the invocation checkout, not an override binary's
+  build source; dirty/untracked source is not reproducible from the SHA alone.
 
-Per-class recall (value-based span coverage, so partial matches count),
-false positives (findings not overlapping a gold span), and benign-literal
-preservation (task-relevant content that should survive untouched).
+## Gates and scope
 
-Classes that regex patterns cannot detect (`person`, `organization`,
-`internal_hostname`, `codename`, `unlabeled_high_entropy`) are reported but
-flagged `out_of_regex_scope`, and are **excluded** from the recall gate in
-regex-only mode. Do not interpret a low recall there as a regex failure.
+Execution/validation errors always fail. `--fail-on-recall X` gates unrounded
+**full byte-span** recall for in-scope occurrences, not partial matches.
+`--fail-on-benign` additionally fails on detection overlap or actual literal
+loss. Neither `just bench` nor the recall gate implicitly gates benign utility.
 
-## Scope limits
+Contextual classes (`person`, `organization`, `internal_hostname`, `codename`,
+`unlabeled_high_entropy`) are excluded from regex-only recall gating, but remain
+reported. Per-fixture scope exclusions never hide another fixture's in-scope
+miss for the same class. No universal anonymization-safety claim follows.
 
-- Synthetic only: no private trace, credential, or real user data is checked in.
-- Reporting denominators, false negatives, and class scope are explicit.
-- This harness does **not** establish a universal safe threshold; treat
-  per-class recall as evidence within this fixture set, not a guarantee.
-- Human-review protocol for proprietary content not reducible to PII spans, and
-  rights/consent and weight-extraction testing, remain separate checks.
+Optional `--ner` requires an explicit `NYM_BIN` with NER support and a locally
+cached model; `NYM_NER_CONFIG` supplies its configuration. No model download or
+external decision endpoint is exercised by the default recipe.
 
-## Regression gate
+## Change log
 
-`--fail-on-recall X` exits nonzero when an in-scope class recall falls below
-`X`; `--fail-on-benign` additionally fails when a benign literal is flagged.
-The default gate fails on seeded misses (in-scope gold spans undetected) and on
-fixture corruption (parse errors, malformed fixture).
+- Validate annotations; separate full/partial byte coverage and detection vs
+  actual anonymization preservation; capture fresh checkout/binary/fixture
+  provenance; rebuild in an isolated directory using `uv`.
+- Correct absent benign labels and add account/handle recall fixtures. Bare
+  numeric/underscore code tokens no longer imply usernames: conventional
+  `userNNN` identifiers and explicitly labeled account fields remain supported.
+  Labeled username matching redacts the entire field, including its label;
+  arbitrary unlabeled names such as `john_doe` now require account context.

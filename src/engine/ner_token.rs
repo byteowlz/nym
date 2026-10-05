@@ -30,6 +30,7 @@ use ort::session::Session;
 use ort::value::Tensor;
 use tokenizers::Tokenizer;
 
+use crate::config::NerProvider;
 use crate::engine::detector::PiiMatch;
 use crate::engine::patterns::{Confidence, PiiCategory};
 
@@ -131,9 +132,11 @@ impl TokenClassDetector {
     /// model. The model file is resolved from [`MODEL_CANDIDATES`], which covers
     /// nym's own layout (`model_int8.onnx` / `model.onnx`) as well as the
     /// optimum / transformers.js convention (`onnx/model*.onnx`).
+    /// `provider = Cpu` bypasses accelerators; `Auto` retries session setup on CPU.
     pub fn from_dir(
         model_dir: impl AsRef<Path>,
         threshold: Option<f32>,
+        provider: NerProvider,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let dir = model_dir.as_ref();
         let model_path = MODEL_CANDIDATES
@@ -141,9 +144,18 @@ impl TokenClassDetector {
             .map(|c| dir.join(c))
             .find(|p| p.exists())
             .ok_or_else(|| {
-                format!("no ONNX model found in {} (looked for {MODEL_CANDIDATES:?})", dir.display())
+                format!(
+                    "no ONNX model found in {} (looked for {MODEL_CANDIDATES:?})",
+                    dir.display()
+                )
             })?;
-        Self::build(&model_path, &dir.join("tokenizer.json"), &dir.join("config.json"), threshold)
+        Self::build(
+            &model_path,
+            &dir.join("tokenizer.json"),
+            &dir.join("config.json"),
+            threshold,
+            provider,
+        )
     }
 
     /// Create a detector by downloading a converted model from a HuggingFace
@@ -156,10 +168,12 @@ impl TokenClassDetector {
     /// layout and the optimum / transformers.js `onnx/model*.onnx` convention
     /// (so third-party models like `nationaldesignstudio/rampart` work directly).
     /// Respects `HF_HOME`/`HF_ENDPOINT`; `cache_dir` overrides the cache location.
+    /// `provider = Cpu` bypasses accelerators; `Auto` retries session setup on CPU.
     pub fn from_repo(
         model_ref: &str,
         cache_dir: Option<&Path>,
         threshold: Option<f32>,
+        provider: NerProvider,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         use hf_hub::api::sync::ApiBuilder;
 
@@ -172,7 +186,9 @@ impl TokenClassDetector {
         };
 
         let api = match cache_dir {
-            Some(dir) => ApiBuilder::new().with_cache_dir(dir.to_path_buf()).build()?,
+            Some(dir) => ApiBuilder::new()
+                .with_cache_dir(dir.to_path_buf())
+                .build()?,
             None => ApiBuilder::from_env().build()?,
         };
         let model = api.model(repo);
@@ -182,11 +198,15 @@ impl TokenClassDetector {
         let model_path = MODEL_CANDIDATES
             .iter()
             .find_map(|c| model.get(&format!("{prefix}{c}")).ok())
-            .ok_or_else(|| {
-                format!("no ONNX model in repo (looked for {MODEL_CANDIDATES:?})")
-            })?;
+            .ok_or_else(|| format!("no ONNX model in repo (looked for {MODEL_CANDIDATES:?})"))?;
 
-        Self::build(&model_path, &tokenizer_path, &config_path, threshold)
+        Self::build(
+            &model_path,
+            &tokenizer_path,
+            &config_path,
+            threshold,
+            provider,
+        )
     }
 
     /// Download a token model's files into the HF cache without building a
@@ -210,7 +230,9 @@ impl TokenClassDetector {
         };
 
         let api = match cache_dir {
-            Some(dir) => ApiBuilder::new().with_cache_dir(dir.to_path_buf()).build()?,
+            Some(dir) => ApiBuilder::new()
+                .with_cache_dir(dir.to_path_buf())
+                .build()?,
             None => ApiBuilder::from_env().build()?,
         };
         let model = api.model(repo);
@@ -230,6 +252,7 @@ impl TokenClassDetector {
         tokenizer_path: &Path,
         config_path: &Path,
         threshold: Option<f32>,
+        provider: NerProvider,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let id2label = load_id2label(config_path)?;
         let mut tokenizer = Tokenizer::from_file(tokenizer_path)?;
@@ -238,61 +261,28 @@ impl TokenClassDetector {
         // past that token -- undetectable false negatives on long input. We
         // window explicitly below, so take full control here.
         tokenizer.with_truncation(None)?;
-        // ONNX Runtime defaults to a single intra-op thread on macOS/CPU, which
-        // makes each session.run() ~2s even on a short chunk (per-call overhead,
-        // not content cost). Set intra-op threads to the available parallelism
-        // so a batch-of-1 forward pass uses the cores. Graph optimization is
-        // already Level3 by default. This is the high-leverage fix for the
-        // per-inference-call cost.
-        let threads = std::thread::available_parallelism()
-            .map_or(1, std::num::NonZero::get);
-        // The builder is only reassigned inside the hardware-execution-provider
-        // feature blocks below (CoreML/CUDA/TensorRT); when none of those are
-        // enabled the `mut` is unused.
-        #[cfg_attr(
-            not(any(
-                feature = "ner-coreml",
-                feature = "ner-cuda",
-                feature = "ner-tensorrt"
-            )),
-            expect(unused_mut, reason = "assigned only when a hardware execution-provider feature is enabled")
-        )]
-        let mut builder = Session::builder()?.with_intra_threads(threads)?;
-        // On Apple Silicon, register the CoreML execution provider so the
-        // token-classification model runs on the ANE/GPU instead of CPU. CoreML
-        // is gated behind the `ner-coreml` build feature; the session builder
-        // falls back to CPU for any ops CoreML cannot handle.
-        #[cfg(feature = "ner-coreml")]
-        {
-            builder = builder.with_execution_providers([
-                ort::execution_providers::CoreMLExecutionProvider::default().build(),
-            ])?;
-        }
-        // On NVIDIA, register the CUDA execution provider so the token model
-        // runs on the GPU instead of the CPU. CUDA is gated behind the
-        // `ner-cuda` build feature; ONNX Runtime falls back to CPU for any ops
-        // CUDA cannot handle, so the session still works if a CUDA build is run
-        // on a box without a CUDA-capable GPU.
-        #[cfg(feature = "ner-cuda")]
-        {
-            builder = builder.with_execution_providers([
-                ort::execution_providers::CUDAExecutionProvider::default().build(),
-            ])?;
-        }
-        // TensorRT (fused NVIDIA kernels) — opt-in and may need TensorRT runtime
-        // installed; ONNX Runtime falls back to CUDA/CPU if unavailable.
-        #[cfg(feature = "ner-tensorrt")]
-        {
-            builder = builder.with_execution_providers([
-                ort::execution_providers::TensorRTExecutionProvider::default().build(),
-            ])?;
-        }
-        let session = builder.commit_from_file(model_path)?;
+        let cpu_only = provider == NerProvider::Cpu;
+        let session = match Self::create_session(model_path, cpu_only) {
+            Ok(session) => session,
+            Err(error)
+                if !cpu_only
+                    && cfg!(any(
+                        feature = "ner-coreml",
+                        feature = "ner-cuda",
+                        feature = "ner-tensorrt"
+                    )) =>
+            {
+                log::warn!("Token NER accelerator failed: {error}; retrying with CPU");
+                Self::create_session(model_path, true).map_err(|cpu_error| {
+                    format!(
+                        "token NER accelerator failed: {error}; CPU fallback failed: {cpu_error}"
+                    )
+                })?
+            }
+            Err(error) => return Err(format!("token NER session failed: {error}").into()),
+        };
 
-        let needs_token_type_ids = session
-            .inputs
-            .iter()
-            .any(|i| i.name == "token_type_ids");
+        let needs_token_type_ids = session.inputs.iter().any(|i| i.name == "token_type_ids");
 
         let o_id = id2label.iter().position(|l| l == "O").unwrap_or(0);
         Ok(Self {
@@ -306,6 +296,66 @@ impl TokenClassDetector {
             window_tokens: DEFAULT_WINDOW_TOKENS,
             window_overlap: DEFAULT_WINDOW_OVERLAP,
         })
+    }
+
+    /// Initialize ORT before registering providers. In ort rc.9 the session
+    /// builder does NOT create an environment until commit_from_file; CoreML's
+    /// hardware probe needs its default logger earlier and can throw across FFI.
+    /// The explicit CPU policy bypasses accelerator registration entirely.
+    fn create_session(model_path: &Path, cpu_only: bool) -> ort::Result<Session> {
+        let _environment = ort::environment::get_environment()?;
+        // ONNX Runtime defaults to a single intra-op thread on macOS/CPU, which
+        // makes each session.run() ~2s even on a short chunk (per-call overhead,
+        // not content cost). Set intra-op threads to the available parallelism
+        // so a batch-of-1 forward pass uses the cores. Graph optimization is
+        // already Level3 by default. This is the high-leverage fix for the
+        // per-inference-call cost.
+        let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        let mut builder = Session::builder()?.with_intra_threads(threads)?;
+        // On Apple Silicon, register the CoreML execution provider so the
+        // token-classification model runs on the ANE/GPU instead of CPU. CoreML
+        // is gated behind the `ner-coreml` build feature; the session builder
+        // falls back to CPU for any ops CoreML cannot handle.
+        #[cfg(feature = "ner-coreml")]
+        if !cpu_only {
+            builder = builder.with_execution_providers([
+                ort::execution_providers::CoreMLExecutionProvider::default()
+                    .build()
+                    .error_on_failure(),
+            ])?;
+        }
+        // On NVIDIA, register the CUDA execution provider so the token model
+        // runs on the GPU instead of the CPU. CUDA is gated behind the
+        // `ner-cuda` build feature; ONNX Runtime falls back to CPU for any ops
+        // CUDA cannot handle, so the session still works if a CUDA build is run
+        // on a box without a CUDA-capable GPU.
+        #[cfg(feature = "ner-cuda")]
+        if !cpu_only {
+            builder = builder.with_execution_providers([
+                ort::execution_providers::CUDAExecutionProvider::default()
+                    .build()
+                    .error_on_failure(),
+            ])?;
+        }
+        // TensorRT (fused NVIDIA kernels) — opt-in and may need TensorRT runtime
+        // installed; ONNX Runtime falls back to CUDA/CPU if unavailable.
+        #[cfg(feature = "ner-tensorrt")]
+        if !cpu_only {
+            builder = builder.with_execution_providers([
+                ort::execution_providers::TensorRTExecutionProvider::default()
+                    .build()
+                    .error_on_failure(),
+            ])?;
+        }
+        // Register CPU explicitly, without any accelerator provider.
+        if cpu_only {
+            builder = builder.with_execution_providers([
+                ort::execution_providers::CPUExecutionProvider::default()
+                    .build()
+                    .error_on_failure(),
+            ])?;
+        }
+        builder.commit_from_file(model_path)
     }
 
     /// Enable/disable recall-first decoding (see the `recall_first` field).
@@ -459,7 +509,9 @@ impl TokenClassDetector {
 
         // Decode each row with its own offsets/special mask; skip empty rows.
         for (i, entry) in encodings.iter().enumerate() {
-            let Some((encoding, text)) = entry else { continue };
+            let Some((encoding, text)) = entry else {
+                continue;
+            };
             let offsets = encoding.get_offsets();
             let special_mask = encoding.get_special_tokens_mask();
             let row_logits = &logits[i * seq * num_labels..(i + 1) * seq * num_labels];
@@ -676,7 +728,10 @@ impl TokenClassDetector {
             return vec![(text.to_string(), 0)];
         }
 
-        let step = self.window_tokens.saturating_sub(self.window_overlap).max(1);
+        let step = self
+            .window_tokens
+            .saturating_sub(self.window_overlap)
+            .max(1);
         let mut chunks = Vec::new();
         let mut tok_idx = 0;
 
@@ -738,7 +793,10 @@ impl TokenClassDetector {
     }
 
     /// Get the confidence threshold.
-    #[cfg_attr(not(test), expect(dead_code, reason = "Public API - used by consumers"))]
+    #[cfg_attr(
+        not(test),
+        expect(dead_code, reason = "Public API - used by consumers")
+    )]
     pub fn threshold(&self) -> f32 {
         self.threshold
     }
@@ -870,12 +928,8 @@ fn probability_to_confidence(prob: f32) -> Confidence {
 fn is_valid_entity(base_label: &str, text: &str) -> bool {
     let text = text.trim();
     match base_label {
-        "phone_number" | "fax_number" => {
-            text.chars().filter(char::is_ascii_digit).count() >= 7
-        }
-        "ssn" | "credit_debit_card" => {
-            text.chars().filter(char::is_ascii_digit).count() >= 4
-        }
+        "phone_number" | "fax_number" => text.chars().filter(char::is_ascii_digit).count() >= 7,
+        "ssn" | "credit_debit_card" => text.chars().filter(char::is_ascii_digit).count() >= 4,
         _ => text.chars().count() >= 2,
     }
 }
@@ -930,9 +984,7 @@ fn label_to_pattern(base: &str) -> (&'static str, PiiCategory) {
         "credit_debit_card" => ("credit_card", PiiCategory::Financial),
         "cvv" => ("cvv", PiiCategory::Financial),
         "pin" => ("pin", PiiCategory::Financial),
-        "bank_routing_number" | "routing_number" => {
-            ("bank_routing_number", PiiCategory::Financial)
-        }
+        "bank_routing_number" | "routing_number" => ("bank_routing_number", PiiCategory::Financial),
         "swift_bic" => ("swift_bic", PiiCategory::Financial),
         // Network / technical
         "ipv4" => ("ipv4", PiiCategory::Network),
@@ -990,6 +1042,10 @@ fn load_id2label(
 }
 
 #[cfg(test)]
+#[path = "ner_token_runtime_tests.rs"]
+mod runtime_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -1035,9 +1091,27 @@ mod tests {
     fn test_merge_fragments() {
         let text = "john.smith Chicago";
         let spans = vec![
-            DecodedSpan { base_label: "EMAIL".into(), start: 0, end: 4, prob_sum: 0.9, token_count: 1 },
-            DecodedSpan { base_label: "EMAIL".into(), start: 4, end: 10, prob_sum: 0.9, token_count: 2 },
-            DecodedSpan { base_label: "CITY".into(), start: 11, end: 18, prob_sum: 0.9, token_count: 1 },
+            DecodedSpan {
+                base_label: "EMAIL".into(),
+                start: 0,
+                end: 4,
+                prob_sum: 0.9,
+                token_count: 1,
+            },
+            DecodedSpan {
+                base_label: "EMAIL".into(),
+                start: 4,
+                end: 10,
+                prob_sum: 0.9,
+                token_count: 2,
+            },
+            DecodedSpan {
+                base_label: "CITY".into(),
+                start: 11,
+                end: 18,
+                prob_sum: 0.9,
+                token_count: 1,
+            },
         ];
         let merged = merge_fragments(spans, text);
         // The two contiguous EMAIL fragments merge; CITY stays separate.

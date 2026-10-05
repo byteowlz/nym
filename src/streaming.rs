@@ -102,6 +102,8 @@ pub struct StreamConfig {
     /// JSON path selector for JSONL streaming (default: scan everything).
     #[cfg(feature = "streaming")]
     pub path_selector: crate::engine::PathSelector,
+    /// Report scanned/skipped paths to stderr for each JSONL document.
+    pub json_coverage: bool,
 }
 
 /// Creates an async stream that processes lines from a reader.
@@ -216,13 +218,16 @@ where
                 continue;
             }
             stats.lines_processed += 1;
-            let (anonymized, replacements, _coverage) = crate::engine::process_json_with_selector(
+            let (anonymized, replacements, coverage) = crate::engine::process_json_with_selector(
                 &line,
                 &detector,
                 &mut replacer,
                 &config.path_selector,
             )
             .map_err(|e| StreamError::Detection(format!("JSON parse failed: {e}")))?;
+            if config.json_coverage {
+                crate::print_coverage(&coverage);
+            }
             stats.pii_found += replacements.len();
             stats.replacements.extend(replacements);
             // JSONL requires exactly one JSON document per line, so compact the
