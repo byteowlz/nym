@@ -1,13 +1,35 @@
 //! Format-aware PII processing.
 //!
-//! This module provides handlers for processing structured formats (JSON, YAML, TOML)
-//! while preserving structure and only modifying string values containing PII.
+//! JSON document handlers preserve structure and scan decoded string values.
+//! The CLI processes JSONL records through these same handlers.
 
 use serde_json::Value as JsonValue;
 
-use super::detector::{Detector, PiiMatch};
+use super::detector::{DetectionError, Detector, PiiMatch};
+
+/// Structured processing errors never retain parser payloads or private values.
+#[derive(Debug, thiserror::Error)]
+pub enum FormatError {
+    #[error("invalid JSON input at line {line}, column {column}")]
+    InvalidJson { line: usize, column: usize },
+    #[error("JSON serialization failed")]
+    Serialization,
+    #[error(transparent)]
+    Detection(#[from] DetectionError),
+}
 use super::replacer::{Replacement, Replacer};
 use super::selector::{CoverageReport, PathSelector};
+
+fn parse_json(input: &str) -> Result<JsonValue, FormatError> {
+    // A single optional BOM is allowed before the document (after whitespace),
+    // never inside records or string values. Keep ordinary JSON whitespace.
+    let trimmed = input.trim_start();
+    let input = trimmed.strip_prefix('\u{feff}').unwrap_or(input);
+    serde_json::from_str(input).map_err(|error| FormatError::InvalidJson {
+        line: error.line(),
+        column: error.column(),
+    })
+}
 
 /// Process JSON, walking all string values and applying PII detection/replacement.
 ///
@@ -17,7 +39,7 @@ pub fn process_json(
     input: &str,
     detector: &Detector,
     replacer: &mut Replacer,
-) -> Result<(String, Vec<Replacement>), serde_json::Error> {
+) -> Result<(String, Vec<Replacement>), FormatError> {
     process_json_with_selector(input, detector, replacer, &PathSelector::default())
         .map(|(out, reps, _)| (out, reps))
 }
@@ -29,8 +51,8 @@ pub fn process_json_with_selector(
     detector: &Detector,
     replacer: &mut Replacer,
     selector: &PathSelector,
-) -> Result<(String, Vec<Replacement>, CoverageReport), serde_json::Error> {
-    let mut value: JsonValue = serde_json::from_str(input)?;
+) -> Result<(String, Vec<Replacement>, CoverageReport), FormatError> {
+    let mut value = parse_json(input)?;
     let mut all_replacements = Vec::new();
     let mut report = CoverageReport::default();
 
@@ -42,9 +64,9 @@ pub fn process_json_with_selector(
         &mut all_replacements,
         selector,
         &mut report,
-    );
+    )?;
 
-    let output = serde_json::to_string_pretty(&value)?;
+    let output = serde_json::to_string_pretty(&value).map_err(|_| FormatError::Serialization)?;
     Ok((output, all_replacements, report))
 }
 
@@ -57,13 +79,13 @@ fn walk_json_mut(
     replacements: &mut Vec<Replacement>,
     selector: &PathSelector,
     report: &mut CoverageReport,
-) {
+) -> Result<(), FormatError> {
     match value {
         JsonValue::String(s) => {
             let display = if path.is_empty() { "(root)" } else { path };
             if selector.should_scan(path) {
                 report.scanned.insert(display.to_string());
-                let matches = detector.detect(s);
+                let matches = detector.detect(s)?;
                 if !matches.is_empty() {
                     let (replaced, new_replacements) = replacer.replace_all(s, &matches);
                     *s = replaced;
@@ -88,7 +110,7 @@ fn walk_json_mut(
                     replacements,
                     selector,
                     report,
-                );
+                )?;
             }
         }
         JsonValue::Object(obj) => {
@@ -106,12 +128,13 @@ fn walk_json_mut(
                     replacements,
                     selector,
                     report,
-                );
+                )?;
             }
         }
-        // Numbers, booleans, null - no PII possible
+        // Non-string scalars are outside this text-only handler's scan scope.
         _ => {}
     }
+    Ok(())
 }
 
 /// Detect PII in JSON, returning all matches with their JSON paths.
@@ -125,10 +148,7 @@ pub struct JsonPiiMatch {
 
 /// Detect all PII in a JSON document, returning matches with their paths.
 #[cfg_attr(not(test), allow(dead_code))]
-pub fn detect_json(
-    input: &str,
-    detector: &Detector,
-) -> Result<Vec<JsonPiiMatch>, serde_json::Error> {
+pub fn detect_json(input: &str, detector: &Detector) -> Result<Vec<JsonPiiMatch>, FormatError> {
     detect_json_with_selector(input, detector, &PathSelector::default()).map(|(m, _)| m)
 }
 
@@ -137,8 +157,8 @@ pub fn detect_json_with_selector(
     input: &str,
     detector: &Detector,
     selector: &PathSelector,
-) -> Result<(Vec<JsonPiiMatch>, CoverageReport), serde_json::Error> {
-    let value: JsonValue = serde_json::from_str(input)?;
+) -> Result<(Vec<JsonPiiMatch>, CoverageReport), FormatError> {
+    let value = parse_json(input)?;
     let mut matches = Vec::new();
     let mut report = CoverageReport::default();
 
@@ -149,7 +169,7 @@ pub fn detect_json_with_selector(
         selector,
         &mut matches,
         &mut report,
-    );
+    )?;
 
     Ok((matches, report))
 }
@@ -165,7 +185,7 @@ fn detect_json_value(
     selector: &PathSelector,
     matches: &mut Vec<JsonPiiMatch>,
     report: &mut CoverageReport,
-) {
+) -> Result<(), FormatError> {
     match value {
         JsonValue::String(s) => {
             let display = if path.is_empty() {
@@ -175,7 +195,7 @@ fn detect_json_value(
             };
             if selector.should_scan(&path) {
                 report.scanned.insert(display.clone());
-                for pii_match in detector.detect(s) {
+                for pii_match in detector.detect(s)? {
                     matches.push(JsonPiiMatch {
                         path: display.clone(),
                         pii_match,
@@ -192,7 +212,7 @@ fn detect_json_value(
                 } else {
                     format!("{path}[{i}]")
                 };
-                detect_json_value(item, detector, item_path, selector, matches, report);
+                detect_json_value(item, detector, item_path, selector, matches, report)?;
             }
         }
         JsonValue::Object(obj) => {
@@ -202,21 +222,63 @@ fn detect_json_value(
                 } else {
                     format!("{path}.{key}")
                 };
-                detect_json_value(v, detector, key_path, selector, matches, report);
+                detect_json_value(v, detector, key_path, selector, matches, report)?;
             }
         }
         _ => {}
     }
+    Ok(())
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::engine::{DetectorConfig, ReplacementStrategy, ReplacerConfig};
+    use crate::engine::{ReplacementStrategy, ReplacerConfig};
+
+    #[test]
+    fn single_json_allows_one_initial_bom_but_not_embedded_boms() {
+        let detector = Detector::with_defaults();
+        let mut replacer = Replacer::with_defaults();
+        let input = "  \n\u{feff} {\"safe\":\"ordinary text\"}";
+        assert!(detect_json(input, &detector).unwrap().is_empty());
+        assert!(process_json(input, &detector, &mut replacer).is_ok());
+        assert!(detect_json("[\u{feff}{}]", &detector).is_err());
+        assert!(detect_json("\u{feff}\u{feff}{}", &detector).is_err());
+    }
+
+    #[test]
+    fn malformed_json_diagnostics_never_echo_private_payload() {
+        let detector = Detector::with_defaults();
+        let mut replacer = Replacer::with_defaults();
+        for input in [
+            "{\"secret\": confidentialCredential}",
+            "[1, private@example.invalid]",
+            "{\"confidentialName\": NaN}",
+        ] {
+            let errors = [
+                detect_json(input, &detector).unwrap_err(),
+                process_json(input, &detector, &mut replacer).unwrap_err(),
+            ];
+            for error in errors {
+                assert!(matches!(
+                    error,
+                    FormatError::InvalidJson {
+                        line: 1,
+                        column: 1..
+                    }
+                ));
+                for rendered in [error.to_string(), format!("{error:?}")] {
+                    assert!(!rendered.contains("confidential"));
+                    assert!(!rendered.contains("private@example.invalid"));
+                }
+                assert!(std::error::Error::source(&error).is_none());
+            }
+        }
+    }
 
     #[test]
     fn test_process_json_simple() {
-        let detector = Detector::new(&DetectorConfig::default());
+        let detector = Detector::with_defaults();
         let mut replacer = Replacer::new(ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
             ..Default::default()
@@ -232,7 +294,7 @@ mod tests {
 
     #[test]
     fn test_process_json_nested() {
-        let detector = Detector::new(&DetectorConfig::default());
+        let detector = Detector::with_defaults();
         let mut replacer = Replacer::new(ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
             ..Default::default()
@@ -256,7 +318,7 @@ mod tests {
 
     #[test]
     fn test_process_json_array() {
-        let detector = Detector::new(&DetectorConfig::default());
+        let detector = Detector::with_defaults();
         let mut replacer = Replacer::new(ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
             ..Default::default()
@@ -272,7 +334,7 @@ mod tests {
 
     #[test]
     fn test_detect_json_paths() {
-        let detector = Detector::new(&DetectorConfig::default());
+        let detector = Detector::with_defaults();
 
         let input = r#"{
             "user": {
@@ -294,7 +356,7 @@ mod tests {
 
     #[test]
     fn test_json_preserves_structure() {
-        let detector = Detector::new(&DetectorConfig::default());
+        let detector = Detector::with_defaults();
         let mut replacer = Replacer::new(ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
             ..Default::default()
@@ -314,7 +376,7 @@ mod tests {
 
     #[test]
     fn test_selector_skips_structural_ids() {
-        let detector = Detector::new(&DetectorConfig::default());
+        let detector = Detector::with_defaults();
         let mut replacer = Replacer::new(ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
             ..Default::default()
@@ -354,7 +416,7 @@ mod tests {
 
     #[test]
     fn test_selector_array_wildcard() {
-        let detector = Detector::new(&DetectorConfig::default());
+        let detector = Detector::with_defaults();
         let mut replacer = Replacer::new(ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
             ..Default::default()

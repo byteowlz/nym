@@ -222,7 +222,10 @@ struct SystemOneAnswer {
     #[serde(default)]
     noul: Option<f32>,
     #[serde(default)]
-    #[expect(dead_code, reason = "part of the /v1/systemone Score variant payload; not used by the gate's choice contract")]
+    #[expect(
+        dead_code,
+        reason = "part of the /v1/systemone Score variant payload; not used by the gate's choice contract"
+    )]
     score: Option<f32>,
     #[serde(default)]
     confidence: Option<f32>,
@@ -253,7 +256,8 @@ impl SystemOneAnswer {
                     class: self
                         .probabilities
                         .iter()
-                        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal)).map_or_else(|| verdict.clone(), |(k, _)| k.clone()),
+                        .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+                        .map_or_else(|| verdict.clone(), |(k, _)| k.clone()),
                     confidence,
                     reason: None,
                     is_secret: None,
@@ -407,7 +411,11 @@ impl DecisionGate {
     /// map is keyed by the question ids we sent, so we map back by index.
     /// This is the calibrated readout path: probabilities + derived confidence,
     /// unlike the chat backend's decoded-token confidence.
-    fn ask_systemone(&self, text: &str, candidates: &[Decision]) -> Result<std::collections::HashMap<usize, ModelAnswer>> {
+    fn ask_systemone(
+        &self,
+        text: &str,
+        candidates: &[Decision],
+    ) -> Result<std::collections::HashMap<usize, ModelAnswer>> {
         let mut questions = serde_json::Map::new();
         for (i, cand) in candidates.iter().enumerate() {
             let span = cand.text.clone();
@@ -417,9 +425,18 @@ impl DecisionGate {
                  Context: ...{ctx}..."
             );
             let mut criteria = serde_json::Map::new();
-            criteria.insert("redact".to_string(), serde_json::json!("Real secret/credential/PII; must be redacted"));
-            criteria.insert("keep".to_string(), serde_json::json!("Benign code, path, uuid, checksum, or example; safe to keep"));
-            criteria.insert("flag".to_string(), serde_json::json!("Uncertain; ambiguous identifiers, review manually"));
+            criteria.insert(
+                "redact".to_string(),
+                serde_json::json!("Real secret/credential/PII; must be redacted"),
+            );
+            criteria.insert(
+                "keep".to_string(),
+                serde_json::json!("Benign code, path, uuid, checksum, or example; safe to keep"),
+            );
+            criteria.insert(
+                "flag".to_string(),
+                serde_json::json!("Uncertain; ambiguous identifiers, review manually"),
+            );
             let q = serde_json::json!({
                 "type": "choice",
                 "instructions": instructions,
@@ -455,14 +472,17 @@ impl DecisionGate {
         let mut resp = req
             .send(body_str.as_str())
             .map_err(|e| anyhow!("systemone request failed: {e}"))?;
-        let content = resp.body_mut().read_to_string().context("reading systemone response")?;
+        let content = resp
+            .body_mut()
+            .read_to_string()
+            .context("reading systemone response")?;
         if std::env::var("NYM_DEBUG_DECISION").is_ok() {
             eprintln!("[decision] systemone:");
             eprintln!("{}", serde_json::to_string_pretty(&body)?);
             eprintln!("[decision] systemone reply:\n{content}");
         }
-        let parsed: SystemOneResponse = serde_json::from_str(&content)
-            .context("parsing systemone response")?;
+        let parsed: SystemOneResponse =
+            serde_json::from_str(&content).context("parsing systemone response")?;
         let mut out = std::collections::HashMap::new();
         for (i, _cand) in candidates.iter().enumerate() {
             let key = format!("cand_{i}");
@@ -471,14 +491,17 @@ impl DecisionGate {
             if let Some(ma) = ma {
                 out.insert(i, ma);
             } else {
-                out.insert(i, ModelAnswer {
-                    index: Some(i),
-                    verdict: "flag".to_string(),
-                    class: "unlabeled".to_string(),
-                    confidence: 0.0,
-                    reason: Some("no answer".to_string()),
-                    is_secret: None,
-                });
+                out.insert(
+                    i,
+                    ModelAnswer {
+                        index: Some(i),
+                        verdict: "flag".to_string(),
+                        class: "unlabeled".to_string(),
+                        confidence: 0.0,
+                        reason: Some("no answer".to_string()),
+                        is_secret: None,
+                    },
+                );
             }
         }
         Ok(out)
@@ -550,7 +573,8 @@ impl DecisionGate {
         // and parse THAT as the candidate answers.
         let inner = serde_json::from_str::<ChatResponse>(&content)
             .ok()
-            .and_then(|c| c.choices.into_iter().next()).map_or_else(|| content.clone(), |c| c.message.content);
+            .and_then(|c| c.choices.into_iter().next())
+            .map_or_else(|| content.clone(), |c| c.message.content);
         if std::env::var("NYM_DEBUG_DECISION").is_ok() {
             eprintln!("[decision] inner:\n{inner}");
         }

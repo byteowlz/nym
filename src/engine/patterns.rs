@@ -212,14 +212,14 @@ static TIME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 
 // Bare numeric/underscore tokens are usually code, not evidence of an account.
 // Keep conventional userNNN identifiers; require an explicit account label for
-// other usernames. The labeled form deliberately matches the whole field: the
-// detector uses find_iter (not captures), so a capture would not narrow redaction.
+// other usernames. The named `pii` capture narrows contextual matches to the
+// account value, preserving field labels, separators, and surrounding quotes.
 static USERNAME_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     regex(
         r#"(?x)
         \buser\d{1,20}\b |
         ["']?\b(?i:username|user_name|login|handle)["']?\s*[:=]\s*["']?
-        [a-zA-Z][a-zA-Z0-9_.-]{2,31}\b["']?
+        (?P<pii>[a-zA-Z][a-zA-Z0-9_.-]{2,31}\b)["']?
         "#,
     )
 });
@@ -771,10 +771,11 @@ mod tests {
             &DetectorConfig::default()
                 .with_patterns(["username"])
                 .with_min_confidence(Confidence::Low),
-        );
+        )
+        .unwrap();
         let text = "line1 line2 line3 line4 api_path GRAFANA_API_KEY \
                     550e8400-e29b-41d4-a716-446655440000 timeoutMs";
-        assert!(detector.detect(text).is_empty());
+        assert!(detector.detect(text).unwrap().is_empty());
     }
 
     #[test]
@@ -853,10 +854,10 @@ mod tests {
         let config = DetectorConfig::default()
             .with_patterns(["email", "social_handle"])
             .with_min_confidence(Confidence::Medium);
-        let detector = Detector::new(&config);
+        let detector = Detector::new(&config).unwrap();
 
         // Email should be detected, but @domain should NOT be detected as a handle
-        let matches = detector.detect("Contact test@example.com");
+        let matches = detector.detect("Contact test@example.com").unwrap();
 
         let pattern_names: Vec<&str> = matches.iter().map(|m| m.pattern_name.as_str()).collect();
         assert!(pattern_names.contains(&"email"), "Should detect email");

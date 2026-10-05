@@ -163,6 +163,7 @@ fn key_file_reuses_aliases_across_runs() {
     );
 }
 
+#[cfg(feature = "streaming")]
 #[test]
 fn streaming_honors_output_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -179,7 +180,7 @@ fn streaming_honors_output_file() {
             "anon",
             input.to_str().unwrap(),
             "--format",
-            "json",
+            "jsonl",
             "--stream",
             "--strategy",
             "placeholder",
@@ -198,6 +199,7 @@ fn streaming_honors_output_file() {
     );
 }
 
+#[cfg(feature = "streaming")]
 #[test]
 fn streaming_honors_stdin_to_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -222,6 +224,7 @@ fn streaming_honors_stdin_to_file() {
     );
 }
 
+#[cfg(feature = "streaming")]
 #[test]
 fn streaming_does_not_truncate_existing_key_file() {
     let dir = tempfile::tempdir().unwrap();
@@ -656,7 +659,7 @@ fn streaming_jsonl_coverage_reports_each_record_without_contaminating_output() {
         "--patterns",
         "email",
         "--format",
-        "json",
+        "jsonl",
         "--strategy",
         "placeholder",
         "--include-path",
@@ -874,7 +877,11 @@ fn deanon_full_alias_cascade_is_single_pass_with_file_and_stdin_parity() {
             } else {
                 out.stdout
             };
-            assert_eq!(String::from_utf8(payload.clone()).unwrap(), expected);
+            let expected_value = serde_json::from_str::<serde_json::Value>(expected).unwrap();
+            assert_eq!(
+                String::from_utf8(payload.clone()).unwrap(),
+                serde_json::to_string_pretty(&expected_value).unwrap()
+            );
             assert_eq!(
                 serde_json::from_slice::<serde_json::Value>(&payload).unwrap(),
                 serde_json::from_str::<serde_json::Value>(expected).unwrap()

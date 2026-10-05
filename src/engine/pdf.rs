@@ -166,13 +166,14 @@ impl FontCodec {
                     .iter()
                     .fold(0u32, |acc, &b| (acc << 8) | u32::from(b));
                 if let Some(u) = map.get(&code)
-                    && !u.is_empty() {
-                        out.push(DecodedChar {
-                            text: u.clone(),
-                            byte_off: i,
-                            byte_len: step,
-                        });
-                    }
+                    && !u.is_empty()
+                {
+                    out.push(DecodedChar {
+                        text: u.clone(),
+                        byte_off: i,
+                        byte_len: step,
+                    });
+                }
                 i += step;
             }
         } else {
@@ -197,7 +198,10 @@ impl FontCodec {
     }
 }
 
-#[expect(clippy::cast_possible_truncation, reason = "intentional byte extraction from a u32 code point")]
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "intentional byte extraction from a u32 code point"
+)]
 fn code_to_bytes(code: u32, len: usize) -> Vec<u8> {
     match len {
         2 => vec![(code >> 8) as u8, (code & 0xff) as u8],
@@ -234,7 +238,9 @@ fn parse_tounicode_cmap(data: &[u8]) -> Option<(usize, HashMap<u32, String>)> {
                     match t {
                         Tok::Hex(lo) => {
                             code_len = code_len.max(lo.len().min(2));
-                            let Some(Tok::Hex(hi)) = toks.next() else { break };
+                            let Some(Tok::Hex(hi)) = toks.next() else {
+                                break;
+                            };
                             match toks.next() {
                                 Some(Tok::Hex(dst)) => {
                                     let (lo, hi) = (bytes_to_code(&lo), bytes_to_code(&hi));
@@ -274,7 +280,11 @@ fn parse_tounicode_cmap(data: &[u8]) -> Option<(usize, HashMap<u32, String>)> {
         }
     }
 
-    if map.is_empty() { None } else { Some((code_len, map)) }
+    if map.is_empty() {
+        None
+    } else {
+        Some((code_len, map))
+    }
 }
 
 fn bytes_to_code(b: &[u8]) -> u32 {
@@ -389,7 +399,11 @@ fn load_fonts(doc: &Document, resources: Option<&Dictionary>) -> HashMap<Vec<u8>
     let Some(res) = resources else {
         return out;
     };
-    let Some(fonts) = res.get(b"Font").ok().and_then(|o| resolve(doc, o)).and_then(|o| o.as_dict().ok())
+    let Some(fonts) = res
+        .get(b"Font")
+        .ok()
+        .and_then(|o| resolve(doc, o))
+        .and_then(|o| o.as_dict().ok())
     else {
         return out;
     };
@@ -470,9 +484,10 @@ fn assemble_text(ops: &[Operation], fonts: &HashMap<Vec<u8>, FontCodec>) -> Stre
                                 other => {
                                     // Large negative kern = word gap.
                                     if let Some(v) = object_as_f64(other)
-                                        && v < -180.0 {
-                                            push_sep(&mut st, ' ');
-                                        }
+                                        && v < -180.0
+                                    {
+                                        push_sep(&mut st, ' ');
+                                    }
                                 }
                             }
                         }
@@ -486,7 +501,10 @@ fn assemble_text(ops: &[Operation], fonts: &HashMap<Vec<u8>, FontCodec>) -> Stre
     st
 }
 
-#[expect(clippy::cast_precision_loss, reason = "PDF integer coordinates cast to f64 for math; 2^53 range is sufficient")]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "PDF integer coordinates cast to f64 for math; 2^53 range is sufficient"
+)]
 fn object_as_f64(o: &Object) -> Option<f64> {
     match o {
         Object::Integer(i) => Some(*i as f64),
@@ -529,7 +547,10 @@ struct Cut {
 
 /// Apply detector+replacer to one stream's operations; returns edited ops and
 /// how many placeholders could be encoded into the font.
-#[expect(clippy::type_complexity, reason = "per-(op,elem) grouping key and range are internal to the pass")]
+#[expect(
+    clippy::type_complexity,
+    reason = "per-(op,elem) grouping key and range are internal to the pass"
+)]
 fn redact_ops(
     ops: &mut [Operation],
     st: &StreamText,
@@ -537,10 +558,10 @@ fn redact_ops(
     detector: &Detector,
     replacer: &mut Replacer,
     log: &mut Vec<Replacement>,
-) -> (usize, usize) {
-    let matches = detector.detect(&st.text);
+) -> Result<(usize, usize), Error> {
+    let matches = detector.detect(&st.text)?;
     if matches.is_empty() {
-        return (0, 0);
+        return Ok((0, 0));
     }
 
     // Font in effect for each op (for placeholder encoding).
@@ -612,7 +633,9 @@ fn redact_ops(
     // Apply cuts right-to-left per string.
     for ((op_idx, elem), mut list) in cuts {
         list.sort_by_key(|c| std::cmp::Reverse(c.start));
-        let Some(op) = ops.get_mut(op_idx) else { continue };
+        let Some(op) = ops.get_mut(op_idx) else {
+            continue;
+        };
         let target = match (op.operator.as_str(), elem) {
             ("TJ", Some(e)) => match op.operands.first_mut() {
                 Some(Object::Array(arr)) => arr.get_mut(e),
@@ -631,7 +654,7 @@ fn redact_ops(
         }
     }
 
-    (redacted, placeholders)
+    Ok((redacted, placeholders))
 }
 
 // ---------------------------------------------------------------------------
@@ -711,13 +734,14 @@ pub fn extract_text(bytes: &[u8]) -> Result<String, Error> {
         for fid in form_xobjects(&doc, resources, &mut images) {
             if let Some(stream) = doc.get_object(fid).ok().and_then(|o| o.as_stream().ok())
                 && let Ok(data) = stream.decompressed_content()
-                    && let Ok(c) = Content::decode(&data) {
-                        let fres = stream_resources(&doc, fid).or(resources);
-                        let ffonts = load_fonts(&doc, fres);
-                        let fst = assemble_text(&c.operations, &ffonts);
-                        out.push_str(&fst.text);
-                        out.push('\n');
-                    }
+                && let Ok(c) = Content::decode(&data)
+            {
+                let fres = stream_resources(&doc, fid).or(resources);
+                let ffonts = load_fonts(&doc, fres);
+                let fst = assemble_text(&c.operations, &ffonts);
+                out.push_str(&fst.text);
+                out.push('\n');
+            }
         }
     }
 
@@ -766,10 +790,10 @@ fn scrub_text_value(
     detector: &Detector,
     replacer: &mut Replacer,
     log: &mut Vec<Replacement>,
-) -> Option<String> {
-    let matches = detector.detect(text);
+) -> Result<Option<String>, Error> {
+    let matches = detector.detect(text)?;
     if matches.is_empty() {
-        return None;
+        return Ok(None);
     }
     let mut out = String::new();
     let mut last = 0usize;
@@ -784,12 +808,15 @@ fn scrub_text_value(
         last = m.end;
     }
     out.push_str(&text[last..]);
-    Some(out)
+    Ok(Some(out))
 }
 
 /// Redact a PDF. Returns the new bytes, the replacement log, and a report.
 /// With `strict`, any undecodable text operator aborts the run.
-#[expect(clippy::type_complexity, reason = "return tuple is the public redaction contract")]
+#[expect(
+    clippy::type_complexity,
+    reason = "return tuple is the public redaction contract"
+)]
 pub fn redact(
     bytes: &[u8],
     detector: &Detector,
@@ -820,7 +847,7 @@ pub fn redact(
         let st = assemble_text(&ops, &fonts);
         report.unmapped_text_ops += st.unmapped_ops;
 
-        let (n, p) = redact_ops(&mut ops, &st, &fonts, detector, replacer, &mut log);
+        let (n, p) = redact_ops(&mut ops, &st, &fonts, detector, replacer, &mut log)?;
         report.redacted += n;
         report.placeholders_inserted += p;
         if n > 0 {
@@ -847,7 +874,7 @@ pub fn redact(
             let ffonts = load_fonts(&doc, fres);
             let fst = assemble_text(&fops, &ffonts);
             report.unmapped_text_ops += fst.unmapped_ops;
-            let (n, p) = redact_ops(&mut fops, &fst, &ffonts, detector, replacer, &mut log);
+            let (n, p) = redact_ops(&mut fops, &fst, &ffonts, detector, replacer, &mut log)?;
             report.redacted += n;
             report.placeholders_inserted += p;
             if n > 0 {
@@ -871,16 +898,21 @@ pub fn redact(
     }
     for (fid, content) in form_edits {
         if let Ok(obj) = doc.get_object_mut(fid)
-            && let Ok(stream) = obj.as_stream_mut() {
-                stream.set_plain_content(content);
-                stream.dict.remove(b"Filter");
-                stream.dict.remove(b"DecodeParms");
-            }
+            && let Ok(stream) = obj.as_stream_mut()
+        {
+            stream.set_plain_content(content);
+            stream.dict.remove(b"Filter");
+            stream.dict.remove(b"DecodeParms");
+        }
     }
 
     // -- Pass 2: metadata + annotations -----------------------------------
     // Info dictionary.
-    let info_id = doc.trailer.get(b"Info").ok().and_then(|o| o.as_reference().ok());
+    let info_id = doc
+        .trailer
+        .get(b"Info")
+        .ok()
+        .and_then(|o| o.as_reference().ok());
     if let Some(id) = info_id {
         let fields: Vec<(Vec<u8>, String)> = doc
             .get_object(id)
@@ -896,43 +928,53 @@ pub fn redact(
             })
             .unwrap_or_default();
         for (key, text) in fields {
-            if let Some(new) = scrub_text_value(&text, detector, replacer, &mut log)
+            if let Some(new) = scrub_text_value(&text, detector, replacer, &mut log)?
                 && let Ok(obj) = doc.get_object_mut(id)
-                    && let Ok(dict) = obj.as_dict_mut() {
-                        dict.set(key, Object::String(text_to_pdf_string(&new), StringFormat::Literal));
-                        report.metadata_scrubbed += 1;
-                    }
+                && let Ok(dict) = obj.as_dict_mut()
+            {
+                dict.set(
+                    key,
+                    Object::String(text_to_pdf_string(&new), StringFormat::Literal),
+                );
+                report.metadata_scrubbed += 1;
+            }
         }
     }
 
     // XMP metadata stream: drop it entirely (it duplicates Info and often
     // carries author/tool identifiers).
-    let catalog_id = doc.trailer.get(b"Root").ok().and_then(|o| o.as_reference().ok());
+    let catalog_id = doc
+        .trailer
+        .get(b"Root")
+        .ok()
+        .and_then(|o| o.as_reference().ok());
     if let Some(id) = catalog_id
         && let Ok(obj) = doc.get_object_mut(id)
-            && let Ok(dict) = obj.as_dict_mut()
-                && dict.remove(b"Metadata").is_some() {
-                    report.metadata_scrubbed += 1;
-                }
+        && let Ok(dict) = obj.as_dict_mut()
+        && dict.remove(b"Metadata").is_some()
+    {
+        report.metadata_scrubbed += 1;
+    }
 
     // Annotation strings (comments, popup titles, form field values).
     let annot_keys: &[&[u8]] = &[b"Contents", b"T", b"Subj", b"V", b"TU"];
     let mut annot_ids: Vec<ObjectId> = Vec::new();
     for page_id in pages.values() {
         if let Ok(page) = doc.get_dictionary(*page_id)
-            && let Ok(annots) = page.get(b"Annots") {
-                let arr = match annots {
-                    Object::Array(a) => a.clone(),
-                    Object::Reference(r) => doc
-                        .get_object(*r)
-                        .ok()
-                        .and_then(|o| o.as_array().ok())
-                        .cloned()
-                        .unwrap_or_default(),
-                    _ => Vec::new(),
-                };
-                annot_ids.extend(arr.iter().filter_map(|o| o.as_reference().ok()));
-            }
+            && let Ok(annots) = page.get(b"Annots")
+        {
+            let arr = match annots {
+                Object::Array(a) => a.clone(),
+                Object::Reference(r) => doc
+                    .get_object(*r)
+                    .ok()
+                    .and_then(|o| o.as_array().ok())
+                    .cloned()
+                    .unwrap_or_default(),
+                _ => Vec::new(),
+            };
+            annot_ids.extend(arr.iter().filter_map(|o| o.as_reference().ok()));
+        }
     }
     for aid in annot_ids {
         let fields: Vec<(Vec<u8>, String)> = doc
@@ -950,12 +992,16 @@ pub fn redact(
             })
             .unwrap_or_default();
         for (key, text) in fields {
-            if let Some(new) = scrub_text_value(&text, detector, replacer, &mut log)
+            if let Some(new) = scrub_text_value(&text, detector, replacer, &mut log)?
                 && let Ok(obj) = doc.get_object_mut(aid)
-                    && let Ok(dict) = obj.as_dict_mut() {
-                        dict.set(key, Object::String(text_to_pdf_string(&new), StringFormat::Literal));
-                        report.metadata_scrubbed += 1;
-                    }
+                && let Ok(dict) = obj.as_dict_mut()
+            {
+                dict.set(
+                    key,
+                    Object::String(text_to_pdf_string(&new), StringFormat::Literal),
+                );
+                report.metadata_scrubbed += 1;
+            }
         }
     }
 
@@ -1004,10 +1050,11 @@ fn verify_absence(out: &[u8], log: &[Replacement]) -> Result<Vec<String>, Error>
     for obj in doc.objects.values() {
         collect_strings(obj, &mut haystack);
         if let Ok(stream) = obj.as_stream()
-            && let Ok(data) = stream.decompressed_content() {
-                haystack.extend(data.iter().map(|&b| char::from(b)));
-                haystack.push('\n');
-            }
+            && let Ok(data) = stream.decompressed_content()
+        {
+            haystack.extend(data.iter().map(|&b| char::from(b)));
+            haystack.push('\n');
+        }
     }
     // Raw bytes as Latin-1 (catches anything unparsed).
     haystack.extend(out.iter().map(|&b| char::from(b)));
@@ -1047,8 +1094,8 @@ fn collect_strings(obj: &Object, out: &mut String) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::ReplacementStrategy;
     use crate::engine::replacer::ReplacerConfig;
-    use crate::engine::{DetectorConfig, ReplacementStrategy};
 
     /// A minimal single-page PDF built with lopdf itself.
     fn minimal_pdf(text_ops: &str) -> Vec<u8> {
@@ -1097,7 +1144,7 @@ mod tests {
     #[test]
     fn pdf_redaction_removes_text_and_verifies() {
         let pdf = minimal_pdf("(Contact john.doe@example.com or 555-123-4567 x99) Tj");
-        let detector = Detector::new(&DetectorConfig::default());
+        let detector = Detector::with_defaults();
         let mut replacer = Replacer::new(ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
             ..ReplacerConfig::default()
@@ -1107,7 +1154,10 @@ mod tests {
         assert!(report.verified);
         assert!(log.iter().any(|r| r.original == "john.doe@example.com"));
         let raw: String = out.iter().map(|&b| char::from(b)).collect();
-        assert!(!raw.contains("john.doe@example.com"), "email must be gone from raw bytes");
+        assert!(
+            !raw.contains("john.doe@example.com"),
+            "email must be gone from raw bytes"
+        );
         #[expect(clippy::unwrap_used, reason = "test")]
         let text = extract_text(&out).unwrap();
         assert!(text.contains("<EMAIL>"), "placeholder present: {text}");
@@ -1119,7 +1169,7 @@ mod tests {
         // Email split across TJ array elements with kerning, the way real
         // generators emit it.
         let pdf = minimal_pdf("[(Mail: jo) -20 (hn.doe@exam) -20 (ple.com end)] TJ");
-        let detector = Detector::new(&DetectorConfig::default());
+        let detector = Detector::with_defaults();
         let mut replacer = Replacer::new(ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
             ..ReplacerConfig::default()
@@ -1138,7 +1188,14 @@ mod tests {
     fn encrypted_pdf_is_rejected() {
         // Not a real encrypted file, but the loader rejects garbage too —
         // the point is we error rather than emit anything.
-        assert!(redact(b"%PDF-1.4 garbage", &Detector::new(&DetectorConfig::default()),
-                        &mut Replacer::new(ReplacerConfig::default()), true).is_err());
+        assert!(
+            redact(
+                b"%PDF-1.4 garbage",
+                &Detector::with_defaults(),
+                &mut Replacer::new(ReplacerConfig::default()),
+                true
+            )
+            .is_err()
+        );
     }
 }

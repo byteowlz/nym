@@ -13,13 +13,14 @@
 //!
 //! // Detect PII in text
 //! let text = "Contact me at john@example.com or 555-123-4567";
-//! let matches = detector.detect(text);
+//! let matches = detector.detect(text)?;
 //!
 //! // Replace detected PII
 //! let mut replacer = Replacer::with_defaults();
 //! let (anonymized, replacements) = replacer.replace_all(text, &matches);
 //!
 //! println!("Anonymized: {}", anonymized);
+//! # Ok::<(), nym::engine::detector::DetectionError>(())
 //! ```
 
 pub mod audit;
@@ -47,7 +48,8 @@ pub use audit::{AuditSummary, FailOnPolicy, to_summary_json};
 pub use detector::{Detector, DetectorConfig, PiiMatch};
 #[allow(unused_imports)]
 pub use formats::{
-    JsonPiiMatch, detect_json, detect_json_with_selector, process_json, process_json_with_selector,
+    FormatError, JsonPiiMatch, detect_json, detect_json_with_selector, process_json,
+    process_json_with_selector,
 };
 pub use keyfile::{KeyHeader, load_key_file, save_key_file};
 #[expect(unused_imports, reason = "Conditionally used with ner feature")]

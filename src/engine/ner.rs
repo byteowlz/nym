@@ -42,6 +42,7 @@ use crate::engine::patterns::PiiCategory;
 ///
 /// Note: GLiNER is a zero-shot NER model, so we can add any labels we want.
 /// The model will try to extract entities matching these semantic concepts.
+#[cfg(feature = "ner")]
 pub const PII_LABELS: &[&str] = &[
     // Name components - try to get first/last name separately
     "person",
@@ -134,20 +135,12 @@ static EXIT_CODE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::n
 ///
 /// This is a no-op on non-macOS platforms or when NER is not enabled.
 #[cfg(all(feature = "ner", target_os = "macos"))]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Public API - used by consumers")
-)]
 pub fn set_exit_code(code: i32) {
     EXIT_CODE.store(code, std::sync::atomic::Ordering::SeqCst);
 }
 
 /// Set the exit code (no-op stub for non-macOS).
 #[cfg(not(all(feature = "ner", target_os = "macos")))]
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Public API - used by consumers")
-)]
 pub fn set_exit_code(_code: i32) {
     // No-op on non-macOS platforms
 }
@@ -255,7 +248,12 @@ impl NerDetector {
             model_path.as_ref(),
         )?;
 
-        let labels = labels.unwrap_or_else(|| PII_LABELS.iter().map(std::string::ToString::to_string).collect());
+        let labels = labels.unwrap_or_else(|| {
+            PII_LABELS
+                .iter()
+                .map(std::string::ToString::to_string)
+                .collect()
+        });
 
         Ok(Self {
             // Wrap in ManuallyDrop to prevent ONNX Runtime cleanup crash on macOS.
@@ -308,7 +306,11 @@ impl NerDetector {
         text: &str,
         offset: usize,
     ) -> Result<Vec<PiiMatch>, Box<dyn std::error::Error + Send + Sync>> {
-        let label_refs: Vec<&str> = self.labels.iter().map(std::string::String::as_str).collect();
+        let label_refs: Vec<&str> = self
+            .labels
+            .iter()
+            .map(std::string::String::as_str)
+            .collect();
 
         let input = TextInput::from_str(&[text], &label_refs)?;
         let output = self.model.inference(input)?;
@@ -456,11 +458,7 @@ impl NerDetector {
     }
 
     /// Find cached entities in text using fast string matching.
-    fn find_cached_entities(
-        text: &str,
-        offset: usize,
-        cache: &[CachedEntity],
-    ) -> Vec<PiiMatch> {
+    fn find_cached_entities(text: &str, offset: usize, cache: &[CachedEntity]) -> Vec<PiiMatch> {
         let mut matches = Vec::new();
         let text_lower = text.to_lowercase();
 
@@ -598,6 +596,7 @@ impl NerDetector {
 }
 
 /// Default model repository on HuggingFace.
+#[cfg(any(feature = "ner", test))]
 pub const DEFAULT_NER_MODEL: &str = "onnx-community/gliner_multi-v2.1";
 
 /// Model paths configuration for NER.
@@ -611,10 +610,6 @@ pub struct NerModelPaths {
 #[cfg(feature = "ner")]
 impl NerModelPaths {
     /// Create from explicit paths.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Public API - used by consumers")
-    )]
     pub fn new(tokenizer: std::path::PathBuf, model: std::path::PathBuf) -> Self {
         Self { tokenizer, model }
     }

@@ -262,7 +262,7 @@ impl TokenClassDetector {
         // window explicitly below, so take full control here.
         tokenizer.with_truncation(None)?;
         let cpu_only = provider == NerProvider::Cpu;
-        let session = match Self::create_session(model_path, cpu_only) {
+        let session = match Self::try_create_session(model_path, cpu_only) {
             Ok(session) => session,
             Err(error)
                 if !cpu_only
@@ -272,8 +272,8 @@ impl TokenClassDetector {
                         feature = "ner-tensorrt"
                     )) =>
             {
-                log::warn!("Token NER accelerator failed: {error}; retrying with CPU");
-                Self::create_session(model_path, true).map_err(|cpu_error| {
+                log::warn!("Token NER accelerator initialization failed; retrying with CPU");
+                Self::try_create_session(model_path, true).map_err(|cpu_error| {
                     format!(
                         "token NER accelerator failed: {error}; CPU fallback failed: {cpu_error}"
                     )
@@ -302,6 +302,17 @@ impl TokenClassDetector {
     /// builder does NOT create an environment until commit_from_file; CoreML's
     /// hardware probe needs its default logger earlier and can throw across FFI.
     /// The explicit CPU policy bypasses accelerator registration entirely.
+    fn try_create_session(
+        model_path: &Path,
+        cpu_only: bool,
+    ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            Self::create_session(model_path, cpu_only)
+        }))
+        .map_err(|_| "NER runtime initialization failed")?;
+        Ok(result?)
+    }
+
     fn create_session(model_path: &Path, cpu_only: bool) -> ort::Result<Session> {
         let _environment = ort::environment::get_environment()?;
         // ONNX Runtime defaults to a single intra-op thread on macOS/CPU, which
@@ -373,7 +384,7 @@ impl TokenClassDetector {
             return Ok(Vec::new());
         }
 
-        let chunks = self.split_into_chunks(text);
+        let chunks = self.split_into_chunks(text)?;
         if chunks.len() <= 1 {
             return self.detect_chunk(text, 0);
         }
@@ -439,10 +450,7 @@ impl TokenClassDetector {
                 encodings.push(None);
                 continue;
             }
-            let Ok(encoding) = self.tokenizer.encode(trimmed, true) else {
-                encodings.push(None);
-                continue;
-            };
+            let encoding = self.tokenizer.encode(trimmed, true)?;
             let ids = encoding.get_ids();
             if ids.is_empty() {
                 encodings.push(None);
@@ -714,29 +722,40 @@ impl TokenClassDetector {
     /// a chunk by re-joining words on single spaces shifts every offset in it
     /// whenever the original had newlines or runs of spaces.
     ///
-    /// Returns a single whole-text chunk when the text fits in one window, and
-    /// on tokenizer failure (the caller then runs it unwindowed).
-    fn split_into_chunks(&self, text: &str) -> Vec<(String, usize)> {
-        let Ok(encoding) = self.tokenizer.encode(text, false) else {
-            return vec![(text.to_string(), 0)];
-        };
-        let offsets = encoding.get_offsets();
+    /// Returns a single whole-text chunk when the text fits in one window.
+    /// Tokenization failures or invalid window boundaries abort the scan.
+    fn split_into_chunks(
+        &self,
+        text: &str,
+    ) -> Result<Vec<(String, usize)>, Box<dyn std::error::Error + Send + Sync>> {
+        let encoding = self.tokenizer.encode(text, false)?;
+        Self::chunks_from_offsets(
+            text,
+            encoding.get_offsets(),
+            self.window_tokens,
+            self.window_overlap,
+        )
+    }
+
+    fn chunks_from_offsets(
+        text: &str,
+        offsets: &[(usize, usize)],
+        window_tokens: usize,
+        window_overlap: usize,
+    ) -> Result<Vec<(String, usize)>, Box<dyn std::error::Error + Send + Sync>> {
         if offsets.is_empty() {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        if offsets.len() <= self.window_tokens {
-            return vec![(text.to_string(), 0)];
+        if offsets.len() <= window_tokens {
+            return Ok(vec![(text.to_string(), 0)]);
         }
 
-        let step = self
-            .window_tokens
-            .saturating_sub(self.window_overlap)
-            .max(1);
+        let step = window_tokens.saturating_sub(window_overlap).max(1);
         let mut chunks = Vec::new();
         let mut tok_idx = 0;
 
         while tok_idx < offsets.len() {
-            let end_idx = (tok_idx + self.window_tokens).min(offsets.len());
+            let end_idx = (tok_idx + window_tokens).min(offsets.len());
             let start_byte = offsets[tok_idx].0;
             let end_byte = offsets[end_idx - 1].1;
 
@@ -748,6 +767,8 @@ impl TokenClassDetector {
                 && text.is_char_boundary(end_byte)
             {
                 chunks.push((text[start_byte..end_byte].to_string(), start_byte));
+            } else {
+                return Err("token NER chunk boundaries are invalid".into());
             }
 
             if end_idx >= offsets.len() {
@@ -755,7 +776,7 @@ impl TokenClassDetector {
             }
             tok_idx += step;
         }
-        chunks
+        Ok(chunks)
     }
 
     /// Remove duplicate/contained matches arising from chunk overlap.
@@ -1048,6 +1069,25 @@ mod runtime_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn unicode_chunk_windows_are_exact_and_invalid_offsets_fail_instead_of_skipping_text() {
+        let text = "Åsa Bob Cy";
+        assert_eq!(
+            TokenClassDetector::chunks_from_offsets(text, &[(0, 4), (5, 8), (9, 11)], 2, 1)
+                .unwrap(),
+            vec![("Åsa Bob".into(), 0), ("Bob Cy".into(), 5)]
+        );
+        for offsets in [
+            [(1, 4), (5, 8), (9, 11)],
+            [(0, 4), (5, 80), (9, 11)],
+            [(8, 4), (5, 8), (9, 11)],
+        ] {
+            let error = TokenClassDetector::chunks_from_offsets(text, &offsets, 2, 1).unwrap_err();
+            assert_eq!(error.to_string(), "token NER chunk boundaries are invalid");
+            assert!(!error.to_string().contains(text));
+        }
+    }
 
     #[test]
     fn test_split_bio() {

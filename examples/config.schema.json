@@ -132,7 +132,28 @@
       "properties": {
         "enabled": {
           "type": "boolean",
-          "description": "Enable NER-based detection for names, addresses, etc.",
+          "description": "Enable selected NER backend(s) alongside regex; --ner does not select a model or backend.",
+          "default": false
+        },
+        "backend": {
+          "type": "string",
+          "enum": ["tokens", "openmed", "gliner", "both"],
+          "description": "Selected NER engines; openmed is a legacy alias for tokens. --ner-model targets the selected engine, and is rejected for both (configure model/token_model separately).",
+          "default": "tokens"
+        },
+        "token_model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Token-only model (tokens/both): local model directory or HuggingFace repo/subfolder. Default when omitted: Wismut/nym-pii-multilingual-small/int8."
+        },
+        "openmed_model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Legacy alias for token_model; do not configure both aliases."
+        },
+        "recall_first": {
+          "type": "boolean",
+          "description": "Token-only decoding: total entity mass (true) versus argmax (false). Does not affect GLiNER.",
           "default": false
         },
         "provider": {
@@ -143,7 +164,8 @@
         },
         "model": {
           "type": "string",
-          "description": "HuggingFace model repository for GLiNER",
+          "minLength": 1,
+          "description": "GLiNER-only HuggingFace repository (gliner/both). Not used by tokens.",
           "default": "onnx-community/gliner_multi-v2.1"
         },
         "cache_dir": {
@@ -159,10 +181,18 @@
         },
         "labels": {
           "type": "array",
-          "items": { "type": "string" },
-          "description": "Entity labels to detect",
-          "default": ["person", "organization", "street_address", "city", "country"]
+          "minItems": 1,
+          "items": {
+            "type": "string",
+            "enum": ["person", "first_name", "firstname", "given_name", "givenname", "last_name", "lastname", "surname", "family_name", "organization", "company", "org", "street_address", "address", "city", "state", "province", "region", "country", "location", "phone_number", "phone", "date", "date_of_birth", "dob", "birthday", "birthdate", "time"]
+          },
+          "description": "GLiNER-only restrictions; explicit labels require backend=gliner. Omit for GLiNER defaults: person, organization, street_address, city, country. Empty/unknown labels are errors. Token model classes and regex findings are not filtered. given_name maps to first_name; surname maps to last_name. Runtime normalizes case, surrounding whitespace and duplicates."
         }
+      },
+      "if": { "required": ["labels"] },
+      "then": {
+        "required": ["backend"],
+        "properties": { "backend": { "const": "gliner" } }
       },
       "additionalProperties": false
     },

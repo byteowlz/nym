@@ -1,0 +1,2210 @@
+{
+  "schema": "agent-trace-corrected-regex-v1",
+  "correction": "trx-qvav contextual username value-only capture; unchanged fixture and strict gate",
+  "measurement": {
+    "benchmark": "agent-traces-v1",
+    "synthetic_only": true,
+    "split": "all",
+    "mode": "regex-only",
+    "input_path": "native-json-detect+anon",
+    "policy": "agent-trace-v1",
+    "threshold": null,
+    "recall_first": false,
+    "model_hashes": null,
+    "binary_sha256": "0f0cfc62583deb30db55814e0137de27ce04464ea14f622a16dc55c47c3e9236",
+    "nym": "nym 0.3.0",
+    "fixture_sha256": "b006a5ed645d32300a9e676843c20d8a50854552185ef640bf0c8550320f48be",
+    "git": "be380c7973f56bb63de35e35ba5f9fcbed04ef35",
+    "git_dirty": true,
+    "requested_cases": 4,
+    "errors": 0,
+    "gate_passed": true,
+    "totals": {
+      "detection": {
+        "findings": 32,
+        "false_positive_findings": 0,
+        "detected_bytes": 759,
+        "gold_bytes": 759,
+        "false_positive_bytes": 0
+      },
+      "benign": {
+        "occurrences": 104,
+        "flagged": 0,
+        "preserved": 104
+      },
+      "classes": {
+        "person": {
+          "scope": "ner",
+          "gold": 8,
+          "full_bytes": 0,
+          "nonwhitespace": 0,
+          "partial": 0,
+          "transformed_full_bytes": 0,
+          "transformed_nonwhitespace": 0
+        },
+        "email": {
+          "scope": "regex",
+          "gold": 16,
+          "full_bytes": 16,
+          "nonwhitespace": 16,
+          "partial": 0,
+          "transformed_full_bytes": 16,
+          "transformed_nonwhitespace": 16
+        },
+        "username": {
+          "scope": "regex",
+          "gold": 4,
+          "full_bytes": 4,
+          "nonwhitespace": 4,
+          "partial": 0,
+          "transformed_full_bytes": 4,
+          "transformed_nonwhitespace": 4
+        },
+        "birth_date": {
+          "scope": "ner",
+          "gold": 4,
+          "full_bytes": 0,
+          "nonwhitespace": 0,
+          "partial": 0,
+          "transformed_full_bytes": 0,
+          "transformed_nonwhitespace": 0
+        },
+        "pin": {
+          "scope": "ner",
+          "gold": 4,
+          "full_bytes": 0,
+          "nonwhitespace": 0,
+          "partial": 0,
+          "transformed_full_bytes": 0,
+          "transformed_nonwhitespace": 0
+        },
+        "aws_key": {
+          "scope": "regex",
+          "gold": 4,
+          "full_bytes": 4,
+          "nonwhitespace": 4,
+          "partial": 0,
+          "transformed_full_bytes": 4,
+          "transformed_nonwhitespace": 4
+        },
+        "api_key": {
+          "scope": "regex",
+          "gold": 4,
+          "full_bytes": 4,
+          "nonwhitespace": 4,
+          "partial": 0,
+          "transformed_full_bytes": 4,
+          "transformed_nonwhitespace": 4
+        },
+        "codename": {
+          "scope": "policy",
+          "gold": 4,
+          "full_bytes": 0,
+          "nonwhitespace": 0,
+          "partial": 0,
+          "transformed_full_bytes": 0,
+          "transformed_nonwhitespace": 0
+        },
+        "internal_hostname": {
+          "scope": "policy",
+          "gold": 4,
+          "full_bytes": 0,
+          "nonwhitespace": 0,
+          "partial": 0,
+          "transformed_full_bytes": 0,
+          "transformed_nonwhitespace": 0
+        },
+        "identity_uuid": {
+          "scope": "regex",
+          "gold": 4,
+          "full_bytes": 4,
+          "nonwhitespace": 4,
+          "partial": 0,
+          "transformed_full_bytes": 4,
+          "transformed_nonwhitespace": 4
+        }
+      },
+      "byte_precision": 1.0,
+      "output_mismatches": 0,
+      "structure_errors": 0
+    },
+    "cases": [
+      {
+        "case": "synthetic-1",
+        "split": "selection",
+        "classes": {
+          "person": {
+            "gold": 2,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "ner"
+          },
+          "email": {
+            "gold": 4,
+            "full_bytes": 4,
+            "nonwhitespace": 4,
+            "partial": 0,
+            "transformed_full_bytes": 4,
+            "transformed_nonwhitespace": 4,
+            "scope": "regex"
+          },
+          "username": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          },
+          "birth_date": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "ner"
+          },
+          "pin": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "ner"
+          },
+          "aws_key": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          },
+          "api_key": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          },
+          "codename": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "policy"
+          },
+          "internal_hostname": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "policy"
+          },
+          "identity_uuid": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          }
+        },
+        "detection": {
+          "findings": 8,
+          "false_positive_findings": 0,
+          "detected_bytes": 189,
+          "gold_bytes": 189,
+          "false_positive_bytes": 0
+        },
+        "benign": {
+          "occurrences": 26,
+          "flagged": 0,
+          "preserved": 26
+        },
+        "structure_errors": 0,
+        "output_mismatches": 0,
+        "gold_occurrences": [
+          {
+            "field": 4,
+            "start": 34,
+            "end": 47,
+            "class": "person",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 4,
+            "start": 57,
+            "end": 77,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 20,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 20
+          },
+          {
+            "field": 8,
+            "start": 159,
+            "end": 171,
+            "class": "username",
+            "scope": "regex",
+            "covered_bytes": 12,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 12
+          },
+          {
+            "field": 22,
+            "start": 121,
+            "end": 141,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 20,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 20
+          },
+          {
+            "field": 22,
+            "start": 146,
+            "end": 166,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 20,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 20
+          },
+          {
+            "field": 22,
+            "start": 202,
+            "end": 215,
+            "class": "person",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 22,
+            "start": 234,
+            "end": 244,
+            "class": "birth_date",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 22,
+            "start": 272,
+            "end": 276,
+            "class": "pin",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 22,
+            "start": 318,
+            "end": 338,
+            "class": "aws_key",
+            "scope": "regex",
+            "covered_bytes": 20,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 20
+          },
+          {
+            "field": 22,
+            "start": 343,
+            "end": 384,
+            "class": "api_key",
+            "scope": "regex",
+            "covered_bytes": 41,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 41
+          },
+          {
+            "field": 26,
+            "start": 34,
+            "end": 46,
+            "class": "codename",
+            "scope": "policy",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 26,
+            "start": 52,
+            "end": 84,
+            "class": "internal_hostname",
+            "scope": "policy",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 27,
+            "start": 0,
+            "end": 36,
+            "class": "identity_uuid",
+            "scope": "regex",
+            "covered_bytes": 36,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 36
+          },
+          {
+            "field": 28,
+            "start": 0,
+            "end": 20,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 20,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 20
+          }
+        ],
+        "finding_offsets": [
+          {
+            "field": 4,
+            "start": 57,
+            "end": 77,
+            "category": "contact"
+          },
+          {
+            "field": 8,
+            "start": 159,
+            "end": 171,
+            "category": "social"
+          },
+          {
+            "field": 22,
+            "start": 121,
+            "end": 141,
+            "category": "contact"
+          },
+          {
+            "field": 22,
+            "start": 146,
+            "end": 166,
+            "category": "contact"
+          },
+          {
+            "field": 22,
+            "start": 318,
+            "end": 338,
+            "category": "authentication"
+          },
+          {
+            "field": 22,
+            "start": 343,
+            "end": 384,
+            "category": "authentication"
+          },
+          {
+            "field": 27,
+            "start": 0,
+            "end": 36,
+            "category": "other"
+          },
+          {
+            "field": 28,
+            "start": 0,
+            "end": 20,
+            "category": "contact"
+          }
+        ],
+        "benign_occurrences": [
+          {
+            "field": 4,
+            "start": 84,
+            "end": 92,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 94,
+            "end": 106,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 112,
+            "end": 125,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 156,
+            "end": 166,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 173,
+            "end": 200,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 15,
+            "end": 19,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 24,
+            "end": 35,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 53,
+            "end": 57,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 92,
+            "end": 112,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 188,
+            "end": 198,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 223,
+            "end": 228,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 233,
+            "end": 237,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 10,
+            "start": 0,
+            "end": 4,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 11,
+            "start": 0,
+            "end": 14,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 11,
+            "start": 18,
+            "end": 39,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 12,
+            "start": 0,
+            "end": 22,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 16,
+            "start": 0,
+            "end": 4,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 0,
+            "end": 10,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 11,
+            "end": 33,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 34,
+            "end": 42,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 59,
+            "end": 73,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 78,
+            "end": 81,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 98,
+            "end": 112,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 22,
+            "start": 17,
+            "end": 47,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 22,
+            "start": 48,
+            "end": 72,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 22,
+            "start": 73,
+            "end": 105,
+            "flagged": false,
+            "preserved": true
+          }
+        ],
+        "coverage": {
+          "scanned_strings": 29,
+          "structural_exclusions": 18,
+          "nonstrings": 11
+        }
+      },
+      {
+        "case": "synthetic-2",
+        "split": "selection",
+        "classes": {
+          "person": {
+            "gold": 2,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "ner"
+          },
+          "email": {
+            "gold": 4,
+            "full_bytes": 4,
+            "nonwhitespace": 4,
+            "partial": 0,
+            "transformed_full_bytes": 4,
+            "transformed_nonwhitespace": 4,
+            "scope": "regex"
+          },
+          "username": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          },
+          "birth_date": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "ner"
+          },
+          "pin": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "ner"
+          },
+          "aws_key": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          },
+          "api_key": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          },
+          "codename": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "policy"
+          },
+          "internal_hostname": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "policy"
+          },
+          "identity_uuid": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          }
+        },
+        "detection": {
+          "findings": 8,
+          "false_positive_findings": 0,
+          "detected_bytes": 190,
+          "gold_bytes": 190,
+          "false_positive_bytes": 0
+        },
+        "benign": {
+          "occurrences": 26,
+          "flagged": 0,
+          "preserved": 26
+        },
+        "structure_errors": 0,
+        "output_mismatches": 0,
+        "gold_occurrences": [
+          {
+            "field": 4,
+            "start": 34,
+            "end": 47,
+            "class": "person",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 4,
+            "start": 57,
+            "end": 77,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 20,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 20
+          },
+          {
+            "field": 8,
+            "start": 159,
+            "end": 172,
+            "class": "username",
+            "scope": "regex",
+            "covered_bytes": 13,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 13
+          },
+          {
+            "field": 22,
+            "start": 121,
+            "end": 141,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 20,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 20
+          },
+          {
+            "field": 22,
+            "start": 146,
+            "end": 166,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 20,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 20
+          },
+          {
+            "field": 22,
+            "start": 202,
+            "end": 215,
+            "class": "person",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 22,
+            "start": 234,
+            "end": 244,
+            "class": "birth_date",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 22,
+            "start": 272,
+            "end": 276,
+            "class": "pin",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 22,
+            "start": 318,
+            "end": 338,
+            "class": "aws_key",
+            "scope": "regex",
+            "covered_bytes": 20,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 20
+          },
+          {
+            "field": 22,
+            "start": 343,
+            "end": 384,
+            "class": "api_key",
+            "scope": "regex",
+            "covered_bytes": 41,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 41
+          },
+          {
+            "field": 26,
+            "start": 34,
+            "end": 45,
+            "class": "codename",
+            "scope": "policy",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 26,
+            "start": 51,
+            "end": 82,
+            "class": "internal_hostname",
+            "scope": "policy",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 27,
+            "start": 0,
+            "end": 36,
+            "class": "identity_uuid",
+            "scope": "regex",
+            "covered_bytes": 36,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 36
+          },
+          {
+            "field": 28,
+            "start": 0,
+            "end": 20,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 20,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 20
+          }
+        ],
+        "finding_offsets": [
+          {
+            "field": 4,
+            "start": 57,
+            "end": 77,
+            "category": "contact"
+          },
+          {
+            "field": 8,
+            "start": 159,
+            "end": 172,
+            "category": "social"
+          },
+          {
+            "field": 22,
+            "start": 121,
+            "end": 141,
+            "category": "contact"
+          },
+          {
+            "field": 22,
+            "start": 146,
+            "end": 166,
+            "category": "contact"
+          },
+          {
+            "field": 22,
+            "start": 318,
+            "end": 338,
+            "category": "authentication"
+          },
+          {
+            "field": 22,
+            "start": 343,
+            "end": 384,
+            "category": "authentication"
+          },
+          {
+            "field": 27,
+            "start": 0,
+            "end": 36,
+            "category": "other"
+          },
+          {
+            "field": 28,
+            "start": 0,
+            "end": 20,
+            "category": "contact"
+          }
+        ],
+        "benign_occurrences": [
+          {
+            "field": 4,
+            "start": 84,
+            "end": 92,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 94,
+            "end": 106,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 112,
+            "end": 125,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 156,
+            "end": 166,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 173,
+            "end": 200,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 15,
+            "end": 19,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 24,
+            "end": 35,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 53,
+            "end": 57,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 92,
+            "end": 112,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 189,
+            "end": 199,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 224,
+            "end": 229,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 234,
+            "end": 238,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 10,
+            "start": 0,
+            "end": 4,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 11,
+            "start": 0,
+            "end": 14,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 11,
+            "start": 18,
+            "end": 39,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 12,
+            "start": 0,
+            "end": 22,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 16,
+            "start": 0,
+            "end": 4,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 0,
+            "end": 10,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 11,
+            "end": 33,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 34,
+            "end": 42,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 59,
+            "end": 73,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 78,
+            "end": 81,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 98,
+            "end": 112,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 22,
+            "start": 17,
+            "end": 47,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 22,
+            "start": 48,
+            "end": 72,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 22,
+            "start": 73,
+            "end": 105,
+            "flagged": false,
+            "preserved": true
+          }
+        ],
+        "coverage": {
+          "scanned_strings": 29,
+          "structural_exclusions": 18,
+          "nonstrings": 11
+        }
+      },
+      {
+        "case": "synthetic-3",
+        "split": "holdout",
+        "classes": {
+          "person": {
+            "gold": 2,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "ner"
+          },
+          "email": {
+            "gold": 4,
+            "full_bytes": 4,
+            "nonwhitespace": 4,
+            "partial": 0,
+            "transformed_full_bytes": 4,
+            "transformed_nonwhitespace": 4,
+            "scope": "regex"
+          },
+          "username": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          },
+          "birth_date": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "ner"
+          },
+          "pin": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "ner"
+          },
+          "aws_key": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          },
+          "api_key": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          },
+          "codename": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "policy"
+          },
+          "internal_hostname": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "policy"
+          },
+          "identity_uuid": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          }
+        },
+        "detection": {
+          "findings": 8,
+          "false_positive_findings": 0,
+          "detected_bytes": 186,
+          "gold_bytes": 186,
+          "false_positive_bytes": 0
+        },
+        "benign": {
+          "occurrences": 26,
+          "flagged": 0,
+          "preserved": 26
+        },
+        "structure_errors": 0,
+        "output_mismatches": 0,
+        "gold_occurrences": [
+          {
+            "field": 4,
+            "start": 34,
+            "end": 46,
+            "class": "person",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 4,
+            "start": 56,
+            "end": 75,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 19,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 19
+          },
+          {
+            "field": 8,
+            "start": 159,
+            "end": 172,
+            "class": "username",
+            "scope": "regex",
+            "covered_bytes": 13,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 13
+          },
+          {
+            "field": 22,
+            "start": 121,
+            "end": 140,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 19,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 19
+          },
+          {
+            "field": 22,
+            "start": 145,
+            "end": 164,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 19,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 19
+          },
+          {
+            "field": 22,
+            "start": 200,
+            "end": 212,
+            "class": "person",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 22,
+            "start": 231,
+            "end": 241,
+            "class": "birth_date",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 22,
+            "start": 269,
+            "end": 273,
+            "class": "pin",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 22,
+            "start": 315,
+            "end": 335,
+            "class": "aws_key",
+            "scope": "regex",
+            "covered_bytes": 20,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 20
+          },
+          {
+            "field": 22,
+            "start": 340,
+            "end": 381,
+            "class": "api_key",
+            "scope": "regex",
+            "covered_bytes": 41,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 41
+          },
+          {
+            "field": 26,
+            "start": 34,
+            "end": 45,
+            "class": "codename",
+            "scope": "policy",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 26,
+            "start": 51,
+            "end": 82,
+            "class": "internal_hostname",
+            "scope": "policy",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 27,
+            "start": 0,
+            "end": 36,
+            "class": "identity_uuid",
+            "scope": "regex",
+            "covered_bytes": 36,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 36
+          },
+          {
+            "field": 28,
+            "start": 0,
+            "end": 19,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 19,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 19
+          }
+        ],
+        "finding_offsets": [
+          {
+            "field": 4,
+            "start": 56,
+            "end": 75,
+            "category": "contact"
+          },
+          {
+            "field": 8,
+            "start": 159,
+            "end": 172,
+            "category": "social"
+          },
+          {
+            "field": 22,
+            "start": 121,
+            "end": 140,
+            "category": "contact"
+          },
+          {
+            "field": 22,
+            "start": 145,
+            "end": 164,
+            "category": "contact"
+          },
+          {
+            "field": 22,
+            "start": 315,
+            "end": 335,
+            "category": "authentication"
+          },
+          {
+            "field": 22,
+            "start": 340,
+            "end": 381,
+            "category": "authentication"
+          },
+          {
+            "field": 27,
+            "start": 0,
+            "end": 36,
+            "category": "other"
+          },
+          {
+            "field": 28,
+            "start": 0,
+            "end": 19,
+            "category": "contact"
+          }
+        ],
+        "benign_occurrences": [
+          {
+            "field": 4,
+            "start": 82,
+            "end": 90,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 92,
+            "end": 104,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 110,
+            "end": 123,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 154,
+            "end": 164,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 171,
+            "end": 198,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 15,
+            "end": 19,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 24,
+            "end": 35,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 53,
+            "end": 57,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 92,
+            "end": 112,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 189,
+            "end": 199,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 224,
+            "end": 229,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 234,
+            "end": 238,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 10,
+            "start": 0,
+            "end": 4,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 11,
+            "start": 0,
+            "end": 14,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 11,
+            "start": 18,
+            "end": 39,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 12,
+            "start": 0,
+            "end": 22,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 16,
+            "start": 0,
+            "end": 4,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 0,
+            "end": 10,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 11,
+            "end": 33,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 34,
+            "end": 42,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 59,
+            "end": 73,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 78,
+            "end": 81,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 98,
+            "end": 112,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 22,
+            "start": 17,
+            "end": 47,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 22,
+            "start": 48,
+            "end": 72,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 22,
+            "start": 73,
+            "end": 105,
+            "flagged": false,
+            "preserved": true
+          }
+        ],
+        "coverage": {
+          "scanned_strings": 29,
+          "structural_exclusions": 18,
+          "nonstrings": 11
+        }
+      },
+      {
+        "case": "synthetic-4",
+        "split": "holdout",
+        "classes": {
+          "person": {
+            "gold": 2,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "ner"
+          },
+          "email": {
+            "gold": 4,
+            "full_bytes": 4,
+            "nonwhitespace": 4,
+            "partial": 0,
+            "transformed_full_bytes": 4,
+            "transformed_nonwhitespace": 4,
+            "scope": "regex"
+          },
+          "username": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          },
+          "birth_date": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "ner"
+          },
+          "pin": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "ner"
+          },
+          "aws_key": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          },
+          "api_key": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          },
+          "codename": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "policy"
+          },
+          "internal_hostname": {
+            "gold": 1,
+            "full_bytes": 0,
+            "nonwhitespace": 0,
+            "partial": 0,
+            "transformed_full_bytes": 0,
+            "transformed_nonwhitespace": 0,
+            "scope": "policy"
+          },
+          "identity_uuid": {
+            "gold": 1,
+            "full_bytes": 1,
+            "nonwhitespace": 1,
+            "partial": 0,
+            "transformed_full_bytes": 1,
+            "transformed_nonwhitespace": 1,
+            "scope": "regex"
+          }
+        },
+        "detection": {
+          "findings": 8,
+          "false_positive_findings": 0,
+          "detected_bytes": 194,
+          "gold_bytes": 194,
+          "false_positive_bytes": 0
+        },
+        "benign": {
+          "occurrences": 26,
+          "flagged": 0,
+          "preserved": 26
+        },
+        "structure_errors": 0,
+        "output_mismatches": 0,
+        "gold_occurrences": [
+          {
+            "field": 4,
+            "start": 34,
+            "end": 47,
+            "class": "person",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 4,
+            "start": 57,
+            "end": 78,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 21,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 21
+          },
+          {
+            "field": 8,
+            "start": 159,
+            "end": 172,
+            "class": "username",
+            "scope": "regex",
+            "covered_bytes": 13,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 13
+          },
+          {
+            "field": 22,
+            "start": 121,
+            "end": 142,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 21,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 21
+          },
+          {
+            "field": 22,
+            "start": 147,
+            "end": 168,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 21,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 21
+          },
+          {
+            "field": 22,
+            "start": 204,
+            "end": 217,
+            "class": "person",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 22,
+            "start": 236,
+            "end": 246,
+            "class": "birth_date",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 22,
+            "start": 274,
+            "end": 278,
+            "class": "pin",
+            "scope": "ner",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 22,
+            "start": 320,
+            "end": 340,
+            "class": "aws_key",
+            "scope": "regex",
+            "covered_bytes": 20,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 20
+          },
+          {
+            "field": 22,
+            "start": 345,
+            "end": 386,
+            "class": "api_key",
+            "scope": "regex",
+            "covered_bytes": 41,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 41
+          },
+          {
+            "field": 26,
+            "start": 34,
+            "end": 44,
+            "class": "codename",
+            "scope": "policy",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 26,
+            "start": 50,
+            "end": 80,
+            "class": "internal_hostname",
+            "scope": "policy",
+            "covered_bytes": 0,
+            "full_bytes": false,
+            "nonwhitespace": false,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 0
+          },
+          {
+            "field": 27,
+            "start": 0,
+            "end": 36,
+            "class": "identity_uuid",
+            "scope": "regex",
+            "covered_bytes": 36,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 36
+          },
+          {
+            "field": 28,
+            "start": 0,
+            "end": 21,
+            "class": "email",
+            "scope": "regex",
+            "covered_bytes": 21,
+            "full_bytes": true,
+            "nonwhitespace": true,
+            "output_reconciled": true,
+            "transformed_covered_bytes": 21
+          }
+        ],
+        "finding_offsets": [
+          {
+            "field": 4,
+            "start": 57,
+            "end": 78,
+            "category": "contact"
+          },
+          {
+            "field": 8,
+            "start": 159,
+            "end": 172,
+            "category": "social"
+          },
+          {
+            "field": 22,
+            "start": 121,
+            "end": 142,
+            "category": "contact"
+          },
+          {
+            "field": 22,
+            "start": 147,
+            "end": 168,
+            "category": "contact"
+          },
+          {
+            "field": 22,
+            "start": 320,
+            "end": 340,
+            "category": "authentication"
+          },
+          {
+            "field": 22,
+            "start": 345,
+            "end": 386,
+            "category": "authentication"
+          },
+          {
+            "field": 27,
+            "start": 0,
+            "end": 36,
+            "category": "other"
+          },
+          {
+            "field": 28,
+            "start": 0,
+            "end": 21,
+            "category": "contact"
+          }
+        ],
+        "benign_occurrences": [
+          {
+            "field": 4,
+            "start": 85,
+            "end": 93,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 95,
+            "end": 107,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 113,
+            "end": 126,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 157,
+            "end": 167,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 4,
+            "start": 174,
+            "end": 201,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 15,
+            "end": 19,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 24,
+            "end": 35,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 53,
+            "end": 57,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 92,
+            "end": 112,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 189,
+            "end": 199,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 224,
+            "end": 229,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 8,
+            "start": 234,
+            "end": 238,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 10,
+            "start": 0,
+            "end": 4,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 11,
+            "start": 0,
+            "end": 14,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 11,
+            "start": 18,
+            "end": 39,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 12,
+            "start": 0,
+            "end": 22,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 16,
+            "start": 0,
+            "end": 4,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 0,
+            "end": 10,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 11,
+            "end": 33,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 34,
+            "end": 42,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 59,
+            "end": 73,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 78,
+            "end": 81,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 18,
+            "start": 98,
+            "end": 112,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 22,
+            "start": 17,
+            "end": 47,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 22,
+            "start": 48,
+            "end": 72,
+            "flagged": false,
+            "preserved": true
+          },
+          {
+            "field": 22,
+            "start": 73,
+            "end": 105,
+            "flagged": false,
+            "preserved": true
+          }
+        ],
+        "coverage": {
+          "scanned_strings": 29,
+          "structural_exclusions": 18,
+          "nonstrings": 11
+        }
+      }
+    ]
+  }
+}

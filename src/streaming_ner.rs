@@ -212,7 +212,7 @@ fn process_text_unit(
     unit: &TextUnit,
     detector: &Detector,
     replacer: &mut Replacer,
-) -> Vec<(String, Vec<Replacement>)> {
+) -> StreamResult<Vec<(String, Vec<Replacement>)>> {
     let mut results = Vec::new();
 
     match unit.format {
@@ -227,7 +227,7 @@ fn process_text_unit(
                     results.push((unit.text.clone(), vec![]));
                 } else {
                     // Detect PII in the value
-                    let matches = detector.detect(value);
+                    let matches = detector.detect(value)?;
 
                     if matches.is_empty() {
                         results.push((unit.text.clone(), vec![]));
@@ -255,7 +255,7 @@ fn process_text_unit(
         }
         InputFormat::Markdown => {
             // For markdown headers, process the whole line
-            let matches = detector.detect(&unit.text);
+            let matches = detector.detect(&unit.text)?;
 
             if matches.is_empty() {
                 results.push((unit.text.clone(), vec![]));
@@ -266,7 +266,7 @@ fn process_text_unit(
         }
         InputFormat::Prose => {
             // For prose, process the combined text
-            let matches = detector.detect(&unit.text);
+            let matches = detector.detect(&unit.text)?;
 
             if matches.is_empty() {
                 // Return original lines
@@ -292,13 +292,16 @@ fn process_text_unit(
         }
     }
 
-    results
+    Ok(results)
 }
 
 /// Creates an async stream that processes text with smart NER buffering.
 ///
 /// Unlike line-by-line processing, this buffers text until complete sentences
 /// or paragraphs are formed, providing NER with proper context.
+/// Initialization errors yield one terminal error before output. Inference
+/// errors terminate without emitting the failed unit; earlier completed units
+/// may already be emitted and cannot be rolled back on stdout.
 #[cfg(all(feature = "streaming", feature = "ner"))]
 pub fn process_stream_ner<'a, R>(
     reader: R,
@@ -307,8 +310,24 @@ pub fn process_stream_ner<'a, R>(
 where
     R: AsyncRead + Unpin + Send + 'a,
 {
+    let detector = Detector::new(&config.detector_config);
+    process_stream_ner_with_detector(reader, config, detector)
+}
+
+#[cfg(all(feature = "streaming", feature = "ner"))]
+fn process_stream_ner_with_detector<'a, R>(
+    reader: R,
+    config: StreamConfig,
+    detector: Result<Detector, crate::engine::detector::DetectionError>,
+) -> impl Stream<Item = StreamResult<(String, Vec<Replacement>)>> + 'a
+where
+    R: AsyncRead + Unpin + Send + 'a,
+{
     stream! {
-        let detector = Detector::new(&config.detector_config);
+        let detector = match detector {
+            Ok(detector) => detector,
+            Err(error) => { yield Err(error.into()); return; }
+        };
         let replacer_config = config.replacer_config.clone();
 
         let mut replacer = Replacer::new(replacer_config);
@@ -329,18 +348,18 @@ where
 
                     // Process each unit
                     for unit in units {
-                        let results = process_text_unit(&unit, &detector, &mut replacer);
-                        for (text, replacements) in results {
-                            yield Ok((text, replacements));
+                        match process_text_unit(&unit, &detector, &mut replacer) {
+                            Ok(results) => for (text, replacements) in results { yield Ok((text, replacements)); },
+                            Err(error) => { yield Err(error); return; }
                         }
                     }
                 }
                 Ok(None) => {
                     // EOF - flush remaining buffer
                     if let Some(unit) = buffer.flush() {
-                        let results = process_text_unit(&unit, &detector, &mut replacer);
-                        for (text, replacements) in results {
-                            yield Ok((text, replacements));
+                        match process_text_unit(&unit, &detector, &mut replacer) {
+                            Ok(results) => for (text, replacements) in results { yield Ok((text, replacements)); },
+                            Err(error) => { yield Err(error); return; }
                         }
                     }
                     break;
@@ -398,6 +417,32 @@ where
 #[cfg(all(test, feature = "streaming", feature = "ner"))]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn buffered_ner_runtime_failure_is_terminal_and_never_emits_failed_unit() {
+        use crate::engine::detector::{NerBackend, tests::injected};
+        use futures::StreamExt;
+        for backend in [NerBackend::Gliner, NerBackend::TokenClass, NerBackend::Both] {
+            for failed in [
+                "name: Alice Smith\n",
+                "# Alice Smith\n",
+                "Alice Smith arrived.\n\n",
+            ] {
+                let input = format!("name: Completed record\n{failed}name: Must not be emitted\n");
+                let stream = process_stream_ner_with_detector(
+                    input.as_bytes(),
+                    StreamConfig::default(),
+                    Ok(injected(backend, Some("Alice"), false)),
+                );
+                futures::pin_mut!(stream);
+                assert!(stream.next().await.unwrap().is_ok());
+                let error = stream.next().await.unwrap().unwrap_err();
+                assert!(!error.to_string().contains("Alice"));
+                assert!(!format!("{error:?}").contains("secret-provider-key"));
+                assert!(stream.next().await.is_none());
+            }
+        }
+    }
 
     #[test]
     fn test_detect_format() {

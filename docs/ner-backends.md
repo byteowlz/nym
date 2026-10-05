@@ -1,16 +1,16 @@
-# OpenMed NER backend
+# NER backends
 
-nym supports **two NER backends in parallel**:
+nym supports two NER backends alongside regex detection:
 
-| Backend  | Model kind | Crate / runtime | Labels |
-|----------|------------|-----------------|--------|
-| `gliner` | GLiNER zero-shot **span** model | `gline-rs` | Arbitrary, zero-shot (you supply labels) |
-| `openmed` | [OpenMed](https://github.com/maziyarpanahi/openmed) DeBERTa-v2 **token classification** | `ort` (ONNX Runtime) directly | Fixed 106-label PII taxonomy (BIO) |
+| Backend | Model kind | Crate / runtime | Labels |
+|---------|------------|-----------------|--------|
+| `tokens` (default) | BERT/DeBERTa token classification | `ort` (ONNX Runtime) | Classes defined by the selected model; no `ner.labels` filtering |
+| `gliner` | GLiNER zero-shot span model | `gline-rs` | Validated nym PII labels and aliases |
+| `both` | Both engines, merged by span overlap | Both runtimes | Default GLiNER labels plus all token model classes |
 
-The OpenMed models are fine-tuned specifically for clinical/HIPAA PII and recognise
-entity types regex cannot (names, cities, dates of birth, medical record numbers,
-…). GLiNER stays useful for ad-hoc, zero-shot labels. You can run either alone or
-**both at once** — results are merged and de-duplicated by span overlap.
+`openmed` is a legacy alias for `tokens`; the loader is not limited to OpenMed
+models. OpenMed's clinical/HIPAA models are one supported family. The default
+model is `Wismut/nym-pii-multilingual-small/int8`.
 
 ## 1. Convert an OpenMed model to ONNX
 
@@ -43,12 +43,13 @@ Recommended models (all `DebertaV2ForTokenClassification`, 106 BIO labels):
 ```toml
 [ner]
 enabled = true
-backend = "both"             # "both" (default) | "gliner" | "tokens"
+backend = "tokens"           # "tokens" (default) | "gliner" | "both"
 # token_model accepts EITHER a local directory OR a HuggingFace repo id.
 # A repo id (optionally with a subfolder) is downloaded + cached automatically.
 # Unset = nym's own multilingual model (the default):
-token_model = "Wismut/nym-pii-multilingual"
-threshold = 0.5
+token_model = "Wismut/nym-pii-multilingual-small/int8"
+threshold = 0.5               # actual default for both backends
+recall_first = false          # token-only: argmax (default); true = total entity mass
 
 # For backend = "both", also set the GLiNER repo (defaults shown):
 # model = "onnx-community/gliner_multi-v2.1"
@@ -59,6 +60,51 @@ otherwise as a **HuggingFace repo id** — optionally with a subfolder
 (`org/name/subdir`) so several models can share one repo — fetched via `hf-hub`
 into the HF cache (`HF_HOME`, or `[ner] cache_dir`).
 
+### Model overrides, label scope and status
+
+`--ner` enables the configured engine(s) alongside regex; it does not select an
+engine or model. `--no-ner` disables inference. CLI `--ner-model` overrides
+`token_model` with backend `tokens`, or `model` with backend `gliner`. With `both`,
+a generic override is ambiguous and rejected: configure the two model fields
+separately. Empty/control-character model identifiers and invalid thresholds are
+errors. A failed requested model load or inference is an operational error, not
+a successful regex-only scan.
+
+Explicit `ner.labels` requires **backend `gliner`**. It is rejected for `tokens`
+and `both`, even if it equals the defaults, because otherwise it would silently
+leave token classes unfiltered. Omit it to use GLiNER defaults:
+`person`, `organization`, `street_address`, `city`, `country`. An explicit empty
+array or unknown label is an error. Labels never restrict regex findings.
+
+Supported canonical labels are `person`, `first_name`, `last_name`,
+`organization`, `street_address`, `city`, `state`, `country`, `location`,
+`phone_number`, `date`, `date_of_birth`, `time`. Aliases include
+`given_name`/`givenname`/`firstname` → `first_name`,
+`surname`/`family_name`/`lastname` → `last_name`, `company`/`org` → `organization`,
+`address` → `street_address`, `province`/`region` → `state`, `phone` →
+`phone_number`, and `dob`/`birthday`/`birthdate` → `date_of_birth`. Runtime
+normalizes case, surrounding whitespace and duplicates. This is GLiNER-only;
+`person` is not a token-class alias/filter for `GIVEN_NAME` or `SURNAME`.
+
+Inspect effective settings offline (JSON by default; `--yaml` is supported):
+
+```bash
+nym config ner-status
+nym --config nym.toml config ner-status --ner-model nationaldesignstudio/rampart
+```
+
+Status reports backend(s), safe model identifiers, threshold, label scope,
+decoding and token provider. `configured_enabled` is configuration, **not runtime
+readiness**; status does not load/download models. Revisions are `null` because
+no resolved/pinned revision is available. Only identifiers in the built-in public
+catalog are shown; other repositories and local paths become `[custom]`. Cache
+paths and config secrets are omitted. Token-only initialized detectors count as
+NER-ready, just as initialized GLiNER detectors do.
+
+Malformed file/environment configuration fails closed rather than silently
+falling back to defaults. See [`examples/config.toml`](../examples/config.toml)
+and its schema for the complete settings.
+
 ### Choosing a model
 
 All rows below are **v3** (2026-07-18) measured on one harness (`scripts/eval_ood.py`:
@@ -68,10 +114,10 @@ measure). Every quantized variant was re-benchmarked, not assumed.
 
 | `token_model` | Size | Real-text F1 | ai4 OOD | Non-Latin | When |
 |---|---|---|---|---|---|
-| `Wismut/nym-pii-multilingual` (**default**) | 1.2 GB | **79.1** | **69.8** | **73.1** | Best accuracy |
+| `Wismut/nym-pii-multilingual` | 1.2 GB | **79.1** | **69.8** | **73.1** | Best accuracy |
 | `Wismut/nym-pii-multilingual/int8` | 376 MB | 78.9 | 69.9 | 73.0 | **Measured lossless** — the sweet spot |
 | `Wismut/nym-pii-multilingual-small` | 429 MB | 76.4 | 67.7 | 71.8 | Distilled 16-layer student |
-| `Wismut/nym-pii-multilingual-small/int8` | 139 MB | 76.4 | 67.2 | 71.7 | Near-lossless; best size/accuracy trade |
+| `Wismut/nym-pii-multilingual-small/int8` (**default**) | 139 MB | 76.4 | 67.2 | 71.7 | Near-lossless; best size/accuracy trade |
 | `Wismut/nym-pii-multilingual-small/edge-int8` | 108 MB | 75.9 | 63.1 | 70.3 | Smallest; real OOD cost |
 | `OpenMed/…mSuperClinical-Large-279M-v1-onnx-android` | 1.1 GB | 81.4 | 55.0 | 60.4 | Clinical text (their strongest; wins curated F1, loses OOD/non-Latin) |
 | `Wismut/openmed-onnx/small` | 172 MB | 78.1 | 44.6 | 46.3 | Clinical/HIPAA focus (DeBERTa); also `/base`, `/large` |
@@ -90,7 +136,7 @@ model is published at
 
 ### Third-party token-classification models (e.g. Rampart)
 
-The `openmed` backend is a **generic BERT/DeBERTa token-classification** loader, not
+The `tokens` backend is a **generic BERT/DeBERTa token-classification** loader, not
 tied to OpenMed. It auto-detects `token_type_ids` (BERT needs it, DeBERTa doesn't)
 and resolves the ONNX file from a candidate list covering both nym's layout and the
 optimum / transformers.js convention (`onnx/model*.onnx`), so many Hub PII models
@@ -118,11 +164,12 @@ nym anon   input.txt --config nym.toml -o out.txt
 
 ## How it works
 
-`src/engine/ner_openmed.rs` implements the backend:
+`src/engine/ner_token.rs` implements the token backend:
 
 1. Tokenize with the HF `tokenizers` crate (offsets enabled).
 2. Feed `input_ids` + `attention_mask` to the ONNX session (`ort`).
-3. Argmax + softmax over the per-token 106-way logits.
+3. Softmax over per-token model classes; argmax by default, or total entity
+   probability when `recall_first = true`.
 4. BIO-decode contiguous tokens into entity spans.
 5. Map sub-word offsets back to byte offsets and emit `PiiMatch`es, mapping each
    OpenMed label to nym's canonical pattern names where they overlap (so existing
@@ -159,7 +206,8 @@ hf upload <org>/openmed-onnx models/base  base  --repo-type model
 hf upload <org>/openmed-onnx models/large large --repo-type model
 ```
 
-Users then set `openmed_model = "<org>/openmed-onnx/small"` and nym downloads +
+Users then set `token_model = "<org>/openmed-onnx/small"` (`openmed_model` is a
+legacy alias) and nym downloads +
 caches it on first run — no local conversion needed. OpenMed is Apache-2.0, so
 redistributing the converted weights is fine; **keep the license and OpenMed
 attribution** in the repo (the reference repo ships both).
@@ -214,8 +262,8 @@ Yes — regex and NER are complementary, and regex stays the backbone:
   email (F1 94.8), IPv4 (98.0), passport (93.7), plus credit cards, IBANs, MAC,
   UUID, JWT, AWS keys, crypto wallets that OpenMed's PII taxonomy doesn't even
   cover. Deterministic, exact boundaries, microseconds, no model, fully offline.
-- **The default build has no NER at all** — NER is an opt-in feature; regex is the
-  only detector for most users.
+- **The default build includes NER support**, but inference is disabled until
+  enabled via config, ruleset, or `--ner`. Regex-only builds remain possible.
 - **Free-form entities** (names, cities, states, streets, occupations) are where
   regex scores ~0 and NER is essential.
 - **Caveat:** a few regex numeric patterns over-fire on this dataset (e.g. `ssn`,
@@ -249,21 +297,19 @@ The base/large benchmarks above use fp32.
 
 ### GLiNER vs OpenMed — keep both?
 
-**Yes — keep GLiNER, but OpenMed is the better default for PII.** They do different
-jobs:
+The benchmarked token models and GLiNER do different jobs; nym supports both:
 
 - For **standard PII** (the fixed taxonomy: names, addresses, IDs, contacts…),
   OpenMed wins outright — higher F1 at every size, and OpenMed-large alone matches
   the recall of OpenMed-small + GLiNER combined. On this axis GLiNER is redundant.
-- GLiNER's irreplaceable value is **zero-shot, arbitrary labels at runtime**. It
-  detects entity types OpenMed has no label for, with no retraining — e.g. asking
-  for `medication`, `medical condition`, `product` extracts *imatinib*, *chronic
-  myeloid leukemia*, *Tesla Model 3*. OpenMed structurally cannot do this; its
-  head is fixed to 106 PII classes.
+- GLiNER supports zero-shot concepts, but nym deliberately exposes only the
+  validated PII labels above, not arbitrary custom labels. Token model classes
+  are fixed by training; their taxonomy depends on the selected model.
 
-So: default to OpenMed for PII detection/anonymization; keep GLiNER for custom or
-domain-specific entity extraction. Running `both` is the best PII recall when you
-can't deploy the large OpenMed model.
+nym defaults to its small int8 token model. Running `both` adds GLiNER findings;
+choose a model/backend using measurements on representative input, not size
+alone. The benchmark results here do not establish precision on technical code
+or agent traces.
 
 ## Performance (latency / CPU / memory)
 
@@ -394,5 +440,5 @@ with `scripts/convert_openmed_onnx.sh` and point `token_model` at it. See
 - BIO spans for fragmented numerics (e.g. dates) can split where the model
   alternates labels across sub-tokens; OpenMed's Python "smart merging" is not
   yet ported.
-- Models are loaded from a **local directory**. Pulling a pre-converted ONNX repo
-  straight from the HF Hub (like the GLiNER path) is a natural next step.
+- Token models support both local directories and pre-converted ONNX
+  repositories on the HF Hub.

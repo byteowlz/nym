@@ -11,7 +11,7 @@
 
 use std::env;
 use std::fs;
-use std::io::{self, BufRead, IsTerminal, Read, Write};
+use std::io::{self, BufRead, Read, Write};
 use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, anyhow};
@@ -22,7 +22,9 @@ use serde::{Deserialize, Serialize};
 
 mod config;
 mod engine;
+mod input;
 mod session;
+use input::FormatArg;
 #[cfg(feature = "streaming")]
 mod streaming;
 #[cfg(all(feature = "streaming", feature = "ner"))]
@@ -37,6 +39,53 @@ use engine::{
 use session::Session;
 
 const APP_NAME: &str = env!("CARGO_PKG_NAME");
+
+/// One backend-aware NER resolution path for every command, including streams.
+fn configure_ner(
+    dc: DetectorConfig,
+    ner: &config::NerConfig,
+    model: Option<&str>,
+    threshold: Option<f32>,
+) -> Result<DetectorConfig> {
+    if !dc.ner_enabled && (model.is_some() || threshold.is_some()) {
+        anyhow::bail!(
+            "explicit NER controls require enabled NER; use --ner or remove the controls"
+        );
+    }
+    if !dc.ner_enabled {
+        return Ok(dc);
+    }
+    let mut ner = ner.clone();
+    if let Some(threshold) = threshold {
+        ner.threshold = threshold;
+    }
+    let mut ner = ner.resolved(model)?;
+    ner.token_model = ner
+        .token_model
+        .as_deref()
+        .map(|model| shellexpand::full(model).map(|path| path.into_owned()))
+        .transpose()
+        .map_err(|_| anyhow!("failed to expand NER model path"))?;
+    let mut dc = apply_ner_backend(dc, &ner)
+        .with_ner_model(
+            shellexpand::full(&ner.model)
+                .map_err(|_| anyhow!("failed to expand NER model path"))?
+                .into_owned(),
+        )
+        .with_ner_threshold(threshold.unwrap_or(ner.threshold))
+        .with_ner_recall_first(ner.recall_first);
+    if let Some(ref labels) = ner.labels {
+        dc = dc.with_ner_labels(labels.clone());
+    }
+    if let Some(ref cache) = ner.cache_dir {
+        dc = dc.with_ner_cache_dir(
+            shellexpand::full(cache)
+                .map_err(|_| anyhow!("failed to expand NER cache path"))?
+                .into_owned(),
+        );
+    }
+    Ok(dc)
+}
 
 /// Apply the configured NER backend selection (`gliner`/`tokens`/`both`) and
 /// the token-classification model/provider onto a detector config.
@@ -94,11 +143,32 @@ mod provider_wiring_tests {
 }
 
 fn main() {
+    // If a native teardown hook runs after an unexpected failure, fail closed.
+    // Only a fully successful CLI run may publish a successful native exit.
+    engine::ner::set_exit_code(1);
+    // A native wrapper's panic payload can contain private paths/configuration.
+    // Guarded detector operations still propagate a typed error and exit 1.
+    std::panic::set_hook(Box::new(|_| {
+        let _ = writeln!(
+            io::stderr().lock(),
+            "error: internal runtime failure; scan incomplete"
+        );
+    }));
     if let Err(err) = try_main() {
         let _ = writeln!(io::stderr(), "error: {err:?}");
-        let code = err.downcast_ref::<ExitError>().map(|e| e.0).unwrap_or(1);
+        let code = error_exit_code(&err);
+        // GLiNER may have registered the macOS ONNX teardown hook even when
+        // initialization failed. Its fast exit must preserve this CLI status.
+        engine::ner::set_exit_code(code);
         std::process::exit(code);
     }
+    engine::ner::set_exit_code(0);
+}
+
+fn error_exit_code(err: &anyhow::Error) -> i32 {
+    err.downcast_ref::<ExitError>()
+        .map(|error| error.0)
+        .unwrap_or(1)
 }
 
 /// An error carrying an explicit process exit code, used to signal distinct
@@ -142,12 +212,11 @@ fn load_config(common: &CommonOpts) -> Result<Config> {
     if let Some(ref config_path) = common.config {
         // Load from specific config file
         let content = fs::read_to_string(config_path)
-            .with_context(|| format!("Failed to read config file: {}", config_path.display()))?;
-        toml::from_str(&content)
-            .with_context(|| format!("Failed to parse config file: {}", config_path.display()))
+            .map_err(|_| anyhow!("failed to read configuration file"))?;
+        toml::from_str(&content).map_err(|_| anyhow!("invalid configuration file"))
     } else {
         // Load from default locations
-        Ok(Config::load_or_default())
+        Config::load().map_err(|_| anyhow!("invalid configuration"))
     }
 }
 
@@ -260,7 +329,7 @@ fn resolve_ruleset(
     version,
     about = "Fast, reversible PII anonymization CLI",
     long_about = "nym detects and anonymizes personally identifiable information (PII) in text files.\n\n\
-                  It supports multiple formats (text, JSON, TOML, YAML, CSV) and can optionally \
+                  It supports text, JSON, JSONL and dedicated document handlers, and can optionally \
                   store a key file for reversing the anonymization later.",
     propagate_version = true
 )]
@@ -483,7 +552,7 @@ struct AnonCommand {
     #[arg(long)]
     context: Option<String>,
 
-    /// Enable NER-based detection for names and addresses (requires 'ner' feature)
+    /// Enable the configured NER backend alongside regex (requires 'ner' feature)
     #[arg(long)]
     ner: bool,
 
@@ -491,20 +560,21 @@ struct AnonCommand {
     #[arg(long, conflicts_with = "ner")]
     no_ner: bool,
 
-    /// NER model repository (default: onnx-community/gliner_multi-v2.1)
-    #[arg(long, value_name = "REPO")]
+    /// Override the selected backend's model: tokens -> token_model, gliner -> model;
+    /// rejected for both (configure ner.model and ner.token_model separately)
+    #[arg(long, value_name = "MODEL")]
     ner_model: Option<String>,
 
     /// NER confidence threshold (0.0-1.0, default: 0.5)
     #[arg(long, value_name = "THRESHOLD")]
     ner_threshold: Option<f32>,
 
-    /// Stream mode: process stdin line-by-line with immediate output
-    /// (requires 'streaming' feature)
+    /// Stream text line-by-line; JSONL remains structured and output files are staged
+    /// (requires 'streaming' feature; single JSON documents are buffered)
     #[arg(long)]
     stream: bool,
 
-    /// JSON only: only anonymize string values at these JSON paths
+    /// JSON/JSONL: only anonymize string values at these JSON paths
     /// (repeatable; dot and array-index syntax, e.g. `session.user.email`,
     /// `users[*].email`)
     #[arg(long = "include-path", value_name = "PATH")]
@@ -517,14 +587,6 @@ struct AnonCommand {
     /// JSON only: print a coverage report of scanned/skipped paths
     #[arg(long)]
     json_coverage: bool,
-}
-
-#[derive(Debug, Clone, Copy, ValueEnum, PartialEq)]
-enum FormatArg {
-    /// Plain text (default)
-    Text,
-    /// JSON - preserves structure, only anonymizes string values
-    Json,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum, Default)]
@@ -574,6 +636,10 @@ impl From<ConfidenceArg> for Confidence {
 
 #[derive(Debug, Clone, Args)]
 struct DeanonCommand {
+    /// Text/JSON/JSONL input format (otherwise resolved like anon/detect)
+    #[arg(short = 'f', long, value_enum)]
+    format: Option<FormatArg>,
+
     /// Input file containing anonymized text (reads from stdin if not specified)
     #[arg(value_name = "INPUT")]
     input: Option<PathBuf>,
@@ -644,7 +710,7 @@ struct DetectCommand {
     #[arg(long)]
     summary: bool,
 
-    /// Enable NER-based detection for names and addresses (requires 'ner' feature)
+    /// Enable the configured NER backend alongside regex (requires 'ner' feature)
     #[arg(long)]
     ner: bool,
 
@@ -652,20 +718,21 @@ struct DetectCommand {
     #[arg(long, conflicts_with = "ner")]
     no_ner: bool,
 
-    /// NER model repository (default: onnx-community/gliner_multi-v2.1)
-    #[arg(long, value_name = "REPO")]
+    /// Override the selected backend's model: tokens -> token_model, gliner -> model;
+    /// rejected for both (configure ner.model and ner.token_model separately)
+    #[arg(long, value_name = "MODEL")]
     ner_model: Option<String>,
 
     /// NER confidence threshold (0.0-1.0, default: 0.5)
     #[arg(long, value_name = "THRESHOLD")]
     ner_threshold: Option<f32>,
 
-    /// Stream mode: process stdin line-by-line with immediate output
-    /// (requires 'streaming' feature)
+    /// Stream text/JSONL records with possible partial stdout on later failure;
+    /// audit policies and summaries require omitting --stream
     #[arg(long)]
     stream: bool,
 
-    /// JSON only: only detect string values at these JSON paths (repeatable)
+    /// JSON/JSONL: only detect string values at these JSON paths (repeatable)
     #[arg(long = "include-path", value_name = "PATH")]
     include_paths: Vec<String>,
 
@@ -736,10 +803,6 @@ struct DecideCommand {
     #[arg(long)]
     no_ner: bool,
 
-    /// JSON input (per-record JSONL is handled as line-delimited)
-    #[arg(long)]
-    json: bool,
-
     /// Batch mode: read line-delimited `{"text": ...}` chunks from stdin (or
     /// the input file) and emit one JSON object per line, reusing a single
     /// process so the startup cost is amortized across all chunks.
@@ -798,6 +861,15 @@ struct ConfigCommand {
 
 #[derive(Debug, Clone, Subcommand)]
 enum ConfigAction {
+    /// Show safe effective NER settings (does not load models or prove readiness)
+    NerStatus {
+        /// Backend-aware model override, as on detect/anon
+        #[arg(long)]
+        ner_model: Option<String>,
+        /// Threshold override, as on detect/anon
+        #[arg(long)]
+        ner_threshold: Option<f32>,
+    },
     /// Show current configuration
     Show,
     /// Show config file path
@@ -815,12 +887,6 @@ enum ConfigAction {
 // =============================================================================
 
 fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result<()> {
-    // Check for streaming mode
-    #[cfg(feature = "streaming")]
-    if cmd.stream {
-        return handle_anon_streaming(common, config, cmd);
-    }
-
     #[cfg(not(feature = "streaming"))]
     if cmd.stream {
         return Err(anyhow!(
@@ -843,16 +909,33 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
     let img_fmt = sniff_image(cmd.input.as_ref());
     #[cfg(not(feature = "ocr"))]
     let img_fmt: Option<()> = None;
-    let input_text = if office_fmt.is_some() || is_pdf || img_fmt.is_some() {
-        String::new()
+    let binary_input = office_fmt.is_some() || is_pdf || img_fmt.is_some();
+    let (format, mut reader) = if binary_input {
+        if cmd.stream {
+            anyhow::bail!("document inputs do not support --stream");
+        }
+        (FormatArg::Text, None)
     } else {
-        read_input(cmd.input.as_ref())?
+        let (format, reader) = input::open(cmd.input.as_deref(), cmd.format)?;
+        (format, Some(reader))
     };
-
-    // Determine format (explicit or auto-detect from file extension)
-    let format = cmd
-        .format
-        .unwrap_or_else(|| detect_format(cmd.input.as_ref()));
+    if binary_input && cmd.format.is_some() {
+        anyhow::bail!(
+            "--format overrides are only supported for textual inputs, not document handlers"
+        );
+    }
+    if format == FormatArg::Text
+        && (!cmd.include_paths.is_empty() || !cmd.exclude_paths.is_empty() || cmd.json_coverage)
+    {
+        anyhow::bail!("JSON path selection/coverage requires JSON or JSONL input");
+    }
+    let mut input_text = String::new();
+    if !(cmd.stream && format == FormatArg::Text)
+        && format != FormatArg::Jsonl
+        && let Some(reader) = reader.as_mut()
+    {
+        reader.read_to_string(&mut input_text)?;
+    }
 
     // Generate session ID
     let source_filename = cmd
@@ -932,32 +1015,24 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         config.ner.enabled
     };
 
-    detector_config = detector_config.with_ner(ner_enabled);
-
-    if let Some(ref model) = cmd.ner_model {
-        detector_config = detector_config.with_ner_model(model);
-    } else if !config.ner.model.is_empty() {
-        detector_config = detector_config.with_ner_model(&config.ner.model);
+    detector_config = configure_ner(
+        detector_config.with_ner(ner_enabled),
+        &config.ner,
+        cmd.ner_model.as_deref(),
+        cmd.ner_threshold,
+    )?;
+    #[cfg(feature = "streaming")]
+    if cmd.stream && format == FormatArg::Text {
+        return handle_anon_streaming(
+            common,
+            config,
+            cmd,
+            reader.ok_or_else(|| anyhow!("text reader unavailable"))?,
+            detector_config,
+        );
     }
 
-    if let Some(threshold) = cmd.ner_threshold {
-        detector_config = detector_config.with_ner_threshold(threshold);
-    } else if config.ner.threshold > 0.0 {
-        detector_config = detector_config.with_ner_threshold(config.ner.threshold);
-    }
-    detector_config = detector_config.with_ner_recall_first(config.ner.recall_first);
-
-    if !config.ner.labels.is_empty() {
-        detector_config = detector_config.with_ner_labels(config.ner.labels.clone());
-    }
-
-    if let Some(ref cache_dir) = config.ner.cache_dir {
-        detector_config = detector_config.with_ner_cache_dir(cache_dir);
-    }
-
-    detector_config = apply_ner_backend(detector_config, &config.ner);
-
-    let detector = Detector::new(&detector_config);
+    let detector = Detector::new(&detector_config)?;
     debug!("Active patterns: {:?}", detector.active_patterns());
 
     if detector.ner_enabled() {
@@ -1222,8 +1297,32 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
             }
             (out, reps)
         }
+        FormatArg::Jsonl => {
+            let (mut staged, replacements, replacement_count) = stage_jsonl_anon(
+                reader
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("text reader unavailable"))?,
+                &detector,
+                &mut replacer,
+                &cmd,
+            )?;
+            if let Some(ref key_path) = cmd.key_file {
+                write_key_file(
+                    key_path,
+                    &replacements,
+                    &session,
+                    &replacer_config,
+                    cmd.context.as_deref(),
+                )?;
+            }
+            publish_staged(cmd.output.as_deref(), &mut staged)?;
+            if !common.quiet {
+                eprintln!("Anonymized {replacement_count} PII occurrences");
+            }
+            return Ok(());
+        }
         FormatArg::Text => {
-            let matches = detector.detect(&input_text);
+            let matches = detector.detect(&input_text)?;
             info!("Found {} PII matches", matches.len());
 
             if matches.is_empty() {
@@ -1280,47 +1379,15 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
     clippy::needless_pass_by_value,
     reason = "CLI command struct consumed by handler"
 )]
-fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result<()> {
+fn handle_anon_streaming(
+    common: &CommonOpts,
+    config: &Config,
+    cmd: AnonCommand,
+    reader: input::TextReader,
+    detector_config: DetectorConfig,
+) -> Result<()> {
     use streaming::{StreamConfig, StreamFormat};
-
-    // Build detector config
-    let min_confidence = cmd.min_confidence.into();
-    let mut detector_config = DetectorConfig::default().with_min_confidence(min_confidence);
-
-    if let Some(ref patterns) = cmd.patterns {
-        detector_config = detector_config.with_patterns(patterns.iter().cloned());
-    } else if !config.detection.enabled_patterns.is_empty() {
-        detector_config =
-            detector_config.with_patterns(config.detection.enabled_patterns.iter().cloned());
-    }
-
-    let mut excluded: Vec<String> = config.detection.disabled_patterns.clone();
-    if let Some(ref exclude) = cmd.exclude {
-        excluded.extend(exclude.iter().cloned());
-    }
-    if !excluded.is_empty() {
-        detector_config = detector_config.without_patterns(excluded);
-    }
-
-    // NER config
-    let ner_enabled = if cmd.no_ner {
-        false
-    } else if cmd.ner {
-        true
-    } else {
-        config.ner.enabled
-    };
-    detector_config = detector_config.with_ner(ner_enabled);
-
-    if let Some(ref model) = cmd.ner_model {
-        detector_config = detector_config.with_ner_model(model);
-    }
-    if let Some(threshold) = cmd.ner_threshold {
-        detector_config = detector_config.with_ner_threshold(threshold);
-    }
-    detector_config = detector_config.with_ner_recall_first(config.ner.recall_first);
-
-    detector_config = apply_ner_backend(detector_config, &config.ner);
+    let ner_enabled = detector_config.ner_enabled;
 
     // Build replacer config
     let strategy: ReplacementStrategy = cmd.strategy.into();
@@ -1341,26 +1408,12 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
         Session::new(None)
     };
 
-    // Honor the input/output/format flags in stream mode instead of silently
-    // ignoring them. Input defaults to stdin, output to stdout.
-    let format = cmd
-        .format
-        .unwrap_or_else(|| detect_format(cmd.input.as_ref()));
-    let stream_format = match format {
-        FormatArg::Json => StreamFormat::Json,
-        FormatArg::Text => StreamFormat::Text,
-    };
-    if cmd.json_coverage && stream_format != StreamFormat::Json {
-        return Err(anyhow!(
-            "--json-coverage requires --format json with --stream"
-        ));
-    }
-
+    // Structured input uses the complete-scan staging path; this is text only.
     let stream_config = StreamConfig {
         detector_config: detector_config.clone(),
         replacer_config: replacer_config.clone(),
         session_id: Some(session.id.clone()),
-        format: stream_format,
+        format: StreamFormat::Text,
         seed_mappings: load_seed_mappings(cmd.key_file.as_ref()),
         path_selector: build_path_selector(&cmd.include_paths, &cmd.exclude_paths)?,
         json_coverage: cmd.json_coverage,
@@ -1370,35 +1423,16 @@ fn handle_anon_streaming(common: &CommonOpts, config: &Config, cmd: AnonCommand)
     let rt = tokio::runtime::Runtime::new().with_context(|| "Failed to create async runtime")?;
 
     let stats = rt.block_on(async {
-        // Build the async reader/stream from INPUT (or stdin).
-        let input = cmd.input.as_ref();
-        let quiet = common.quiet;
-        let result = if let Some(path) = input {
-            let file = tokio::fs::File::open(path)
-                .await
-                .with_context(|| format!("Failed to open input file: {}", path.display()))?;
-            run_anon_stream(
-                ner_enabled,
-                stream_config,
-                &replacer_config,
-                &session,
-                quiet,
-                file,
-                &cmd,
-            )
-            .await
-        } else {
-            run_anon_stream(
-                ner_enabled,
-                stream_config,
-                &replacer_config,
-                &session,
-                quiet,
-                tokio::io::stdin(),
-                &cmd,
-            )
-            .await
-        };
+        let result = run_anon_stream(
+            ner_enabled,
+            stream_config,
+            &replacer_config,
+            &session,
+            common.quiet,
+            input::BlockingReader(reader),
+            &cmd,
+        )
+        .await;
         result.map_err(|e| anyhow!("{e}"))
     })?;
 
@@ -1429,13 +1463,14 @@ async fn run_anon_stream<R>(
 where
     R: tokio::io::AsyncRead + Unpin + Send + 'static,
 {
-    // Build the output writer: explicit -o file, else stdout.
-    let writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send> = match cmd.output.as_ref() {
-        Some(path) => Box::new(
-            tokio::fs::File::create(path)
-                .await
-                .with_context(|| format!("Failed to create output file: {}", path.display()))?,
-        ),
+    // Do not truncate an existing destination until the complete scan succeeds.
+    let staged = cmd
+        .output
+        .as_ref()
+        .map(|path| tempfile::NamedTempFile::new_in(output_parent(path)))
+        .transpose()?;
+    let writer: Box<dyn tokio::io::AsyncWrite + Unpin + Send> = match staged.as_ref() {
+        Some(staged) => Box::new(tokio::fs::File::from_std(staged.reopen()?)),
         None => Box::new(tokio::io::stdout()),
     };
 
@@ -1477,6 +1512,12 @@ where
         }
     }
 
+    if let (Some(staged), Some(path)) = (staged, cmd.output.as_ref()) {
+        staged.as_file().sync_all()?;
+        staged
+            .persist(path)
+            .map_err(|_| anyhow!("failed to publish completed output"))?;
+    }
     Ok(stats)
 }
 
@@ -1522,32 +1563,78 @@ fn restoration_mappings(replacements: &[engine::Replacement]) -> Result<Vec<(&st
     Ok(mappings)
 }
 
-/// Restore aliases against the input once; inserted originals are never scanned.
-fn restore_text_once(text: &str, mappings: &[(&str, &str)]) -> Result<(String, usize)> {
-    if mappings.is_empty() {
-        return Ok((text.to_string(), 0));
+/// Compile once for every decoded leaf/record; inserted originals are never scanned.
+struct TextRestorer<'a> {
+    originals: std::collections::HashMap<&'a str, &'a str>,
+    pattern: regex::Regex,
+}
+
+impl<'a> TextRestorer<'a> {
+    fn new(mappings: &[(&'a str, &'a str)]) -> Result<Self> {
+        if mappings.is_empty() {
+            anyhow::bail!("no restoration aliases");
+        }
+        let originals = mappings.iter().copied().collect();
+        let alternatives: Vec<String> = mappings
+            .iter()
+            .map(|(alias, _)| {
+                let escaped = regex::escape(alias);
+                if alias.len() <= 3 {
+                    format!(r"\b{escaped}\b")
+                } else {
+                    escaped
+                }
+            })
+            .collect();
+        let pattern = regex::Regex::new(&alternatives.join("|"))
+            .map_err(|_| anyhow!("failed to prepare restoration aliases"))?;
+        Ok(Self { originals, pattern })
     }
-    let originals: std::collections::HashMap<&str, &str> = mappings.iter().copied().collect();
-    let alternatives: Vec<String> = mappings
-        .iter()
-        .map(|(alias, _)| {
-            let escaped = regex::escape(alias);
-            if alias.len() <= 3 {
-                format!(r"\b{escaped}\b")
-            } else {
-                escaped
-            }
-        })
-        .collect();
-    let pattern = regex::Regex::new(&alternatives.join("|"))
-        .context("Failed to compile restoration aliases")?;
-    let mut count = 0;
-    let restored = pattern.replace_all(text, |matched: &regex::Captures<'_>| {
-        count += 1;
-        // Every matched branch is one of the escaped literal aliases above.
-        originals[&matched[0]].to_string()
-    });
-    Ok((restored.into_owned(), count))
+
+    fn restore(&self, text: &str) -> (String, usize) {
+        let mut count = 0;
+        let restored = self
+            .pattern
+            .replace_all(text, |matched: &regex::Captures<'_>| {
+                count += 1;
+                self.originals[&matched[0]].to_string()
+            });
+        (restored.into_owned(), count)
+    }
+}
+
+fn restore_json_once(
+    input: &str,
+    restorer: &TextRestorer<'_>,
+) -> Result<(serde_json::Value, usize)> {
+    let mut value = serde_json::from_str(input::structured_text(input)).map_err(|error| {
+        anyhow!(
+            "invalid JSON at line {}, column {}",
+            error.line(),
+            error.column()
+        )
+    })?;
+    let count = restore_json_value(&mut value, restorer);
+    Ok((value, count))
+}
+
+fn restore_json_value(value: &mut serde_json::Value, restorer: &TextRestorer<'_>) -> usize {
+    match value {
+        serde_json::Value::String(text) => {
+            let (restored, count) = restorer.restore(text);
+            *text = restored;
+            count
+        }
+        serde_json::Value::Array(values) => values
+            .iter_mut()
+            .map(|value| restore_json_value(value, restorer))
+            .sum(),
+        serde_json::Value::Object(values) => values
+            .values_mut()
+            .map(|value| restore_json_value(value, restorer))
+            .sum(),
+        _ => 0,
+    }
 }
 
 #[expect(
@@ -1580,12 +1667,18 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
         .as_ref()
         .and_then(|p| engine::office::sniff_path(p));
 
-    // Read input
-    let input_text = if office_fmt.is_some() {
-        String::new()
+    let (format, mut reader) = if office_fmt.is_some() {
+        if cmd.format.is_some() {
+            anyhow::bail!(
+                "--format overrides are only supported for textual inputs, not document handlers"
+            );
+        }
+        (FormatArg::Text, None)
     } else {
-        read_input(cmd.input.as_ref())?
+        let (format, reader) = input::open(cmd.input.as_deref(), cmd.format)?;
+        (format, Some(reader))
     };
+    let input_text = read_non_jsonl(&mut reader, format, false)?;
 
     // Use the shared loader: malformed or ambiguous mappings must fail before
     // any payload is restored, rather than silently skipping invalid entries.
@@ -1630,8 +1723,40 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
         return Ok(());
     }
 
-    let (restored, restored_count) = restore_text_once(&input_text, &all_mappings)?;
-    write_output(cmd.output.as_ref(), &restored)?;
+    let restorer = TextRestorer::new(&all_mappings)?;
+    let restored_count = match format {
+        FormatArg::Jsonl => {
+            let mut staged = tempfile::tempfile()?;
+            let mut count = 0;
+            for_each_jsonl(
+                reader
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("text reader unavailable"))?,
+                |_, text| {
+                    let (restored, found) = restore_json_once(text, &restorer)?;
+                    serde_json::to_writer(&mut staged, &restored)?;
+                    writeln!(staged)?;
+                    count += found;
+                    Ok(())
+                },
+            )?;
+            publish_staged(cmd.output.as_deref(), &mut staged)?;
+            count
+        }
+        FormatArg::Json => {
+            let (restored, count) = restore_json_once(&input_text, &restorer)?;
+            write_output(
+                cmd.output.as_ref(),
+                &serde_json::to_string_pretty(&restored)?,
+            )?;
+            count
+        }
+        FormatArg::Text => {
+            let (restored, count) = restorer.restore(&input_text);
+            write_output(cmd.output.as_ref(), &restored)?;
+            count
+        }
+    };
 
     if !common.quiet {
         eprintln!("Restored {restored_count} PII values");
@@ -1650,10 +1775,17 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
 ///
 /// The original input is never rewritten -- `decide` only reports decisions.
 #[cfg(feature = "decision")]
-fn handle_decide(_common: &CommonOpts, config: &Config, cmd: &DecideCommand) -> Result<()> {
+fn handle_decide(common: &CommonOpts, config: &Config, cmd: &DecideCommand) -> Result<()> {
     use engine::DecisionGate;
 
-    let input_text = read_input(cmd.input.as_ref())?;
+    let (format, mut reader) = input::open(cmd.input.as_deref(), cmd.format)?;
+    if !cmd.jsonl && format != FormatArg::Text {
+        anyhow::bail!(
+            "decide requires --format text or --jsonl text-envelope batch input; structured documents are not supported"
+        );
+    }
+    let mut input_text = String::new();
+    reader.read_to_string(&mut input_text)?;
 
     // Resolve the decision configuration: CLI args override config.
     let mut dc = config.decision.clone();
@@ -1683,27 +1815,31 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: &DecideCommand) -> 
         // Build the Detector (and its NER model) ONCE and reuse it across every
         // chunk. Previously each chunk re-created the Detector, re-loading the
         // ONNX NER model (~2s) per line -- the real per-call cost.
-        let detector = build_decide_detector(config, cmd);
+        let detector = build_decide_detector(config, cmd)?;
         // Collect all chunks, run the NER/token detector in one batched padded
         // forward pass, then adjudicate each span per chunk. The batched NER
         // amortizes ONNX per-call overhead across the whole input.
         let mut chunks: Vec<String> = Vec::new();
-        for line in input_text.lines() {
+        for (line_number, line) in input::structured_text(&input_text).lines().enumerate() {
             let line = line.trim();
             if line.is_empty() {
                 continue;
             }
-            chunks.push(match serde_json::from_str::<serde_json::Value>(line) {
-                Ok(v) => v
-                    .get("text")
-                    .and_then(|t| t.as_str())
-                    .unwrap_or_default()
-                    .to_string(),
-                Err(_) => line.to_string(),
-            });
+            let invalid = || {
+                anyhow!(
+                    "invalid text-envelope JSONL record at line {}",
+                    line_number + 1
+                )
+            };
+            let value: serde_json::Value = serde_json::from_str(line).map_err(|_| invalid())?;
+            let text = value
+                .get("text")
+                .and_then(serde_json::Value::as_str)
+                .ok_or_else(invalid)?;
+            chunks.push(text.to_owned());
         }
         let chunk_refs: Vec<&str> = chunks.iter().map(std::string::String::as_str).collect();
-        let all_matches = detector.detect_batch(&chunk_refs);
+        let all_matches = detector.detect_batch(&chunk_refs)?;
         for (i, chunk) in chunks.iter().enumerate() {
             let matches = all_matches.get(i).cloned().unwrap_or_default();
             let candidates = gate.candidates(chunk, &matches);
@@ -1714,10 +1850,10 @@ fn handle_decide(_common: &CommonOpts, config: &Config, cmd: &DecideCommand) -> 
     }
 
     let gate = DecisionGate::new(dc);
-    let detector = build_decide_detector(config, cmd);
+    let detector = build_decide_detector(config, cmd)?;
     let decisions = decide_one(&gate, &detector, &input_text)?;
 
-    if cmd.output_json {
+    if cmd.output_json || common.json {
         println!("{}", serde_json::to_string_pretty(&decisions)?);
     } else {
         for d in &decisions {
@@ -1746,7 +1882,7 @@ fn decide_one(
     detector: &Detector,
     input_text: &str,
 ) -> Result<Vec<engine::Decision>> {
-    let matches = detector.detect(input_text);
+    let matches = detector.detect(input_text)?;
     let candidates = gate.candidates(input_text, &matches);
     gate.adjudicate(input_text, candidates)
 }
@@ -1754,7 +1890,7 @@ fn decide_one(
 /// Build the detector configuration used by `decide`/`detect` from the config
 /// and CLI flags (enabled/disabled patterns, min confidence, NER backend).
 #[cfg(feature = "decision")]
-fn build_decide_detector(config: &Config, cmd: &DecideCommand) -> Detector {
+fn build_decide_detector(config: &Config, cmd: &DecideCommand) -> Result<Detector> {
     let min_confidence = config.detection.min_confidence.into();
     let mut detector_config = DetectorConfig::default().with_min_confidence(min_confidence);
     if !config.detection.enabled_patterns.is_empty() {
@@ -1767,17 +1903,11 @@ fn build_decide_detector(config: &Config, cmd: &DecideCommand) -> Detector {
     }
     let ner_enabled = !cmd.no_ner && config.ner.enabled;
     detector_config = detector_config.with_ner(ner_enabled);
-    detector_config = apply_ner_backend(detector_config, &config.ner);
-    Detector::new(&detector_config)
+    detector_config = configure_ner(detector_config, &config.ner, None, None)?;
+    Ok(Detector::new(&detector_config)?)
 }
 
 fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Result<()> {
-    // Check for streaming mode
-    #[cfg(feature = "streaming")]
-    if cmd.stream {
-        return handle_detect_streaming(common, config, cmd);
-    }
-
     #[cfg(not(feature = "streaming"))]
     if cmd.stream {
         return Err(anyhow!(
@@ -1797,6 +1927,43 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
         .input
         .as_ref()
         .is_some_and(|p| engine::pdf::is_pdf_path(p));
+    #[cfg(feature = "ocr")]
+    let is_img_input = sniff_image(cmd.input.as_ref()).is_some();
+    #[cfg(not(feature = "ocr"))]
+    let is_img_input = false;
+    let binary_input = office_fmt.is_some() || is_pdf || is_img_input;
+    let (format, mut reader) = if binary_input {
+        if cmd.stream {
+            anyhow::bail!("document inputs do not support --stream");
+        }
+        (FormatArg::Text, None)
+    } else {
+        let (format, reader) = input::open(cmd.input.as_deref(), cmd.format)?;
+        (format, Some(reader))
+    };
+    if binary_input && cmd.format.is_some() {
+        anyhow::bail!(
+            "--format overrides are only supported for textual inputs, not document handlers"
+        );
+    }
+    if format == FormatArg::Text && (!cmd.include_paths.is_empty() || !cmd.exclude_paths.is_empty())
+    {
+        anyhow::bail!("JSON path selection requires JSON or JSONL input");
+    }
+    #[cfg(feature = "streaming")]
+    if cmd.stream {
+        // Explicit streaming audit combinations are rejected, never silently ignored.
+        if cmd.json_coverage || !cmd.fail_on.is_empty() || cmd.summary_json || cmd.summary {
+            anyhow::bail!(
+                "--json-coverage, --fail-on and summaries are not supported with detect --stream; omit --stream to use them"
+            );
+        }
+        if common.json || common.yaml {
+            anyhow::bail!(
+                "machine-readable output is not supported with detect --stream; omit --stream"
+            );
+        }
+    }
     let input_text = if let Some(fmt) = office_fmt {
         let path = cmd
             .input
@@ -1850,24 +2017,16 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
                 .map_err(|e| anyhow!("OCR failed: {e}"))?;
             engine::ocr::assemble_text(&recognized).text
         } else {
-            read_input(cmd.input.as_ref())?
+            read_non_jsonl(&mut reader, format, cmd.stream)?
         }
         #[cfg(not(feature = "ocr"))]
-        read_input(cmd.input.as_ref())?
+        read_non_jsonl(&mut reader, format, cmd.stream)?
     };
-
-    #[cfg(feature = "ocr")]
-    let is_img_input = sniff_image(cmd.input.as_ref()).is_some();
-    #[cfg(not(feature = "ocr"))]
-    let is_img_input = false;
-
-    // Determine format (explicit or auto-detect from file extension)
-    let format = if office_fmt.is_some() || is_pdf || is_img_input {
-        FormatArg::Text
-    } else {
-        cmd.format
-            .unwrap_or_else(|| detect_format(cmd.input.as_ref()))
-    };
+    if format == FormatArg::Text
+        && (!cmd.include_paths.is_empty() || !cmd.exclude_paths.is_empty() || cmd.json_coverage)
+    {
+        anyhow::bail!("JSON path selection/coverage requires JSON or JSONL input");
+    }
 
     // Resolve ruleset or quick flags first
     let (ruleset_patterns, ruleset_excluded, ruleset_confidence, ruleset_ner_mode) =
@@ -1929,39 +2088,31 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
         config.ner.enabled
     };
 
-    detector_config = detector_config.with_ner(ner_enabled);
-
-    if let Some(ref model) = cmd.ner_model {
-        detector_config = detector_config.with_ner_model(model);
-    } else if !config.ner.model.is_empty() {
-        detector_config = detector_config.with_ner_model(&config.ner.model);
+    detector_config = configure_ner(
+        detector_config.with_ner(ner_enabled),
+        &config.ner,
+        cmd.ner_model.as_deref(),
+        cmd.ner_threshold,
+    )?;
+    #[cfg(feature = "streaming")]
+    if cmd.stream && format != FormatArg::Json {
+        return handle_detect_streaming(
+            common,
+            cmd,
+            reader.ok_or_else(|| anyhow!("text reader unavailable"))?,
+            format,
+            detector_config,
+        );
     }
 
-    if let Some(threshold) = cmd.ner_threshold {
-        detector_config = detector_config.with_ner_threshold(threshold);
-    } else if config.ner.threshold > 0.0 {
-        detector_config = detector_config.with_ner_threshold(config.ner.threshold);
-    }
-    detector_config = detector_config.with_ner_recall_first(config.ner.recall_first);
-
-    if !config.ner.labels.is_empty() {
-        detector_config = detector_config.with_ner_labels(config.ner.labels.clone());
-    }
-
-    if let Some(ref cache_dir) = config.ner.cache_dir {
-        detector_config = detector_config.with_ner_cache_dir(cache_dir);
-    }
-
-    detector_config = apply_ner_backend(detector_config, &config.ner);
-
-    let detector = Detector::new(&detector_config);
+    let detector = Detector::new(&detector_config)?;
 
     // Validate the complete policy before emitting findings or a clean manifest.
     let fail_policy = engine::FailOnPolicy::new(
         &cmd.fail_on,
         config
             .ner
-            .labels
+            .effective_gliner_labels()
             .iter()
             .filter(|_| ner_enabled)
             .map(String::as_str),
@@ -2009,8 +2160,19 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
                 ));
             }
         }
+        FormatArg::Jsonl => {
+            detect_jsonl(
+                common,
+                &cmd,
+                reader
+                    .as_mut()
+                    .ok_or_else(|| anyhow!("text reader unavailable"))?,
+                &detector,
+                &fail_policy,
+            )?;
+        }
         FormatArg::Text => {
-            let matches = detector.detect(&input_text);
+            let matches = detector.detect(&input_text)?;
             let findings: Vec<(&str, PiiCategory)> = matches
                 .iter()
                 .map(|m| (m.pattern_name.as_str(), m.category))
@@ -2053,60 +2215,26 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
     clippy::needless_pass_by_value,
     reason = "CLI command struct consumed by handler"
 )]
-fn handle_detect_streaming(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Result<()> {
+fn handle_detect_streaming(
+    common: &CommonOpts,
+    cmd: DetectCommand,
+    reader: input::TextReader,
+    format: FormatArg,
+    detector_config: DetectorConfig,
+) -> Result<()> {
     use streaming::StreamConfig;
-
-    if cmd.json_coverage || !cmd.fail_on.is_empty() || cmd.summary_json {
-        return Err(anyhow!(
-            "--json-coverage, --fail-on and --summary-json are not supported with detect --stream; omit --stream to use them"
-        ));
-    }
-
-    // Build detector config
-    let min_confidence = cmd.min_confidence.into();
-    let mut detector_config = DetectorConfig::default().with_min_confidence(min_confidence);
-
-    if let Some(ref patterns) = cmd.patterns {
-        detector_config = detector_config.with_patterns(patterns.iter().cloned());
-    } else if !config.detection.enabled_patterns.is_empty() {
-        detector_config =
-            detector_config.with_patterns(config.detection.enabled_patterns.iter().cloned());
-    }
-
-    let mut excluded: Vec<String> = config.detection.disabled_patterns.clone();
-    if let Some(ref exclude) = cmd.exclude {
-        excluded.extend(exclude.iter().cloned());
-    }
-    if !excluded.is_empty() {
-        detector_config = detector_config.without_patterns(excluded);
-    }
-
-    // NER config
-    let ner_enabled = if cmd.no_ner {
-        false
-    } else if cmd.ner {
-        true
-    } else {
-        config.ner.enabled
-    };
-    detector_config = detector_config.with_ner(ner_enabled);
-
-    if let Some(ref model) = cmd.ner_model {
-        detector_config = detector_config.with_ner_model(model);
-    }
-    if let Some(threshold) = cmd.ner_threshold {
-        detector_config = detector_config.with_ner_threshold(threshold);
-    }
-
-    detector_config = apply_ner_backend(detector_config, &config.ner);
 
     let stream_config = StreamConfig {
         detector_config,
         replacer_config: ReplacerConfig::default(),
         session_id: None,
-        format: streaming::StreamFormat::Text,
+        format: if format == FormatArg::Text {
+            streaming::StreamFormat::Text
+        } else {
+            streaming::StreamFormat::Json
+        },
         seed_mappings: Vec::new(),
-        path_selector: engine::PathSelector::default(),
+        path_selector: build_path_selector(&cmd.include_paths, &cmd.exclude_paths)?,
         json_coverage: false,
     };
 
@@ -2114,17 +2242,13 @@ fn handle_detect_streaming(common: &CommonOpts, config: &Config, cmd: DetectComm
     let rt = tokio::runtime::Runtime::new().with_context(|| "Failed to create async runtime")?;
 
     let stats = rt.block_on(async {
-        let reader: Box<dyn tokio::io::AsyncRead + Unpin + Send> = match cmd.input.as_ref() {
-            Some(path) => Box::new(
-                tokio::fs::File::open(path)
-                    .await
-                    .with_context(|| format!("Failed to open input file: {}", path.display()))?,
-            ),
-            None => Box::new(tokio::io::stdin()),
-        };
-        streaming::stream_detect(stream_config, reader, tokio::io::stdout())
-            .await
-            .map_err(|e| anyhow!("Streaming error: {e}"))
+        streaming::stream_detect(
+            stream_config,
+            input::BlockingReader(reader),
+            tokio::io::stdout(),
+        )
+        .await
+        .map_err(|e| anyhow!("Streaming error: {e}"))
     })?;
 
     if !common.quiet {
@@ -2162,33 +2286,10 @@ fn output_text_matches(common: &CommonOpts, matches: &[PiiMatch]) -> Result<()> 
 
 fn output_json_matches(common: &CommonOpts, matches: &[JsonPiiMatch]) -> Result<()> {
     if common.json {
-        // Create serializable output
-        let output: Vec<_> = matches
-            .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "path": m.path,
-                    "pattern_name": m.pii_match.pattern_name,
-                    "matched_text": m.pii_match.matched_text,
-                    "confidence": m.pii_match.confidence,
-                    "category": m.pii_match.category,
-                })
-            })
-            .collect();
+        let output: Vec<_> = matches.iter().map(json_match_value).collect();
         println!("{}", serde_json::to_string_pretty(&output)?);
     } else if common.yaml {
-        let output: Vec<_> = matches
-            .iter()
-            .map(|m| {
-                serde_json::json!({
-                    "path": m.path,
-                    "pattern_name": m.pii_match.pattern_name,
-                    "matched_text": m.pii_match.matched_text,
-                    "confidence": m.pii_match.confidence,
-                    "category": m.pii_match.category,
-                })
-            })
-            .collect();
+        let output: Vec<_> = matches.iter().map(json_match_value).collect();
         println!("{}", serde_yaml::to_string(&output)?);
     } else if matches.is_empty() {
         println!("No PII detected");
@@ -2372,8 +2473,33 @@ fn handle_patterns(common: &CommonOpts, cmd: PatternsCommand) -> Result<()> {
     Ok(())
 }
 
+fn print_ner_status(
+    common: &CommonOpts,
+    ner: &config::NerConfig,
+    model: Option<&str>,
+    threshold: Option<f32>,
+) -> Result<()> {
+    let mut ner = ner.clone();
+    if let Some(threshold) = threshold {
+        ner.threshold = threshold;
+    }
+    let status = ner.resolved(model)?.safe_status()?;
+    if common.yaml {
+        println!("{}", serde_yaml::to_string(&status)?);
+    } else {
+        println!("{}", serde_json::to_string_pretty(&status)?);
+    }
+    Ok(())
+}
+
 fn handle_config(common: &CommonOpts, config: &Config, cmd: ConfigCommand) -> Result<()> {
     match cmd.action.unwrap_or(ConfigAction::Show) {
+        ConfigAction::NerStatus {
+            ner_model,
+            ner_threshold,
+        } => {
+            print_ner_status(common, &config.ner, ner_model.as_deref(), ner_threshold)?;
+        }
         ConfigAction::Show => {
             if common.json {
                 println!("{}", serde_json::to_string_pretty(&config)?);
@@ -3049,20 +3175,6 @@ fn derive_document_output(path: &std::path::Path, tag: &str) -> PathBuf {
     path.with_file_name(format!("{stem}.{tag}.{ext}"))
 }
 
-fn read_input(path: Option<&PathBuf>) -> Result<String> {
-    if let Some(p) = path {
-        fs::read_to_string(p).with_context(|| format!("Failed to read input file: {}", p.display()))
-    } else {
-        let stdin = io::stdin();
-        if stdin.is_terminal() {
-            eprintln!("Reading from stdin (Ctrl+D to finish)...");
-        }
-        let mut buffer = String::new();
-        stdin.lock().read_to_string(&mut buffer)?;
-        Ok(buffer)
-    }
-}
-
 fn write_output(path: Option<&PathBuf>, content: &str) -> Result<()> {
     if let Some(p) = path {
         fs::write(p, content)
@@ -3149,15 +3261,244 @@ fn create_json_summary(matches: &[JsonPiiMatch]) -> DetectionSummary {
     }
 }
 
-/// Detect format from file extension.
-fn detect_format(path: Option<&PathBuf>) -> FormatArg {
-    match path {
-        Some(p) => match p.extension().and_then(|e| e.to_str()) {
-            Some("json") => FormatArg::Json,
-            _ => FormatArg::Text,
-        },
-        None => FormatArg::Text, // Default to text for stdin
+fn read_non_jsonl(
+    reader: &mut Option<input::TextReader>,
+    format: FormatArg,
+    streaming: bool,
+) -> Result<String> {
+    let mut text = String::new();
+    if !(format == FormatArg::Jsonl || streaming && format == FormatArg::Text)
+        && let Some(reader) = reader.as_mut()
+    {
+        reader.read_to_string(&mut text)?;
     }
+    Ok(text)
+}
+
+/// Per-record memory is capped; prior bytes are never discarded during sniffing.
+fn for_each_jsonl(
+    reader: &mut input::TextReader,
+    mut visit: impl FnMut(usize, &str) -> Result<()>,
+) -> Result<()> {
+    const MAX_RECORD_BYTES: u64 = 16 * 1024 * 1024;
+    let mut line = String::new();
+    let mut line_number = 0;
+    loop {
+        line.clear();
+        let count = reader
+            .by_ref()
+            .take(MAX_RECORD_BYTES + 1)
+            .read_line(&mut line)
+            .map_err(|_| anyhow!("failed to read JSONL line {}", line_number + 1))?;
+        if count == 0 {
+            break;
+        }
+        line_number += 1;
+        if count as u64 > MAX_RECORD_BYTES {
+            anyhow::bail!("JSONL line {line_number} exceeds the 16 MiB record limit");
+        }
+        let text = if line_number == 1 {
+            input::structured_text(&line)
+        } else {
+            line.trim()
+        };
+        if text.trim().is_empty() {
+            continue;
+        }
+        serde_json::from_str::<serde_json::Value>(text).map_err(|err| {
+            anyhow!(
+                "invalid JSONL record at line {line_number}, column {}",
+                err.column()
+            )
+        })?;
+        visit(line_number, text)
+            .with_context(|| format!("JSONL processing failed at line {line_number}"))?;
+    }
+    Ok(())
+}
+
+fn output_parent(path: &Path) -> &Path {
+    path.parent()
+        .filter(|parent| !parent.as_os_str().is_empty())
+        .unwrap_or_else(|| Path::new("."))
+}
+
+/// Publish only a completed result. Spooling is owner-only and outside git.
+fn publish_staged(path: Option<&Path>, staged: &mut fs::File) -> Result<()> {
+    use std::io::{Seek, SeekFrom};
+    staged.seek(SeekFrom::Start(0))?;
+    if let Some(path) = path {
+        let mut output = tempfile::NamedTempFile::new_in(output_parent(path))?;
+        io::copy(staged, output.as_file_mut())?;
+        output.as_file().sync_all()?;
+        output
+            .persist(path)
+            .map_err(|_| anyhow!("failed to publish completed output"))?;
+    } else {
+        io::copy(staged, &mut io::stdout().lock())?;
+        io::stdout().flush()?;
+    }
+    Ok(())
+}
+
+fn print_record_coverage(line: usize, coverage: &engine::CoverageReport) {
+    let coverage = engine::CoverageReport {
+        scanned: coverage
+            .scanned
+            .iter()
+            .map(|path| format!("record[{line}].{path}"))
+            .collect(),
+        skipped: coverage
+            .skipped
+            .iter()
+            .map(|path| format!("record[{line}].{path}"))
+            .collect(),
+    };
+    print_coverage(&coverage);
+}
+
+fn stage_jsonl_anon(
+    reader: &mut input::TextReader,
+    detector: &Detector,
+    replacer: &mut Replacer,
+    cmd: &AnonCommand,
+) -> Result<(fs::File, Vec<engine::Replacement>, usize)> {
+    let selector = build_path_selector(&cmd.include_paths, &cmd.exclude_paths)?;
+    let mut staged = tempfile::tempfile()?;
+    let mut replacements = Vec::new();
+    let mut count = 0;
+    for_each_jsonl(reader, |line, text| {
+        let (out, reps, coverage) =
+            process_json_with_selector(text, detector, replacer, &selector)?;
+        let value: serde_json::Value = serde_json::from_str(&out)?;
+        serde_json::to_writer(&mut staged, &value)?;
+        writeln!(staged)?;
+        count += reps.len();
+        if cmd.key_file.is_some() {
+            replacements.extend(reps);
+        }
+        if cmd.json_coverage {
+            print_record_coverage(line, &coverage);
+        }
+        Ok(())
+    })?;
+    Ok((staged, replacements, count))
+}
+
+fn detect_jsonl(
+    common: &CommonOpts,
+    cmd: &DetectCommand,
+    reader: &mut input::TextReader,
+    detector: &Detector,
+    policy: &engine::FailOnPolicy,
+) -> Result<()> {
+    let selector = build_path_selector(&cmd.include_paths, &cmd.exclude_paths)?;
+    let mut summary = engine::AuditSummary::from_findings(std::iter::empty(), policy);
+    let mut staged = tempfile::tempfile()?;
+    let mut first = true;
+    if common.json {
+        write!(staged, "[")?;
+    }
+    for_each_jsonl(reader, |line, text| {
+        let (matches, coverage) = detect_json_with_selector(text, detector, &selector)?;
+        let partial = engine::AuditSummary::from_findings(
+            matches
+                .iter()
+                .map(|m| (m.pii_match.pattern_name.as_str(), m.pii_match.category)),
+            policy,
+        );
+        merge_audit_summary(&mut summary, partial);
+        if cmd.json_coverage {
+            print_record_coverage(line, &coverage);
+        }
+        if !cmd.summary && !cmd.summary_json {
+            write_record_findings(&mut staged, common, matches, line, &mut first)?;
+        }
+        Ok(())
+    })?;
+    if cmd.summary_json {
+        println!("{}", engine::to_summary_json(&summary)?);
+    } else if cmd.summary {
+        let counts = serde_json::json!({"total":summary.total,"by_pattern":summary.by_pattern});
+        if common.json {
+            println!("{}", serde_json::to_string_pretty(&counts)?);
+        } else if common.yaml {
+            println!("{}", serde_yaml::to_string(&counts)?);
+        } else {
+            println!(
+                "PII Detection Summary (JSONL):\n  Total matches: {}",
+                summary.total
+            );
+            for (name, count) in &summary.by_pattern {
+                println!("  {name}: {count}");
+            }
+        }
+    } else {
+        if common.json {
+            writeln!(staged, "]")?;
+        } else if common.yaml && first {
+            writeln!(staged, "[]")?;
+        } else if !common.yaml {
+            writeln!(staged, "Total: {} matches", summary.total)?;
+        }
+        publish_staged(None, &mut staged)?;
+    }
+    if summary.blocked() {
+        return Err(
+            anyhow::Error::new(ExitError(2)).context("audit gate: sensitive findings present")
+        );
+    }
+    Ok(())
+}
+
+fn merge_audit_summary(summary: &mut engine::AuditSummary, partial: engine::AuditSummary) {
+    summary.total += partial.total;
+    for (name, count) in partial.by_pattern {
+        *summary.by_pattern.entry(name).or_default() += count;
+    }
+    for (name, count) in partial.by_category {
+        *summary.by_category.entry(name).or_default() += count;
+    }
+    summary.blockers.extend(partial.blockers);
+    summary.blockers.sort();
+    summary.blockers.dedup();
+}
+
+fn json_match_value(m: &JsonPiiMatch) -> serde_json::Value {
+    serde_json::json!({"path":m.path,"pattern_name":m.pii_match.pattern_name,"matched_text":m.pii_match.matched_text,
+        "start":m.pii_match.start,"end":m.pii_match.end,"confidence":m.pii_match.confidence,"category":m.pii_match.category})
+}
+
+fn write_record_findings(
+    staged: &mut fs::File,
+    common: &CommonOpts,
+    matches: Vec<JsonPiiMatch>,
+    line: usize,
+    first: &mut bool,
+) -> Result<()> {
+    for mut m in matches {
+        m.path = format!("record[{line}].{}", m.path);
+        if common.json {
+            if !*first {
+                write!(staged, ",")?;
+            }
+            serde_json::to_writer(&mut *staged, &json_match_value(&m))?;
+        } else if common.yaml {
+            write!(
+                staged,
+                "{}",
+                serde_yaml::to_string(&vec![json_match_value(&m)])?
+            )?;
+        } else {
+            writeln!(
+                staged,
+                "[{}] '{}' at {} ({:?})",
+                m.pii_match.pattern_name, m.pii_match.matched_text, m.path, m.pii_match.confidence
+            )?;
+        }
+        *first = false;
+    }
+    Ok(())
 }
 
 /// Build a JSON path selector from CLI include/exclude flags. An empty
@@ -3176,6 +3517,73 @@ fn print_coverage(coverage: &engine::CoverageReport) {
     eprintln!("  skipped: {} path(s)", coverage.skipped_count());
     for p in &coverage.skipped {
         eprintln!("    - {p}");
+    }
+}
+
+#[cfg(all(test, feature = "ner"))]
+mod jsonl_runtime_tests {
+    use super::*;
+    use engine::detector::{NerBackend, tests::injected};
+
+    fn reader() -> input::TextReader {
+        Box::new(io::Cursor::new(
+            b"{\"text\":\"completed@example.com\"}\n{\"text\":\"Alice confidential\"}\n".to_vec(),
+        ))
+    }
+
+    #[test]
+    fn failed_later_record_is_exit_one_not_a_manifest_or_published_sanitization() {
+        let dir = tempfile::tempdir().unwrap();
+        let destination = dir.path().join("destination.jsonl");
+        fs::write(&destination, "existing destination").unwrap();
+        let anon = Cli::try_parse_from([
+            "nym",
+            "anon",
+            "--no-ner",
+            "-o",
+            destination.to_str().unwrap(),
+        ])
+        .unwrap();
+        let Command::Anon(anon) = anon.command else {
+            unreachable!()
+        };
+        let cli = Cli::try_parse_from([
+            "nym",
+            "detect",
+            "--no-ner",
+            "--summary-json",
+            "--fail-on",
+            "identity",
+        ])
+        .unwrap();
+        let Command::Detect(detect) = cli.command else {
+            unreachable!()
+        };
+        let policy = engine::FailOnPolicy::new(&detect.fail_on, std::iter::empty()).unwrap();
+        for backend in [NerBackend::Gliner, NerBackend::TokenClass, NerBackend::Both] {
+            let detector = injected(backend, Some("Alice"), false);
+            let error =
+                detect_jsonl(&cli.common, &detect, &mut reader(), &detector, &policy).unwrap_err();
+            assert_eq!(error_exit_code(&error), 1);
+            assert!(format!("{error:?}").contains("line 2"));
+            assert!(!format!("{error:?}").contains("Alice"));
+            let mut replacer = Replacer::new(ReplacerConfig::default());
+            let error =
+                stage_jsonl_anon(&mut reader(), &detector, &mut replacer, &anon).unwrap_err();
+            assert_eq!(error_exit_code(&error), 1);
+            assert!(!format!("{error:?}").contains("secret-provider-key"));
+            assert_eq!(
+                fs::read_to_string(&destination).unwrap(),
+                "existing destination"
+            );
+            let detector = injected(backend, None, true);
+            let error: anyhow::Error = detector
+                .detect_batch(&["first record", "second confidential record"])
+                .unwrap_err()
+                .into();
+            assert_eq!(error_exit_code(&error), 1);
+            assert!(!format!("{error:?}").contains("confidential"));
+        }
     }
 }
 

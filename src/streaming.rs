@@ -61,6 +61,30 @@ impl From<std::io::Error> for StreamError {
     }
 }
 
+#[cfg(feature = "streaming")]
+impl From<crate::engine::detector::DetectionError> for StreamError {
+    fn from(error: crate::engine::detector::DetectionError) -> Self {
+        Self::Detection(error.to_string())
+    }
+}
+
+#[cfg(feature = "streaming")]
+fn record_error(line: usize, error: impl std::fmt::Display) -> StreamError {
+    // Only privacy-safe engine/format errors may enter this boundary.
+    StreamError::Detection(format!("line {line}: {error}"))
+}
+
+#[cfg(feature = "streaming")]
+fn json_record(line: &str, number: usize) -> StreamResult<&str> {
+    if let Some(without_bom) = line.trim_start().strip_prefix('\u{feff}') {
+        if number != 1 {
+            return Err(record_error(number, "unexpected JSON BOM"));
+        }
+        return Ok(without_bom);
+    }
+    Ok(line)
+}
+
 /// A processed line with its anonymized content and replacements.
 #[cfg(feature = "streaming")]
 #[derive(Debug, Clone)]
@@ -120,6 +144,10 @@ pub struct StreamConfig {
 ///
 /// A stream of `ProcessedLine` results.
 #[cfg(feature = "streaming")]
+#[cfg_attr(
+    not(test),
+    expect(dead_code, reason = "Public line-stream API retained for consumers")
+)]
 pub fn process_stream<'a, R>(
     reader: R,
     config: StreamConfig,
@@ -127,8 +155,24 @@ pub fn process_stream<'a, R>(
 where
     R: AsyncRead + Unpin + Send + 'a,
 {
+    let detector = Detector::new(&config.detector_config);
+    process_stream_with_detector(reader, config, detector)
+}
+
+#[cfg(feature = "streaming")]
+fn process_stream_with_detector<'a, R>(
+    reader: R,
+    config: StreamConfig,
+    detector: Result<Detector, crate::engine::detector::DetectionError>,
+) -> impl Stream<Item = StreamResult<ProcessedLine>> + 'a
+where
+    R: AsyncRead + Unpin + Send + 'a,
+{
     stream! {
-        let detector = Detector::new(&config.detector_config);
+        let detector = match detector {
+            Ok(detector) => detector,
+            Err(error) => { yield Err(error.into()); return; }
+        };
         let replacer_config = config.replacer_config.clone();
 
         let mut replacer = Replacer::new(replacer_config);
@@ -147,7 +191,10 @@ where
             match lines.next_line().await {
                 Ok(Some(line)) => {
                     // Detect PII in this line
-                    let matches = detector.detect(&line);
+                    let matches = match detector.detect(&line) {
+                        Ok(matches) => matches,
+                        Err(error) => { yield Err(error.into()); return; }
+                    };
 
                     if matches.is_empty() {
                         // No PII found, yield line unchanged
@@ -187,6 +234,10 @@ where
 /// stdin-to-stdout all work. Replacements are collected (not written
 /// incrementally) so the caller can persist a key file safely via the keyfile
 /// module, which never truncates an existing mapping.
+///
+/// Earlier completed records may already be written when a later record fails.
+/// The failed record is never emitted. Callers requiring atomic file output
+/// must stage it and publish only on `Ok`; stdout cannot be rolled back.
 #[cfg(feature = "streaming")]
 pub async fn stream_anon<R, W>(
     config: StreamConfig,
@@ -197,23 +248,39 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
+    let detector = Detector::new(&config.detector_config)?;
+    stream_anon_with_detector(config, reader, writer, detector).await
+}
+
+#[cfg(feature = "streaming")]
+async fn stream_anon_with_detector<R, W>(
+    config: StreamConfig,
+    reader: R,
+    writer: W,
+    detector: Detector,
+) -> StreamResult<StreamStats>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
     use futures::StreamExt;
     use tokio::io::AsyncWriteExt;
-
     let mut writer = writer;
     let mut stats = StreamStats::default();
 
     if config.format == StreamFormat::Json {
         // JSONL: each line is a JSON document. Anonymize its string values
         // and emit one JSON document per line.
-        let detector = Detector::new(&config.detector_config);
         let mut replacer = Replacer::new(config.replacer_config.clone());
         if let Some(ref session_id) = config.session_id {
             replacer = replacer.with_session_id(session_id.clone());
         }
         replacer.seed_mappings(&config.seed_mappings);
         let mut lines = BufReader::new(reader).lines();
+        let mut line_number = 0;
         while let Some(line) = lines.next_line().await? {
+            line_number += 1;
+            let line = json_record(&line, line_number)?;
             if line.trim().is_empty() {
                 continue;
             }
@@ -224,7 +291,7 @@ where
                 &mut replacer,
                 &config.path_selector,
             )
-            .map_err(|e| StreamError::Detection(format!("JSON parse failed: {e}")))?;
+            .map_err(|error| record_error(line_number, error))?;
             if config.json_coverage {
                 crate::print_coverage(&coverage);
             }
@@ -242,7 +309,7 @@ where
         return Ok(stats);
     }
 
-    let stream = process_stream(reader, config);
+    let stream = process_stream_with_detector(reader, config, Ok(detector));
     futures::pin_mut!(stream);
 
     while let Some(result) = stream.next().await {
@@ -279,6 +346,9 @@ pub struct StreamStats {
 }
 
 /// Process a reader to a writer for detection only (no replacement).
+/// JSON streams scan selected string values, never keys or raw JSON syntax.
+/// A failure terminates the stream; earlier completed records may be written,
+/// but the failed record contributes no output or successful final statistics.
 #[cfg(feature = "streaming")]
 pub async fn stream_detect<R, W>(
     config: StreamConfig,
@@ -289,10 +359,23 @@ where
     R: AsyncRead + Unpin + Send,
     W: AsyncWrite + Unpin + Send,
 {
-    use tokio::io::AsyncWriteExt;
+    let detector = Detector::new(&config.detector_config)?;
+    stream_detect_with_detector(config, reader, writer, detector).await
+}
 
+#[cfg(feature = "streaming")]
+async fn stream_detect_with_detector<R, W>(
+    config: StreamConfig,
+    reader: R,
+    writer: W,
+    detector: Detector,
+) -> StreamResult<StreamStats>
+where
+    R: AsyncRead + Unpin + Send,
+    W: AsyncWrite + Unpin + Send,
+{
+    use tokio::io::AsyncWriteExt;
     let mut writer = writer;
-    let detector = Detector::new(&config.detector_config);
     let buf_reader = BufReader::new(reader);
     let mut lines = buf_reader.lines();
 
@@ -303,9 +386,34 @@ where
         match lines.next_line().await {
             Ok(Some(line)) => {
                 line_number += 1;
+                let line = if config.format == StreamFormat::Json {
+                    json_record(&line, line_number)?
+                } else {
+                    &line
+                };
+                if config.format == StreamFormat::Json && line.trim().is_empty() {
+                    continue;
+                }
                 stats.lines_processed += 1;
-
-                let matches = detector.detect(&line);
+                let matches = if config.format == StreamFormat::Json {
+                    let (matches, coverage) = crate::engine::detect_json_with_selector(
+                        line,
+                        &detector,
+                        &config.path_selector,
+                    )
+                    .map_err(|error| record_error(line_number, error))?;
+                    if config.json_coverage {
+                        crate::print_coverage(&coverage);
+                    }
+                    matches
+                        .into_iter()
+                        .map(|matched| matched.pii_match)
+                        .collect()
+                } else {
+                    detector
+                        .detect(line)
+                        .map_err(|error| record_error(line_number, error))?
+                };
 
                 if !matches.is_empty() {
                     stats.pii_found += matches.len();
@@ -338,6 +446,166 @@ where
 mod tests {
     use super::*;
     use futures::StreamExt;
+
+    #[cfg(feature = "ner")]
+    #[tokio::test]
+    async fn initialization_failure_writes_nothing_for_any_backend_or_stream_format() {
+        use crate::engine::detector::NerBackend;
+        let dir = tempfile::tempdir().unwrap();
+        for backend in [NerBackend::Gliner, NerBackend::TokenClass, NerBackend::Both] {
+            for format in [StreamFormat::Text, StreamFormat::Json] {
+                let config = StreamConfig {
+                    format,
+                    detector_config: DetectorConfig::default()
+                        .with_ner(true)
+                        .with_ner_backend(backend)
+                        .with_ner_model(dir.path().to_string_lossy())
+                        .with_ner_token_model(dir.path()),
+                    ..Default::default()
+                };
+                let input = if format == StreamFormat::Text {
+                    "Alice Smith\n"
+                } else {
+                    "{\"name\":\"Alice Smith\"}\n"
+                };
+                let original = b"existing destination".to_vec();
+                let mut output = original.clone();
+                assert!(
+                    stream_anon(config.clone(), input.as_bytes(), &mut output)
+                        .await
+                        .is_err()
+                );
+                assert_eq!(output, original);
+                assert!(
+                    stream_detect(config.clone(), input.as_bytes(), &mut output)
+                        .await
+                        .is_err()
+                );
+                assert_eq!(output, original);
+                assert!(
+                    crate::streaming_ner::stream_anon_ner(config, input.as_bytes(), &mut output)
+                        .await
+                        .is_err()
+                );
+                assert_eq!(output, original);
+            }
+        }
+    }
+
+    #[cfg(feature = "ner")]
+    #[tokio::test]
+    async fn runtime_failure_never_emits_failed_text_or_json_record() {
+        use crate::engine::detector::{NerBackend, tests::injected};
+        for backend in [NerBackend::Gliner, NerBackend::TokenClass, NerBackend::Both] {
+            for format in [StreamFormat::Text, StreamFormat::Json] {
+                let input = if format == StreamFormat::Text {
+                    "Completed record\nAlice Smith\n"
+                } else {
+                    "{\"value\":\"Completed record\"}\n{\"value\":\"Alice Smith\"}\n"
+                };
+                let config = StreamConfig {
+                    format,
+                    ..Default::default()
+                };
+                let mut output = Vec::new();
+                let result = stream_anon_with_detector(
+                    config.clone(),
+                    input.as_bytes(),
+                    &mut output,
+                    injected(backend, Some("Alice"), false),
+                )
+                .await;
+                assert!(result.is_err());
+                assert!(
+                    !output.is_empty(),
+                    "completed records may already be emitted"
+                );
+                assert!(!String::from_utf8_lossy(&output).contains("Alice"));
+                output.clear();
+                let error = stream_detect_with_detector(
+                    config,
+                    input.as_bytes(),
+                    &mut output,
+                    injected(backend, Some("Alice"), false),
+                )
+                .await
+                .unwrap_err();
+                assert!(!String::from_utf8_lossy(&output).contains("Alice"));
+                assert!(!error.to_string().contains("Alice"));
+                assert!(!format!("{error:?}").contains("secret-provider-key"));
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn json_stream_respects_structure_selection_bom_and_crlf() {
+        let input = "\u{feff}\r\n{\"key@example.invalid\":\"safe\",\"secret\":\"alice@example.invalid\",\"skip\":\"bob@example.invalid\"}\r\n\r\n";
+        let config = StreamConfig {
+            format: StreamFormat::Json,
+            path_selector: crate::engine::PathSelector::new(&[], &["skip".into()]).unwrap(),
+            ..Default::default()
+        };
+        let mut output = Vec::new();
+        let stats = stream_detect(config.clone(), input.as_bytes(), &mut output)
+            .await
+            .unwrap();
+        assert_eq!(stats.pii_found, 1);
+        let text = String::from_utf8(output).unwrap();
+        assert!(text.contains("alice@example.invalid"));
+        assert!(!text.contains("key@example.invalid"));
+        assert!(!text.contains("bob@example.invalid"));
+        let mut output = Vec::new();
+        let stats = stream_anon(config, input.as_bytes(), &mut output)
+            .await
+            .unwrap();
+        assert_eq!(stats.lines_processed, 1);
+        let document: serde_json::Value = serde_json::from_slice(&output).unwrap();
+        assert_eq!(document["skip"], "bob@example.invalid");
+        assert_eq!(document["key@example.invalid"], "safe");
+        assert_ne!(document["secret"], "alice@example.invalid");
+    }
+
+    #[tokio::test]
+    async fn json_stream_rejects_bom_after_first_physical_line() {
+        let input = "{}\n\u{feff}{}\n";
+        let config = StreamConfig {
+            format: StreamFormat::Json,
+            ..Default::default()
+        };
+        let mut output = Vec::new();
+        assert!(
+            stream_anon(config.clone(), input.as_bytes(), &mut output)
+                .await
+                .is_err()
+        );
+        output.clear();
+        assert!(
+            stream_detect(config, input.as_bytes(), &mut output)
+                .await
+                .is_err()
+        );
+    }
+
+    #[tokio::test]
+    async fn malformed_json_stream_diagnostics_are_value_free() {
+        let input = "{\"ok\":\"safe\"}\n{\"value\": confidentialCredential}\n";
+        let config = StreamConfig {
+            format: StreamFormat::Json,
+            ..Default::default()
+        };
+        for detect in [false, true] {
+            let mut output = Vec::new();
+            let error = if detect {
+                stream_detect(config.clone(), input.as_bytes(), &mut output).await
+            } else {
+                stream_anon(config.clone(), input.as_bytes(), &mut output).await
+            }
+            .unwrap_err();
+            assert!(error.to_string().contains("line 2"));
+            assert!(!error.to_string().contains("confidentialCredential"));
+            assert!(!format!("{error:?}").contains("confidentialCredential"));
+        }
+    }
 
     #[tokio::test]
     async fn test_process_stream_no_pii() {

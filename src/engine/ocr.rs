@@ -59,13 +59,22 @@ pub struct OcrWord {
 #[derive(Debug, Clone, Deserialize)]
 pub struct OcrOutput {
     #[serde(default)]
-    #[expect(dead_code, reason = "part of the OCR engine contract; nym only consumes `words`")]
+    #[expect(
+        dead_code,
+        reason = "part of the OCR engine contract; nym only consumes `words`"
+    )]
     pub engine: String,
     #[serde(default)]
-    #[expect(dead_code, reason = "part of the OCR engine contract; nym only consumes `words`")]
+    #[expect(
+        dead_code,
+        reason = "part of the OCR engine contract; nym only consumes `words`"
+    )]
     pub width: u32,
     #[serde(default)]
-    #[expect(dead_code, reason = "part of the OCR engine contract; nym only consumes `words`")]
+    #[expect(
+        dead_code,
+        reason = "part of the OCR engine contract; nym only consumes `words`"
+    )]
     pub height: u32,
     pub words: Vec<OcrWord>,
 }
@@ -105,19 +114,17 @@ impl OcrEngine {
                 } else if on_path("tesseract") {
                     EngineKind::Tesseract
                 } else {
-                    return Err(
-                        "no OCR engine found. Install one:\n  \
+                    return Err("no OCR engine found. Install one:\n  \
                          cargo install --path tools/nym-ocr   (PP-OCR, recommended)\n  \
                          or install tesseract, or set [ocr].engine to a custom command"
-                            .into(),
-                    );
+                        .into());
                 }
             }
             "nym-ocr" => EngineKind::Json(vec!["nym-ocr".into(), "{input}".into()]),
             "tesseract" => EngineKind::Tesseract,
-            custom if custom.contains("{input}") => EngineKind::Json(
-                custom.split_whitespace().map(str::to_string).collect(),
-            ),
+            custom if custom.contains("{input}") => {
+                EngineKind::Json(custom.split_whitespace().map(str::to_string).collect())
+            }
             other => {
                 return Err(format!(
                     "unknown OCR engine {other:?} (use auto, nym-ocr, tesseract, \
@@ -144,9 +151,10 @@ impl OcrEngine {
                     }
                 });
                 let program = parts.next().ok_or("empty OCR command template")?;
-                let output = Command::new(&program).args(parts).output().map_err(|e| {
-                    format!("failed to run OCR engine {program:?}: {e}")
-                })?;
+                let output = Command::new(&program)
+                    .args(parts)
+                    .output()
+                    .map_err(|e| format!("failed to run OCR engine {program:?}: {e}"))?;
                 if !output.status.success() {
                     return Err(format!(
                         "OCR engine {program:?} failed: {}",
@@ -243,22 +251,23 @@ impl OcrEngine {
     /// Run a JSON engine command with a list of `{input}`-replaced paths and
     /// parse the output, accepting either a single `OcrOutput` or a JSON array
     /// of them (nym-ocr emits an array when given multiple images).
-    fn run_json_engine(
-        template: &[String],
-        paths: &[PathBuf],
-    ) -> Result<Vec<OcrOutput>, Error> {
+    fn run_json_engine(template: &[String], paths: &[PathBuf]) -> Result<Vec<OcrOutput>, Error> {
         let parts = template.iter().flat_map(|p| {
             if p.contains("{input}") {
-                paths.iter().map(|pp| pp.to_string_lossy().to_string()).collect::<Vec<_>>()
+                paths
+                    .iter()
+                    .map(|pp| pp.to_string_lossy().to_string())
+                    .collect::<Vec<_>>()
             } else {
                 vec![p.clone()]
             }
         });
         let mut parts: Vec<String> = parts.collect();
         let program = parts.remove(0);
-        let output = Command::new(&program).args(&parts).output().map_err(|e| {
-            format!("failed to run OCR engine {program:?}: {e}")
-        })?;
+        let output = Command::new(&program)
+            .args(&parts)
+            .output()
+            .map_err(|e| format!("failed to run OCR engine {program:?}: {e}"))?;
         if !output.status.success() {
             return Err(format!(
                 "OCR engine {program:?} failed: {}",
@@ -267,8 +276,8 @@ impl OcrEngine {
             .into());
         }
         // A single object or an array of objects.
-        let value: serde_json::Value =
-            serde_json::from_slice(&output.stdout).map_err(|e| format!("invalid OCR engine JSON: {e}"))?;
+        let value: serde_json::Value = serde_json::from_slice(&output.stdout)
+            .map_err(|e| format!("invalid OCR engine JSON: {e}"))?;
         Self::parse_output_value(value)
     }
 
@@ -281,8 +290,10 @@ impl OcrEngine {
                 .map(serde_json::from_value::<OcrOutput>)
                 .collect::<Result<Vec<_>, _>>()
                 .map_err(|e| format!("invalid OCR engine JSON entry: {e}").into()),
-            single => Ok(vec![serde_json::from_value::<OcrOutput>(single)
-                .map_err(|e| format!("invalid OCR engine JSON: {e}"))?]),
+            single => Ok(vec![
+                serde_json::from_value::<OcrOutput>(single)
+                    .map_err(|e| format!("invalid OCR engine JSON: {e}"))?,
+            ]),
         }
     }
 }
@@ -297,15 +308,14 @@ fn temp_path(ext: &str) -> PathBuf {
     use std::sync::atomic::{AtomicU64, Ordering};
     static COUNTER: AtomicU64 = AtomicU64::new(0);
     let n = COUNTER.fetch_add(1, Ordering::Relaxed);
-    std::env::temp_dir().join(format!(
-        "nym-ocr-{}-{}.{ext}",
-        std::process::id(),
-        n
-    ))
+    std::env::temp_dir().join(format!("nym-ocr-{}-{}.{ext}", std::process::id(), n))
 }
 
 /// Parse tesseract TSV (level 5 rows are words; conf is 0-100).
-#[expect(clippy::many_single_char_names, reason = "tesseract TSV parser with inherently short locals (f/x,y,w,h,conf)")]
+#[expect(
+    clippy::many_single_char_names,
+    reason = "tesseract TSV parser with inherently short locals (f/x,y,w,h,conf)"
+)]
 fn parse_tesseract_tsv(tsv: &str) -> OcrOutput {
     let mut words = Vec::new();
     for line in tsv.lines().skip(1) {
@@ -398,7 +408,10 @@ pub struct Rect {
 /// `precise` paints a proportional slice of each overlapped region (expanded
 /// by ~1.5 average character widths on both sides); otherwise the full region
 /// box is used (the escalation path).
-#[expect(clippy::cast_precision_loss, reason = "box-coordinate ratios; usize cast to f64 loses precision only beyond 2^52, irrelevant for pixel boxes")]
+#[expect(
+    clippy::cast_precision_loss,
+    reason = "box-coordinate ratios; usize cast to f64 loses precision only beyond 2^52, irrelevant for pixel boxes"
+)]
 fn boxes_for_span(ocr: &OcrText, out: &OcrOutput, s: usize, e: usize, precise: bool) -> Vec<Rect> {
     let mut rects = Vec::new();
     for &(ws, we, idx) in &ocr.spans {
@@ -407,7 +420,12 @@ fn boxes_for_span(ocr: &OcrText, out: &OcrOutput, s: usize, e: usize, precise: b
         }
         let w = &out.words[idx];
         if !precise || we <= ws {
-            rects.push(Rect { x: w.x, y: w.y, w: w.w, h: w.h });
+            rects.push(Rect {
+                x: w.x,
+                y: w.y,
+                w: w.w,
+                h: w.h,
+            });
             continue;
         }
         // Proportional slice of the region by character position.
@@ -418,7 +436,11 @@ fn boxes_for_span(ocr: &OcrText, out: &OcrOutput, s: usize, e: usize, precise: b
         let margin = char_w * 1.5;
         let x0 = (f64::from(w.x) + lo * f64::from(w.w) - margin).max(0.0);
         let x1 = f64::from(w.x) + hi * f64::from(w.w) + margin;
-        #[expect(clippy::cast_possible_truncation, clippy::cast_sign_loss, reason = "clamped")]
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "clamped"
+        )]
         rects.push(Rect {
             x: x0 as u32,
             y: w.y,
@@ -534,7 +556,7 @@ pub fn redact_image_from_recognition(
         return Ok(None);
     }
     let ocr_text = assemble_text(recognized);
-    let matches = detector.detect(&ocr_text.text);
+    let matches = detector.detect(&ocr_text.text)?;
     if matches.is_empty() {
         return Ok(None);
     }
@@ -605,8 +627,10 @@ fn verify_gone(
 /// Recognize the text inside a PDF's JPEG images (for `nym detect --ocr`).
 pub fn extract_pdf_image_text(pdf_bytes: &[u8], engine: &OcrEngine) -> Result<String, Error> {
     let jpegs = collect_pdf_jpegs(pdf_bytes)?;
-    let inputs: Vec<(Vec<u8>, String)> =
-        jpegs.iter().map(|j| (j.clone(), "jpg".to_string())).collect();
+    let inputs: Vec<(Vec<u8>, String)> = jpegs
+        .iter()
+        .map(|j| (j.clone(), "jpg".to_string()))
+        .collect();
     let recognized = engine.recognize_bytes_batch(&inputs)?;
     let mut out = String::new();
     for r in &recognized {
@@ -689,7 +713,10 @@ pub struct PdfOcrReport {
 /// OCR-redact the raster images inside a PDF (first slice: DCTDecode/JPEG,
 /// the format consumer scanners produce). Unsupported codecs are counted and,
 /// with `strict`, cause a hard error.
-#[expect(clippy::type_complexity, reason = "return tuple is the engine's public contract")]
+#[expect(
+    clippy::type_complexity,
+    reason = "return tuple is the engine's public contract"
+)]
 pub fn redact_pdf_images(
     pdf_bytes: &[u8],
     engine: &OcrEngine,
@@ -778,28 +805,40 @@ pub fn redact_pdf_images(
     }
     report.scanned = jpegs.len();
 
-    let inputs: Vec<(Vec<u8>, String)> =
-        jpegs.iter().map(|j| (j.clone(), "jpg".to_string())).collect();
+    let inputs: Vec<(Vec<u8>, String)> = jpegs
+        .iter()
+        .map(|j| (j.clone(), "jpg".to_string()))
+        .collect();
     let recognized = engine.recognize_bytes_batch(&inputs)?;
 
     for (idx, (id, jpeg)) in jpeg_ids.iter().zip(jpegs.iter()).enumerate() {
         let output = &recognized[idx];
-        match redact_image_from_recognition(jpeg, RasterFormat::Jpeg, engine, output, detector, replacer)? {
+        match redact_image_from_recognition(
+            jpeg,
+            RasterFormat::Jpeg,
+            engine,
+            output,
+            detector,
+            replacer,
+        )? {
             None => {}
             Some(red) => {
                 report.redacted += 1;
                 if let Ok(obj) = doc.get_object_mut(*id)
-                    && let Ok(stream) = obj.as_stream_mut() {
-                        // Re-encoded as RGB JPEG: keep DCTDecode, fix the
-                        // color-space keys to match.
-                        stream.set_content(red.bytes);
-                        stream.dict.set("Filter", lopdf::Object::Name(b"DCTDecode".to_vec()));
-                        stream
-                            .dict
-                            .set("ColorSpace", lopdf::Object::Name(b"DeviceRGB".to_vec()));
-                        stream.dict.set("BitsPerComponent", 8);
-                        stream.dict.remove(b"DecodeParms");
-                    }
+                    && let Ok(stream) = obj.as_stream_mut()
+                {
+                    // Re-encoded as RGB JPEG: keep DCTDecode, fix the
+                    // color-space keys to match.
+                    stream.set_content(red.bytes);
+                    stream
+                        .dict
+                        .set("Filter", lopdf::Object::Name(b"DCTDecode".to_vec()));
+                    stream
+                        .dict
+                        .set("ColorSpace", lopdf::Object::Name(b"DeviceRGB".to_vec()));
+                    stream.dict.set("BitsPerComponent", 8);
+                    stream.dict.remove(b"DecodeParms");
+                }
                 log.extend(red.replacements);
             }
         }
@@ -836,9 +875,30 @@ mod tests {
             width: 200,
             height: 100,
             words: vec![
-                OcrWord { text: "Hello".into(), conf: 0.9, x: 10, y: 10, w: 40, h: 12 },
-                OcrWord { text: "World".into(), conf: 0.9, x: 60, y: 11, w: 40, h: 12 },
-                OcrWord { text: "Below".into(), conf: 0.9, x: 10, y: 40, w: 40, h: 12 },
+                OcrWord {
+                    text: "Hello".into(),
+                    conf: 0.9,
+                    x: 10,
+                    y: 10,
+                    w: 40,
+                    h: 12,
+                },
+                OcrWord {
+                    text: "World".into(),
+                    conf: 0.9,
+                    x: 60,
+                    y: 11,
+                    w: 40,
+                    h: 12,
+                },
+                OcrWord {
+                    text: "Below".into(),
+                    conf: 0.9,
+                    x: 10,
+                    y: 40,
+                    w: 40,
+                    h: 12,
+                },
             ],
         };
         let t = assemble_text(&out);
@@ -880,7 +940,16 @@ mod tests {
             20,
             image::Rgba([255, 255, 255, 255]),
         ));
-        paint(&mut img, &[Rect { x: 10, y: 5, w: 10, h: 5 }], 0);
+        paint(
+            &mut img,
+            &[Rect {
+                x: 10,
+                y: 5,
+                w: 10,
+                h: 5,
+            }],
+            0,
+        );
         let buf = img.to_rgba8();
         assert_eq!(buf.get_pixel(15, 7).0, [0, 0, 0, 255]);
         assert_eq!(buf.get_pixel(5, 7).0, [255, 255, 255, 255]);
@@ -896,7 +965,11 @@ mod tests {
         // A template with an {input} placeholder can be given multiple paths.
         assert!(can_batch_template(&["nym-ocr".into(), "{input}".into()]));
         // A template with no placeholder cannot hold multiple inputs.
-        assert!(!can_batch_template(&["tesseract".into(), "stdout".into(), "tsv".into()]));
+        assert!(!can_batch_template(&[
+            "tesseract".into(),
+            "stdout".into(),
+            "tsv".into()
+        ]));
     }
 
     #[test]

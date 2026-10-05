@@ -63,12 +63,7 @@ pub enum OfficeFormat {
 
 /// Detect an office format from a file extension.
 pub fn sniff_path(path: &Path) -> Option<OfficeFormat> {
-    match path
-        .extension()?
-        .to_str()?
-        .to_ascii_lowercase()
-        .as_str()
-    {
+    match path.extension()?.to_str()?.to_ascii_lowercase().as_str() {
         "docx" => Some(OfficeFormat::Docx),
         "xlsx" => Some(OfficeFormat::Xlsx),
         "pptx" => Some(OfficeFormat::Pptx),
@@ -222,7 +217,7 @@ struct TextNode {
 fn process_part(
     xml: &[u8],
     profile: &PartProfile,
-    f: &mut dyn FnMut(&str) -> Option<Vec<Span>>,
+    f: &mut dyn FnMut(&str) -> Result<Option<Vec<Span>>, Error>,
 ) -> Result<Vec<u8>, Error> {
     let mut reader = Reader::from_reader(xml);
     reader.config_mut().check_end_names = false;
@@ -244,16 +239,17 @@ fn process_part(
 
         if group_depth == 0 {
             if let Event::Start(ref e) = ev
-                && is_group(profile, e.name().as_ref()) {
-                    group_depth = 1;
-                    para.clear();
-                    nodes.clear();
-                    elem_stack.clear();
-                    start_stack.clear();
-                    para.push(ev.into_owned());
-                    buf.clear();
-                    continue;
-                }
+                && is_group(profile, e.name().as_ref())
+            {
+                group_depth = 1;
+                para.clear();
+                nodes.clear();
+                elem_stack.clear();
+                start_stack.clear();
+                para.push(ev.into_owned());
+                buf.clear();
+                continue;
+            }
             writer.write_event(ev)?;
             buf.clear();
             continue;
@@ -297,24 +293,23 @@ fn process_part(
             // resolve them so they are part of the paragraph text. Unresolvable
             // custom entities pass through untouched (and stay invisible to
             // detection, which is the safe direction).
-            Event::GeneralRef(e)
-                if in_text_context(profile, &elem_stack) => {
-                    let resolved = match e.decode()?.as_ref() {
-                        "lt" => Some('<'),
-                        "gt" => Some('>'),
-                        "amp" => Some('&'),
-                        "apos" => Some('\''),
-                        "quot" => Some('"'),
-                        _ => e.resolve_char_ref()?,
-                    };
-                    if let Some(ch) = resolved {
-                        nodes.push(TextNode {
-                            ev_idx: para.len(),
-                            start_ev_idx: start_stack.last().copied().flatten(),
-                            text: ch.to_string(),
-                        });
-                    }
+            Event::GeneralRef(e) if in_text_context(profile, &elem_stack) => {
+                let resolved = match e.decode()?.as_ref() {
+                    "lt" => Some('<'),
+                    "gt" => Some('>'),
+                    "amp" => Some('&'),
+                    "apos" => Some('\''),
+                    "quot" => Some('"'),
+                    _ => e.resolve_char_ref()?,
+                };
+                if let Some(ch) = resolved {
+                    nodes.push(TextNode {
+                        ev_idx: para.len(),
+                        start_ev_idx: start_stack.last().copied().flatten(),
+                        text: ch.to_string(),
+                    });
                 }
+            }
             _ => {}
         }
         para.push(ev.into_owned());
@@ -330,7 +325,7 @@ fn flush_paragraph(
     profile: &PartProfile,
     para: &[Event<'static>],
     nodes: &[TextNode],
-    f: &mut dyn FnMut(&str) -> Option<Vec<Span>>,
+    f: &mut dyn FnMut(&str) -> Result<Option<Vec<Span>>, Error>,
 ) -> Result<(), Error> {
     // Join node texts and record each node's [offset, offset+len) range.
     let mut full = String::new();
@@ -341,7 +336,7 @@ fn flush_paragraph(
         ranges.push((start, full.len()));
     }
 
-    let spans = if full.is_empty() { None } else { f(&full) };
+    let spans = if full.is_empty() { None } else { f(&full)? };
     let Some(spans) = spans.filter(|s| !s.is_empty()) else {
         for ev in para {
             writer.write_event(ev.clone())?;
@@ -384,8 +379,8 @@ fn flush_paragraph(
     if profile.preserve_space {
         for n in nodes {
             if let (Some(start_idx), Some(new)) = (n.start_ev_idx, new_texts.get(&n.ev_idx)) {
-                let boundary_ws = new.starts_with(char::is_whitespace)
-                    || new.ends_with(char::is_whitespace);
+                let boundary_ws =
+                    new.starts_with(char::is_whitespace) || new.ends_with(char::is_whitespace);
                 if boundary_ws && !new.is_empty() {
                     needs_preserve.push(start_idx);
                 }
@@ -399,18 +394,19 @@ fn flush_paragraph(
             continue;
         }
         if needs_preserve.contains(&idx)
-            && let Event::Start(e) = ev {
-                let has_attr = e
-                    .attributes()
-                    .flatten()
-                    .any(|a| a.key.as_ref() == b"xml:space");
-                if !has_attr {
-                    let mut e2 = e.clone().into_owned();
-                    e2.push_attribute(("xml:space", "preserve"));
-                    writer.write_event(Event::Start(e2))?;
-                    continue;
-                }
+            && let Event::Start(e) = ev
+        {
+            let has_attr = e
+                .attributes()
+                .flatten()
+                .any(|a| a.key.as_ref() == b"xml:space");
+            if !has_attr {
+                let mut e2 = e.clone().into_owned();
+                e2.push_attribute(("xml:space", "preserve"));
+                writer.write_event(Event::Start(e2))?;
+                continue;
             }
+        }
         writer.write_event(ev.clone())?;
     }
     Ok(())
@@ -421,7 +417,7 @@ fn flush_paragraph(
 fn rewrite_archive(
     bytes: &[u8],
     fmt: OfficeFormat,
-    f: &mut dyn FnMut(&str) -> Option<Vec<Span>>,
+    f: &mut dyn FnMut(&str) -> Result<Option<Vec<Span>>, Error>,
 ) -> Result<Vec<u8>, Error> {
     let mut zin = ZipArchive::new(Cursor::new(bytes))?;
     let mut out = ZipWriter::new(Cursor::new(Vec::new()));
@@ -436,8 +432,7 @@ fn rewrite_archive(
             let new = process_part(&data, &profile, f)?;
             out.start_file(
                 name,
-                SimpleFileOptions::default()
-                    .compression_method(zip::CompressionMethod::Deflated),
+                SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
             )?;
             out.write_all(&new)?;
         } else {
@@ -456,7 +451,7 @@ pub fn extract_text(bytes: &[u8], fmt: OfficeFormat) -> Result<String, Error> {
     let mut paras: Vec<String> = Vec::new();
     rewrite_archive(bytes, fmt, &mut |para| {
         paras.push(para.to_string());
-        None
+        Ok(None)
     })?;
     Ok(paras.join("\n"))
 }
@@ -471,9 +466,9 @@ pub fn anonymize(
 ) -> Result<(Vec<u8>, Vec<Replacement>), Error> {
     let mut all: Vec<Replacement> = Vec::new();
     let out = rewrite_archive(bytes, fmt, &mut |para| {
-        let matches = detector.detect(para);
+        let matches = detector.detect(para)?;
         if matches.is_empty() {
-            return None;
+            return Ok(None);
         }
         let mut spans: Vec<Span> = Vec::new();
         let mut last_end = 0usize;
@@ -486,7 +481,7 @@ pub fn anonymize(
             all.push(r);
             last_end = m.end;
         }
-        Some(spans)
+        Ok(Some(spans))
     })?;
     Ok((out, all))
 }
@@ -500,7 +495,8 @@ pub fn deanonymize(
 ) -> Result<(Vec<u8>, usize), Error> {
     // Longest replacement first so nested/overlapping candidates resolve
     // deterministically toward the most specific mapping.
-    let mut sorted: Vec<&(String, String)> = mappings.iter().filter(|(k, _)| !k.is_empty()).collect();
+    let mut sorted: Vec<&(String, String)> =
+        mappings.iter().filter(|(k, _)| !k.is_empty()).collect();
     sorted.sort_by_key(|(k, _)| std::cmp::Reverse(k.len()));
 
     let mut count = 0usize;
@@ -519,11 +515,11 @@ pub fn deanonymize(
             }
         }
         if spans.is_empty() {
-            return None;
+            return Ok(None);
         }
         spans.sort_by_key(|&(s, _, _)| s);
         count += spans.len();
-        Some(spans)
+        Ok(Some(spans))
     })?;
     Ok((out, count))
 }
@@ -531,8 +527,8 @@ pub fn deanonymize(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::engine::ReplacementStrategy;
     use crate::engine::replacer::ReplacerConfig;
-    use crate::engine::{DetectorConfig, ReplacementStrategy};
 
     /// Build a minimal but structurally valid docx in memory.
     fn make_docx(document_xml: &str) -> Vec<u8> {
@@ -580,34 +576,52 @@ mod tests {
     #[test]
     fn docx_split_run_email_is_redacted() {
         let bytes = make_docx(DOC);
-        let detector = Detector::new(&DetectorConfig::default());
+        let detector = Detector::with_defaults();
         let mut replacer = Replacer::new(ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
             ..ReplacerConfig::default()
         });
         #[expect(clippy::unwrap_used, reason = "test")]
-        let (out, replacements) = anonymize(&bytes, OfficeFormat::Docx, &detector, &mut replacer).unwrap();
+        let (out, replacements) =
+            anonymize(&bytes, OfficeFormat::Docx, &detector, &mut replacer).unwrap();
 
         let doc = read_part(&out, "word/document.xml");
-        assert!(!doc.contains("john.doe"), "email fragments must be gone: {doc}");
-        assert!(!doc.contains("example.com"), "email tail must be gone: {doc}");
-        assert!(doc.contains("&lt;EMAIL&gt;") || doc.contains("<EMAIL>"), "placeholder present: {doc}");
-        assert!(doc.contains("192.168.1.77") || replacements.iter().any(|r| r.original == "192.168.1.77"));
+        assert!(
+            !doc.contains("john.doe"),
+            "email fragments must be gone: {doc}"
+        );
+        assert!(
+            !doc.contains("example.com"),
+            "email tail must be gone: {doc}"
+        );
+        assert!(
+            doc.contains("&lt;EMAIL&gt;") || doc.contains("<EMAIL>"),
+            "placeholder present: {doc}"
+        );
+        assert!(
+            doc.contains("192.168.1.77")
+                || replacements.iter().any(|r| r.original == "192.168.1.77")
+        );
         // XML must stay well-formed and the run structure intact.
         assert!(doc.contains("</w:p>"));
-        assert!(replacements.iter().any(|r| r.original == "john.doe@example.com"));
+        assert!(
+            replacements
+                .iter()
+                .any(|r| r.original == "john.doe@example.com")
+        );
     }
 
     #[test]
     fn docx_roundtrip_deanonymize_restores_original() {
         let bytes = make_docx(DOC);
-        let detector = Detector::new(&DetectorConfig::default());
+        let detector = Detector::with_defaults();
         let mut replacer = Replacer::new(ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
             ..ReplacerConfig::default()
         });
         #[expect(clippy::unwrap_used, reason = "test")]
-        let (anon, replacements) = anonymize(&bytes, OfficeFormat::Docx, &detector, &mut replacer).unwrap();
+        let (anon, replacements) =
+            anonymize(&bytes, OfficeFormat::Docx, &detector, &mut replacer).unwrap();
 
         let map: Vec<(String, String)> = replacements
             .iter()
@@ -618,10 +632,16 @@ mod tests {
         #[expect(clippy::unwrap_used, reason = "test")]
         let anon_text = extract_text(&anon, OfficeFormat::Docx).unwrap();
         let raw = read_part(&anon, "word/document.xml");
-        assert!(n >= 1, "no restorations; anon text: {anon_text:?}; map: {map:?}; raw: {raw}");
+        assert!(
+            n >= 1,
+            "no restorations; anon text: {anon_text:?}; map: {map:?}; raw: {raw}"
+        );
         let doc = read_part(&restored, "word/document.xml");
         // The full email is restored, though possibly consolidated into one run.
-        assert!(doc.contains("john.doe@ex") || doc.contains("john.doe@example.com"), "{doc}");
+        assert!(
+            doc.contains("john.doe@ex") || doc.contains("john.doe@example.com"),
+            "{doc}"
+        );
     }
 
     #[test]
@@ -629,14 +649,20 @@ mod tests {
         let bytes = make_docx(DOC);
         #[expect(clippy::unwrap_used, reason = "test")]
         let text = extract_text(&bytes, OfficeFormat::Docx).unwrap();
-        assert!(text.contains("Hannah Meyer"), "metadata text extracted: {text}");
-        assert!(text.contains("Contact me at john.doe@example.com today."), "split runs joined: {text}");
+        assert!(
+            text.contains("Hannah Meyer"),
+            "metadata text extracted: {text}"
+        );
+        assert!(
+            text.contains("Contact me at john.doe@example.com today."),
+            "split runs joined: {text}"
+        );
     }
 
     #[test]
     fn untouched_parts_are_byte_identical() {
         let bytes = make_docx(DOC);
-        let detector = Detector::new(&DetectorConfig::default());
+        let detector = Detector::with_defaults();
         let mut replacer = Replacer::new(ReplacerConfig::default());
         #[expect(clippy::unwrap_used, reason = "test")]
         let (out, _) = anonymize(&bytes, OfficeFormat::Docx, &detector, &mut replacer).unwrap();
@@ -669,7 +695,7 @@ mod tests {
         #[expect(clippy::unwrap_used, reason = "test fixture")]
         let bytes = zw.finish().unwrap().into_inner();
 
-        let detector = Detector::new(&DetectorConfig::default());
+        let detector = Detector::with_defaults();
         let mut replacer = Replacer::new(ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
             ..ReplacerConfig::default()

@@ -54,7 +54,8 @@ buffer_size = 65536
 # state_dir = "$XDG_STATE_HOME/nym"
 
 [ner]
-# Enable NER-based detection for names, addresses, organizations.
+# Enable the selected NER backend(s) alongside regex detection.
+# `--ner` enables these engines; it does not select a backend or model.
 # NER ships in the default build; `nym models use <model>` sets this to true.
 enabled = false
 
@@ -63,6 +64,8 @@ enabled = false
 #   gliner = zero-shot GLiNER span model (uses `model` + `labels`)
 #   both   = run both and merge (best recall, but also loads the ~1.1 GB GLiNER model)
 backend = "tokens"
+# --ner-model overrides token_model for tokens, model for gliner.
+# With both, --ner-model is ambiguous and rejected; configure both fields here.
 
 # Token backend only (including the token portion of "both"); GLiNER is unaffected.
 # "auto" uses compiled accelerators with CPU fallback; "cpu" bypasses accelerators.
@@ -87,8 +90,15 @@ model = "onnx-community/gliner_multi-v2.1"
 # Confidence threshold for NER detections (0.0-1.0)
 threshold = 0.5
 
-# Entity labels to detect (zero-shot, can be any labels)
-labels = ["person", "organization", "street_address", "city", "country"]
+# Token-only decoding: false = argmax, true = threshold on total entity mass.
+recall_first = false
+
+# GLiNER-only label restrictions: set backend = "gliner" before uncommenting.
+# Explicit labels (even defaults) are rejected for "tokens" and "both" because
+# they do not filter token classes. Omit to use these GLiNER defaults; [] is invalid.
+# Regex findings are independent. Unknown labels are rejected (see config schema).
+# Names: given_name aliases first_name; surname aliases last_name.
+# labels = ["person", "organization", "street_address", "city", "country"]
 
 # =============================================================================
 # Rulesets

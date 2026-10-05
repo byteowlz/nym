@@ -249,9 +249,12 @@ pub struct NerConfig {
     pub cache_dir: Option<String>,
     /// Confidence threshold for NER detections (0.0-1.0)
     pub threshold: f32,
-    /// Entity labels to detect.
-    /// Default: `person`, `organization`, `street_address`, `city`, `country`
-    pub labels: Vec<String>,
+    /// GLiNER-only entity restrictions. Omit to use the default GLiNER labels.
+    /// Explicit labels require backend `gliner`; `tokens` and `both` reject them
+    /// because token model classes are not filtered by this setting. Regex
+    /// findings are unaffected. Empty and unknown explicit labels are errors.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub labels: Option<Vec<String>>,
     /// Recall-first decoding for the token backend: flag a token when its total
     /// entity probability (1 - P(O)) clears `threshold`, instead of requiring a
     /// single entity class to win the argmax. Raises recall (measured +5-9
@@ -282,18 +285,198 @@ impl Default for NerConfig {
             model: "onnx-community/gliner_multi-v2.1".to_string(),
             cache_dir: None,
             threshold: 0.5,
-            labels: vec![
-                "person".to_string(),
-                "organization".to_string(),
-                "street_address".to_string(),
-                "city".to_string(),
-                "country".to_string(),
-            ],
+            labels: None,
             recall_first: false,
             backend: NerBackend::default(),
             provider: NerProvider::default(),
             token_model: None,
         }
+    }
+}
+
+/// Shareable effective configuration, not proof of model/runtime readiness.
+/// Model revisions remain `null` until runtime resolution; never invent a pin.
+#[derive(Debug, Clone, Serialize)]
+pub struct NerStatus {
+    pub configured_enabled: bool,
+    pub backend: NerBackend,
+    pub threshold: f32,
+    pub regex_scope: &'static str,
+    pub models: Vec<NerModelStatus>,
+}
+
+/// Only built-in public catalog identifiers may appear; all other identifiers
+/// (including local paths and private repositories) are replaced with `[custom]`.
+#[derive(Debug, Clone, Serialize)]
+pub struct NerModelStatus {
+    pub backend: NerBackend,
+    pub identifier: String,
+    pub revision: Option<String>,
+    pub label_scope: &'static str,
+    pub labels: Option<Vec<String>>,
+    pub decoding: &'static str,
+    pub provider: Option<NerProvider>,
+}
+
+fn safe_model_identifier(model: &str) -> String {
+    // Do not use the refreshed user catalog: it may contain private identifiers.
+    let public = serde_json::from_str::<serde_json::Value>(include_str!("engine/catalog.json"))
+        .ok()
+        .is_some_and(|catalog| {
+            catalog["models"].as_array().is_some_and(|models| {
+                models
+                    .iter()
+                    .any(|entry| entry["slug"].as_str() == Some(model))
+            })
+        });
+    if public {
+        model.to_string()
+    } else {
+        "[custom]".to_string()
+    }
+}
+
+/// Default GLiNER labels; token classes are defined by the selected token model.
+pub const DEFAULT_GLINER_LABELS: &[&str] = &[
+    "person",
+    "organization",
+    "street_address",
+    "city",
+    "country",
+];
+
+/// Validate and canonicalize supported GLiNER label aliases without echoing input.
+/// Canonicalization ensures the engine maps aliases to the same PII category.
+pub fn normalize_gliner_labels(labels: &[String]) -> Result<Vec<String>> {
+    if labels.is_empty() {
+        anyhow::bail!("ner.labels must not be empty; omit it to use GLiNER defaults");
+    }
+    let mut normalized = Vec::new();
+    for label in labels {
+        let canonical = match label.trim().to_ascii_lowercase().as_str() {
+            "person" => "person",
+            "first_name" | "firstname" | "given_name" | "givenname" => "first_name",
+            "last_name" | "lastname" | "surname" | "family_name" => "last_name",
+            "organization" | "company" | "org" => "organization",
+            "street_address" | "address" => "street_address",
+            "city" => "city",
+            "state" | "province" | "region" => "state",
+            "country" => "country",
+            "location" => "location",
+            "phone_number" | "phone" => "phone_number",
+            "date" => "date",
+            "date_of_birth" | "dob" | "birthday" | "birthdate" => "date_of_birth",
+            "time" => "time",
+            _ => anyhow::bail!(
+                "ner.labels contains an unsupported GLiNER label; see the config schema for supported labels"
+            ),
+        };
+        if !normalized.iter().any(|existing| existing == canonical) {
+            normalized.push(canonical.to_string());
+        }
+    }
+    Ok(normalized)
+}
+
+impl NerConfig {
+    /// Resolve a CLI model override against the selected backend, before scanning.
+    /// `both` requires the backend-specific config fields rather than an ambiguous
+    /// generic override. This does not load or download models.
+    pub fn resolved(&self, model_override: Option<&str>) -> Result<Self> {
+        let mut effective = self.clone();
+        if let Some(model) = model_override {
+            match effective.backend {
+                NerBackend::TokenClass => effective.token_model = Some(model.to_string()),
+                NerBackend::Gliner => effective.model = model.to_string(),
+                NerBackend::Both => anyhow::bail!(
+                    "--ner-model is ambiguous with backend=both; set ner.model and ner.token_model separately"
+                ),
+            }
+        }
+        if !effective.threshold.is_finite() || !(0.0..=1.0).contains(&effective.threshold) {
+            anyhow::bail!("ner.threshold must be finite and between 0 and 1");
+        }
+        let active_models = match effective.backend {
+            NerBackend::TokenClass => vec![effective.token_model.as_deref()],
+            NerBackend::Gliner => vec![Some(effective.model.as_str())],
+            NerBackend::Both => vec![
+                Some(effective.model.as_str()),
+                effective.token_model.as_deref(),
+            ],
+        };
+        for model in active_models.into_iter().flatten() {
+            if model.trim().is_empty() || model.chars().any(char::is_control) {
+                anyhow::bail!(
+                    "NER model identifier must be nonempty and contain no control characters"
+                );
+            }
+        }
+        if let Some(ref labels) = effective.labels {
+            if !matches!(effective.backend, NerBackend::Gliner) {
+                anyhow::bail!(
+                    "ner.labels is GLiNER-only; omit it for backend=tokens or backend=both (token model classes are not filtered)"
+                );
+            }
+            effective.labels = Some(normalize_gliner_labels(labels)?);
+        }
+        Ok(effective)
+    }
+
+    /// Share effective settings without input text, private paths, cache
+    /// locations, or arbitrary model/repository identifiers. Resolve CLI
+    /// overrides first, and report runtime readiness separately.
+    pub fn safe_status(&self) -> Result<NerStatus> {
+        let effective = self.resolved(None)?;
+        let mut models = Vec::new();
+        if matches!(effective.backend, NerBackend::TokenClass | NerBackend::Both) {
+            models.push(NerModelStatus {
+                backend: NerBackend::TokenClass,
+                identifier: safe_model_identifier(
+                    effective
+                        .token_model
+                        .as_deref()
+                        .unwrap_or("Wismut/nym-pii-multilingual-small/int8"),
+                ),
+                revision: None,
+                label_scope: "all-model-classes",
+                labels: None,
+                decoding: if effective.recall_first {
+                    "recall-first"
+                } else {
+                    "argmax"
+                },
+                provider: Some(effective.provider),
+            });
+        }
+        if matches!(effective.backend, NerBackend::Gliner | NerBackend::Both) {
+            models.push(NerModelStatus {
+                backend: NerBackend::Gliner,
+                identifier: safe_model_identifier(&effective.model),
+                revision: None,
+                label_scope: "gliner-only",
+                labels: Some(effective.effective_gliner_labels()),
+                decoding: "span",
+                provider: None,
+            });
+        }
+        Ok(NerStatus {
+            configured_enabled: effective.enabled,
+            backend: effective.backend,
+            threshold: effective.threshold,
+            regex_scope: "independent",
+            models,
+        })
+    }
+
+    /// Effective GLiNER labels after resolution. Does not filter token or regex
+    /// findings; callers must only send explicit labels to the GLiNER backend.
+    pub fn effective_gliner_labels(&self) -> Vec<String> {
+        self.labels.clone().unwrap_or_else(|| {
+            DEFAULT_GLINER_LABELS
+                .iter()
+                .map(|label| (*label).to_string())
+                .collect()
+        })
     }
 }
 
@@ -636,16 +819,15 @@ impl Config {
                 .try_parsing(true),
         );
 
-        let settings = builder.build().context("Failed to build configuration")?;
+        // Parser/source errors can include paths, environment values and raw
+        // TOML. Return a value-free error, never silently fall back to defaults.
+        let settings = builder
+            .build()
+            .map_err(|_| anyhow::anyhow!("Failed to build configuration"))?;
 
         settings
             .try_deserialize()
-            .context("Failed to parse configuration")
-    }
-
-    /// Load configuration or return defaults on error.
-    pub fn load_or_default() -> Self {
-        Self::load().unwrap_or_default()
+            .map_err(|_| anyhow::anyhow!("Failed to parse configuration"))
     }
 }
 
@@ -720,6 +902,244 @@ pub fn expand_path(path: &str) -> PathBuf {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn ner_model_override_targets_selected_backend() {
+        let configured = NerConfig {
+            token_model: Some("configured/token".into()),
+            ..NerConfig::default()
+        };
+        let tokens = configured.resolved(Some("override/token")).unwrap();
+        assert_eq!(
+            (tokens.model.as_str(), tokens.token_model.as_deref()),
+            ("onnx-community/gliner_multi-v2.1", Some("override/token"))
+        );
+        let gliner = NerConfig {
+            backend: NerBackend::Gliner,
+            ..configured.clone()
+        }
+        .resolved(Some("override/gliner"))
+        .unwrap();
+        assert_eq!(
+            (gliner.model.as_str(), gliner.token_model.as_deref()),
+            ("override/gliner", Some("configured/token"))
+        );
+        assert_eq!(configured.token_model.as_deref(), Some("configured/token"));
+    }
+
+    #[test]
+    fn ner_rejects_ambiguous_overrides_and_invalid_active_settings() {
+        let both = NerConfig {
+            backend: NerBackend::Both,
+            token_model: Some("configured/token".into()),
+            model: "configured/gliner".into(),
+            ..NerConfig::default()
+        };
+        assert!(
+            both.resolved(Some("override/model"))
+                .unwrap_err()
+                .to_string()
+                .contains("ambiguous")
+        );
+        let effective = both.resolved(None).unwrap();
+        assert_eq!(
+            (effective.model.as_str(), effective.token_model.as_deref()),
+            ("configured/gliner", Some("configured/token"))
+        );
+        for backend in [NerBackend::TokenClass, NerBackend::Gliner] {
+            let ner = NerConfig {
+                backend,
+                ..NerConfig::default()
+            };
+            for invalid in ["", "   ", "secret\nidentifier"] {
+                let error = ner.resolved(Some(invalid)).unwrap_err().to_string();
+                assert!(error.contains("model"));
+                assert!(!error.contains("secret"));
+            }
+        }
+        for threshold in [-0.1, 1.1, f32::NAN, f32::INFINITY] {
+            assert!(
+                NerConfig {
+                    threshold,
+                    ..NerConfig::default()
+                }
+                .resolved(None)
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
+    fn ner_labels_are_explicit_gliner_only_restrictions() {
+        for backend in [NerBackend::TokenClass, NerBackend::Both] {
+            assert!(
+                NerConfig {
+                    backend,
+                    ..NerConfig::default()
+                }
+                .resolved(None)
+                .is_ok()
+            );
+            for labels in [vec![], vec!["person".to_string()]] {
+                let error = NerConfig {
+                    backend,
+                    labels: Some(labels),
+                    ..NerConfig::default()
+                }
+                .resolved(None)
+                .unwrap_err()
+                .to_string();
+                assert!(error.contains("GLiNER-only"));
+            }
+        }
+        for labels in [
+            vec![],
+            vec!["email".to_string()],
+            vec!["private_unknown_label".to_string()],
+        ] {
+            let error = NerConfig {
+                backend: NerBackend::Gliner,
+                labels: Some(labels),
+                ..NerConfig::default()
+            }
+            .resolved(None)
+            .unwrap_err()
+            .to_string();
+            assert!(!error.contains("private_unknown_label"));
+        }
+        let ner = NerConfig {
+            backend: NerBackend::Gliner,
+            labels: Some(vec![
+                "PERSON".into(),
+                "GIVEN_NAME".into(),
+                "surname".into(),
+                "person".into(),
+                " Country ".into(),
+            ]),
+            ..NerConfig::default()
+        }
+        .resolved(None)
+        .unwrap();
+        assert_eq!(
+            ner.labels,
+            Some(vec![
+                "person".into(),
+                "first_name".into(),
+                "last_name".into(),
+                "country".into()
+            ])
+        );
+    }
+
+    #[test]
+    fn ner_omitted_labels_survive_layered_defaults_but_explicit_empty_does_not() {
+        let defaults = toml::to_string(&Config::default()).unwrap();
+        assert!(!defaults.contains("labels"));
+        for backend in ["tokens", "both", "gliner"] {
+            let settings = config::Config::builder()
+                .add_source(config::File::from_str(&defaults, config::FileFormat::Toml))
+                .add_source(config::File::from_str(
+                    &format!("[ner]\nbackend = '{backend}'\n"),
+                    config::FileFormat::Toml,
+                ))
+                .build()
+                .unwrap()
+                .try_deserialize::<Config>()
+                .unwrap();
+            assert!(settings.ner.resolved(None).is_ok());
+            let explicit: Config =
+                toml::from_str(&format!("[ner]\nbackend = '{backend}'\nlabels = []\n")).unwrap();
+            assert!(explicit.ner.resolved(None).is_err());
+        }
+    }
+
+    #[test]
+    fn ner_status_reports_effective_settings_without_private_identifiers() {
+        let status = NerConfig {
+            enabled: true,
+            backend: NerBackend::Both,
+            ..NerConfig::default()
+        }
+        .safe_status()
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(status).unwrap(),
+            serde_json::json!({
+                "configured_enabled": true,
+                "backend": "both",
+                "threshold": 0.5,
+                "regex_scope": "independent",
+                "models": [
+                    {"backend": "tokens", "identifier": "Wismut/nym-pii-multilingual-small/int8", "revision": null,
+                     "label_scope": "all-model-classes", "labels": null, "decoding": "argmax", "provider": "auto"},
+                    {"backend": "gliner", "identifier": "onnx-community/gliner_multi-v2.1", "revision": null,
+                     "label_scope": "gliner-only", "labels": ["person", "organization", "street_address", "city", "country"],
+                     "decoding": "span", "provider": null}
+                ]
+            })
+        );
+        for private_model in [
+            "/private/client/model",
+            "~/private/client/model",
+            "internal-tenant/private-model",
+            "C:\\private\\client\\model",
+        ] {
+            let private = NerConfig {
+                model: private_model.to_string(),
+                token_model: Some(private_model.to_string()),
+                cache_dir: Some("/private/cache-secret".into()),
+                backend: NerBackend::Both,
+                ..NerConfig::default()
+            };
+            let json = serde_json::to_string(&private.safe_status().unwrap()).unwrap();
+            assert!(
+                !json.contains("private") && !json.contains("client") && !json.contains("secret")
+            );
+            assert!(json.contains("[custom]"));
+        }
+        let tokens = NerConfig {
+            recall_first: true,
+            provider: NerProvider::Cpu,
+            ..NerConfig::default()
+        }
+        .resolved(Some("nationaldesignstudio/rampart"))
+        .unwrap();
+        assert_eq!(
+            serde_json::to_value(tokens.safe_status().unwrap()).unwrap(),
+            serde_json::json!({
+                "configured_enabled": false,
+                "backend": "tokens",
+                "threshold": 0.5,
+                "regex_scope": "independent",
+                "models": [{"backend": "tokens", "identifier": "nationaldesignstudio/rampart", "revision": null,
+                    "label_scope": "all-model-classes", "labels": null, "decoding": "recall-first", "provider": "cpu"}]
+            })
+        );
+    }
+
+    #[test]
+    fn ner_example_and_schema_agree_with_backend_scoped_defaults() {
+        let example: Config = toml::from_str(include_str!("../examples/config.toml")).unwrap();
+        assert!(example.ner.resolved(None).is_ok());
+        assert!(example.ner.labels.is_none());
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../examples/config.schema.json")).unwrap();
+        let ner = &schema["properties"]["ner"];
+        assert_eq!(ner["properties"]["backend"]["default"], "tokens");
+        assert_eq!(ner["properties"]["recall_first"]["default"], false);
+        assert_eq!(ner["properties"]["token_model"]["type"], "string");
+        assert_eq!(ner["properties"]["labels"]["minItems"], 1);
+        assert_eq!(ner["then"]["properties"]["backend"]["const"], "gliner");
+        let labels = ner["properties"]["labels"]["items"]["enum"]
+            .as_array()
+            .unwrap();
+        for label in labels {
+            assert!(normalize_gliner_labels(&[label.as_str().unwrap().to_string()]).is_ok());
+        }
+        // A schema-inserted default would become an explicit restriction and
+        // conflict with the default token backend; document GL defaults instead.
+        assert!(ner["properties"]["labels"].get("default").is_none());
+    }
 
     #[test]
     fn test_default_config() {

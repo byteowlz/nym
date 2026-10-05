@@ -1,0 +1,1566 @@
+{
+  "version": "agent-traces-v1",
+  "origin": "handwritten-synthetic-only",
+  "cases": [
+    {
+      "id": "synthetic-1",
+      "split": "selection",
+      "trace": {
+        "session": {
+          "id": "00000000-0000-4000-8000-000000000001",
+          "version": 3,
+          "type": "session"
+        },
+        "records": [
+          {
+            "id": "trace-1-0",
+            "parentId": "00000000-0000-4000-8000-000000000001",
+            "timestamp": "2026-02-01T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "This is a fictional test task for Mira Quenwick. Contact mira@example.invalid. Keep --strict, --timeout 30, and --no-progress in the CLI. Public dependency serde_json is at https://docs.rs/serde_json/."
+                }
+              ]
+            }
+          },
+          {
+            "id": "trace-1-1",
+            "parentId": "trace-1-0",
+            "timestamp": "2026-02-01T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "thinking",
+                  "thinking": "Reasoning: use bash and cargo check. The buffer size 4096 is not a PIN. The build timestamp 2026-02-01T10:20:30Z is not a birthday. Fictional account username=scribe_amber; do not confuse user_count with an account. Public tokio and clap are dependencies."
+                },
+                {
+                  "type": "toolCall",
+                  "id": "call-1",
+                  "name": "bash",
+                  "arguments": {
+                    "command": "rg --files src && cargo check --offline",
+                    "cwd": "/tmp/synthetic-project",
+                    "timeout": 30,
+                    "parallel": false
+                  }
+                }
+              ],
+              "usage": {
+                "input": 4096,
+                "output": 128,
+                "cacheRead": 0,
+                "cost": 0.0125
+              },
+              "stopReason": "toolUse"
+            }
+          },
+          {
+            "id": "trace-1-2",
+            "parentId": "trace-1-1",
+            "timestamp": "2026-02-01T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "toolResult",
+              "toolCallId": "call-1",
+              "toolName": "bash",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "src/lib.rs\nwarning: unused import\n0 errors; local listener 127.0.0.1:8080 and ::1. Compiler cache /usr/local/lib is public fixture layout."
+                }
+              ],
+              "isError": false,
+              "details": {
+                "exitCode": 0,
+                "truncated": false
+              }
+            }
+          },
+          {
+            "id": "trace-1-3",
+            "parentId": "trace-1-2",
+            "timestamp": "2026-02-01T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Proposed source:\nlet buffer_size: usize = 4096;\nconst LIMIT: u32 = 8080;\nfn main() { println!(\"ready\"); }\nRepeat contact mira@example.invalid and mira@example.invalid for occurrence accounting. Patient Mira Quenwick has date of birth 1992-07-16; the authentication PIN is 4096. Never use these fabricated credentials: AKIAIOSFODNN7EXAMPLE and sk_test_syntheticOnlyNotARealKey123456789."
+                }
+              ]
+            }
+          },
+          {
+            "id": "trace-1-4",
+            "parentId": "trace-1-3",
+            "timestamp": "2026-02-01T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Known-sensitive fictional project AmberKestrel uses amberkestrel.svc.example.invalid. These require an explicit known-sensitive policy, not a universal NER promise."
+                }
+              ]
+            }
+          }
+        ],
+        "metadata": {
+          "identityId": "10000000-0000-4000-8000-000000000099",
+          "contact": "mira@example.invalid",
+          "reviewed": null
+        }
+      },
+      "gold": [
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 34,
+          "end": 47,
+          "value": "Mira Quenwick",
+          "class": "person",
+          "scope": "ner"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 57,
+          "end": 77,
+          "value": "mira@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 159,
+          "end": 171,
+          "value": "scribe_amber",
+          "class": "username",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 121,
+          "end": 141,
+          "value": "mira@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 146,
+          "end": 166,
+          "value": "mira@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 202,
+          "end": 215,
+          "value": "Mira Quenwick",
+          "class": "person",
+          "scope": "ner"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 234,
+          "end": 244,
+          "value": "1992-07-16",
+          "class": "birth_date",
+          "scope": "ner"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 272,
+          "end": 276,
+          "value": "4096",
+          "class": "pin",
+          "scope": "ner"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 318,
+          "end": 338,
+          "value": "AKIAIOSFODNN7EXAMPLE",
+          "class": "aws_key",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 343,
+          "end": 384,
+          "value": "sk_test_syntheticOnlyNotARealKey123456789",
+          "class": "api_key",
+          "scope": "regex"
+        },
+        {
+          "path": "records[4].message.content[0].text",
+          "start": 34,
+          "end": 46,
+          "value": "AmberKestrel",
+          "class": "codename",
+          "scope": "policy"
+        },
+        {
+          "path": "records[4].message.content[0].text",
+          "start": 52,
+          "end": 84,
+          "value": "amberkestrel.svc.example.invalid",
+          "class": "internal_hostname",
+          "scope": "policy"
+        },
+        {
+          "path": "metadata.identityId",
+          "start": 0,
+          "end": 36,
+          "value": "10000000-0000-4000-8000-000000000099",
+          "class": "identity_uuid",
+          "scope": "regex"
+        },
+        {
+          "path": "metadata.contact",
+          "start": 0,
+          "end": 20,
+          "value": "mira@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        }
+      ],
+      "benign": [
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 84,
+          "end": 92,
+          "value": "--strict"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 94,
+          "end": 106,
+          "value": "--timeout 30"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 112,
+          "end": 125,
+          "value": "--no-progress"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 156,
+          "end": 166,
+          "value": "serde_json"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 173,
+          "end": 200,
+          "value": "https://docs.rs/serde_json/"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 15,
+          "end": 19,
+          "value": "bash"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 24,
+          "end": 35,
+          "value": "cargo check"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 53,
+          "end": 57,
+          "value": "4096"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 92,
+          "end": 112,
+          "value": "2026-02-01T10:20:30Z"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 188,
+          "end": 198,
+          "value": "user_count"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 223,
+          "end": 228,
+          "value": "tokio"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 233,
+          "end": 237,
+          "value": "clap"
+        },
+        {
+          "path": "records[1].message.content[1].name",
+          "start": 0,
+          "end": 4,
+          "value": "bash"
+        },
+        {
+          "path": "records[1].message.content[1].arguments.command",
+          "start": 0,
+          "end": 14,
+          "value": "rg --files src"
+        },
+        {
+          "path": "records[1].message.content[1].arguments.command",
+          "start": 18,
+          "end": 39,
+          "value": "cargo check --offline"
+        },
+        {
+          "path": "records[1].message.content[1].arguments.cwd",
+          "start": 0,
+          "end": 22,
+          "value": "/tmp/synthetic-project"
+        },
+        {
+          "path": "records[2].message.toolName",
+          "start": 0,
+          "end": 4,
+          "value": "bash"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 0,
+          "end": 10,
+          "value": "src/lib.rs"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 11,
+          "end": 33,
+          "value": "warning: unused import"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 34,
+          "end": 42,
+          "value": "0 errors"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 59,
+          "end": 73,
+          "value": "127.0.0.1:8080"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 78,
+          "end": 81,
+          "value": "::1"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 98,
+          "end": 112,
+          "value": "/usr/local/lib"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 17,
+          "end": 47,
+          "value": "let buffer_size: usize = 4096;"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 48,
+          "end": 72,
+          "value": "const LIMIT: u32 = 8080;"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 73,
+          "end": 105,
+          "value": "fn main() { println!(\"ready\"); }"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-2",
+      "split": "selection",
+      "trace": {
+        "session": {
+          "id": "00000000-0000-4000-8000-000000000002",
+          "version": 3,
+          "type": "session"
+        },
+        "records": [
+          {
+            "id": "trace-2-0",
+            "parentId": "00000000-0000-4000-8000-000000000002",
+            "timestamp": "2026-02-02T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "This is a fictional test task for Jörg Vexlorn. Contact jorg@example.invalid. Keep --strict, --timeout 30, and --no-progress in the CLI. Public dependency serde_json is at https://docs.rs/serde_json/."
+                }
+              ]
+            }
+          },
+          {
+            "id": "trace-2-1",
+            "parentId": "trace-2-0",
+            "timestamp": "2026-02-02T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "thinking",
+                  "thinking": "Reasoning: use bash and cargo check. The buffer size 4096 is not a PIN. The build timestamp 2026-02-01T10:20:30Z is not a birthday. Fictional account username=scribe_violet; do not confuse user_count with an account. Public tokio and clap are dependencies."
+                },
+                {
+                  "type": "toolCall",
+                  "id": "call-2",
+                  "name": "bash",
+                  "arguments": {
+                    "command": "rg --files src && cargo check --offline",
+                    "cwd": "/tmp/synthetic-project",
+                    "timeout": 30,
+                    "parallel": false
+                  }
+                }
+              ],
+              "usage": {
+                "input": 4096,
+                "output": 128,
+                "cacheRead": 0,
+                "cost": 0.0125
+              },
+              "stopReason": "toolUse"
+            }
+          },
+          {
+            "id": "trace-2-2",
+            "parentId": "trace-2-1",
+            "timestamp": "2026-02-02T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "toolResult",
+              "toolCallId": "call-2",
+              "toolName": "bash",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "src/lib.rs\nwarning: unused import\n0 errors; local listener 127.0.0.1:8080 and ::1. Compiler cache /usr/local/lib is public fixture layout."
+                }
+              ],
+              "isError": false,
+              "details": {
+                "exitCode": 0,
+                "truncated": false
+              }
+            }
+          },
+          {
+            "id": "trace-2-3",
+            "parentId": "trace-2-2",
+            "timestamp": "2026-02-02T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Proposed source:\nlet buffer_size: usize = 4096;\nconst LIMIT: u32 = 8080;\nfn main() { println!(\"ready\"); }\nRepeat contact jorg@example.invalid and jorg@example.invalid for occurrence accounting. Patient Jörg Vexlorn has date of birth 1987-03-24; the authentication PIN is 5729. Never use these fabricated credentials: AKIAIOSFODNN7EXAMPLE and sk_test_syntheticOnlyNotARealKey123456789."
+                }
+              ]
+            }
+          },
+          {
+            "id": "trace-2-4",
+            "parentId": "trace-2-3",
+            "timestamp": "2026-02-02T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Known-sensitive fictional project VioletHeron uses violetheron.svc.example.invalid. These require an explicit known-sensitive policy, not a universal NER promise."
+                }
+              ]
+            }
+          }
+        ],
+        "metadata": {
+          "identityId": "10000000-0000-4000-8000-000000000099",
+          "contact": "jorg@example.invalid",
+          "reviewed": null
+        }
+      },
+      "gold": [
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 34,
+          "end": 47,
+          "value": "Jörg Vexlorn",
+          "class": "person",
+          "scope": "ner"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 57,
+          "end": 77,
+          "value": "jorg@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 159,
+          "end": 172,
+          "value": "scribe_violet",
+          "class": "username",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 121,
+          "end": 141,
+          "value": "jorg@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 146,
+          "end": 166,
+          "value": "jorg@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 202,
+          "end": 215,
+          "value": "Jörg Vexlorn",
+          "class": "person",
+          "scope": "ner"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 234,
+          "end": 244,
+          "value": "1987-03-24",
+          "class": "birth_date",
+          "scope": "ner"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 272,
+          "end": 276,
+          "value": "5729",
+          "class": "pin",
+          "scope": "ner"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 318,
+          "end": 338,
+          "value": "AKIAIOSFODNN7EXAMPLE",
+          "class": "aws_key",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 343,
+          "end": 384,
+          "value": "sk_test_syntheticOnlyNotARealKey123456789",
+          "class": "api_key",
+          "scope": "regex"
+        },
+        {
+          "path": "records[4].message.content[0].text",
+          "start": 34,
+          "end": 45,
+          "value": "VioletHeron",
+          "class": "codename",
+          "scope": "policy"
+        },
+        {
+          "path": "records[4].message.content[0].text",
+          "start": 51,
+          "end": 82,
+          "value": "violetheron.svc.example.invalid",
+          "class": "internal_hostname",
+          "scope": "policy"
+        },
+        {
+          "path": "metadata.identityId",
+          "start": 0,
+          "end": 36,
+          "value": "10000000-0000-4000-8000-000000000099",
+          "class": "identity_uuid",
+          "scope": "regex"
+        },
+        {
+          "path": "metadata.contact",
+          "start": 0,
+          "end": 20,
+          "value": "jorg@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        }
+      ],
+      "benign": [
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 84,
+          "end": 92,
+          "value": "--strict"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 94,
+          "end": 106,
+          "value": "--timeout 30"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 112,
+          "end": 125,
+          "value": "--no-progress"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 156,
+          "end": 166,
+          "value": "serde_json"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 173,
+          "end": 200,
+          "value": "https://docs.rs/serde_json/"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 15,
+          "end": 19,
+          "value": "bash"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 24,
+          "end": 35,
+          "value": "cargo check"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 53,
+          "end": 57,
+          "value": "4096"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 92,
+          "end": 112,
+          "value": "2026-02-01T10:20:30Z"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 189,
+          "end": 199,
+          "value": "user_count"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 224,
+          "end": 229,
+          "value": "tokio"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 234,
+          "end": 238,
+          "value": "clap"
+        },
+        {
+          "path": "records[1].message.content[1].name",
+          "start": 0,
+          "end": 4,
+          "value": "bash"
+        },
+        {
+          "path": "records[1].message.content[1].arguments.command",
+          "start": 0,
+          "end": 14,
+          "value": "rg --files src"
+        },
+        {
+          "path": "records[1].message.content[1].arguments.command",
+          "start": 18,
+          "end": 39,
+          "value": "cargo check --offline"
+        },
+        {
+          "path": "records[1].message.content[1].arguments.cwd",
+          "start": 0,
+          "end": 22,
+          "value": "/tmp/synthetic-project"
+        },
+        {
+          "path": "records[2].message.toolName",
+          "start": 0,
+          "end": 4,
+          "value": "bash"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 0,
+          "end": 10,
+          "value": "src/lib.rs"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 11,
+          "end": 33,
+          "value": "warning: unused import"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 34,
+          "end": 42,
+          "value": "0 errors"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 59,
+          "end": 73,
+          "value": "127.0.0.1:8080"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 78,
+          "end": 81,
+          "value": "::1"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 98,
+          "end": 112,
+          "value": "/usr/local/lib"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 17,
+          "end": 47,
+          "value": "let buffer_size: usize = 4096;"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 48,
+          "end": 72,
+          "value": "const LIMIT: u32 = 8080;"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 73,
+          "end": 105,
+          "value": "fn main() { println!(\"ready\"); }"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-3",
+      "split": "holdout",
+      "trace": {
+        "session": {
+          "id": "00000000-0000-4000-8000-000000000003",
+          "version": 3,
+          "type": "session"
+        },
+        "records": [
+          {
+            "id": "trace-3-0",
+            "parentId": "00000000-0000-4000-8000-000000000003",
+            "timestamp": "2026-02-03T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "This is a fictional test task for Zoë Nimbrel. Contact zoe@example.invalid. Keep --strict, --timeout 30, and --no-progress in the CLI. Public dependency serde_json is at https://docs.rs/serde_json/."
+                }
+              ]
+            }
+          },
+          {
+            "id": "trace-3-1",
+            "parentId": "trace-3-0",
+            "timestamp": "2026-02-03T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "thinking",
+                  "thinking": "Reasoning: use bash and cargo check. The buffer size 4096 is not a PIN. The build timestamp 2026-02-01T10:20:30Z is not a birthday. Fictional account username=scribe_cobalt; do not confuse user_count with an account. Public tokio and clap are dependencies."
+                },
+                {
+                  "type": "toolCall",
+                  "id": "call-3",
+                  "name": "bash",
+                  "arguments": {
+                    "command": "rg --files src && cargo check --offline",
+                    "cwd": "/tmp/synthetic-project",
+                    "timeout": 30,
+                    "parallel": false
+                  }
+                }
+              ],
+              "usage": {
+                "input": 4096,
+                "output": 128,
+                "cacheRead": 0,
+                "cost": 0.0125
+              },
+              "stopReason": "toolUse"
+            }
+          },
+          {
+            "id": "trace-3-2",
+            "parentId": "trace-3-1",
+            "timestamp": "2026-02-03T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "toolResult",
+              "toolCallId": "call-3",
+              "toolName": "bash",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "src/lib.rs\nwarning: unused import\n0 errors; local listener 127.0.0.1:8080 and ::1. Compiler cache /usr/local/lib is public fixture layout."
+                }
+              ],
+              "isError": false,
+              "details": {
+                "exitCode": 0,
+                "truncated": false
+              }
+            }
+          },
+          {
+            "id": "trace-3-3",
+            "parentId": "trace-3-2",
+            "timestamp": "2026-02-03T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Proposed source:\nlet buffer_size: usize = 4096;\nconst LIMIT: u32 = 8080;\nfn main() { println!(\"ready\"); }\nRepeat contact zoe@example.invalid and zoe@example.invalid for occurrence accounting. Patient Zoë Nimbrel has date of birth 1995-11-08; the authentication PIN is 7318. Never use these fabricated credentials: AKIAIOSFODNN7EXAMPLE and sk_test_syntheticOnlyNotARealKey123456789."
+                }
+              ]
+            }
+          },
+          {
+            "id": "trace-3-4",
+            "parentId": "trace-3-3",
+            "timestamp": "2026-02-03T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Known-sensitive fictional project CobaltFinch uses cobaltfinch.svc.example.invalid. These require an explicit known-sensitive policy, not a universal NER promise."
+                }
+              ]
+            }
+          }
+        ],
+        "metadata": {
+          "identityId": "10000000-0000-4000-8000-000000000099",
+          "contact": "zoe@example.invalid",
+          "reviewed": null
+        }
+      },
+      "gold": [
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 34,
+          "end": 46,
+          "value": "Zoë Nimbrel",
+          "class": "person",
+          "scope": "ner"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 56,
+          "end": 75,
+          "value": "zoe@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 159,
+          "end": 172,
+          "value": "scribe_cobalt",
+          "class": "username",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 121,
+          "end": 140,
+          "value": "zoe@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 145,
+          "end": 164,
+          "value": "zoe@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 200,
+          "end": 212,
+          "value": "Zoë Nimbrel",
+          "class": "person",
+          "scope": "ner"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 231,
+          "end": 241,
+          "value": "1995-11-08",
+          "class": "birth_date",
+          "scope": "ner"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 269,
+          "end": 273,
+          "value": "7318",
+          "class": "pin",
+          "scope": "ner"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 315,
+          "end": 335,
+          "value": "AKIAIOSFODNN7EXAMPLE",
+          "class": "aws_key",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 340,
+          "end": 381,
+          "value": "sk_test_syntheticOnlyNotARealKey123456789",
+          "class": "api_key",
+          "scope": "regex"
+        },
+        {
+          "path": "records[4].message.content[0].text",
+          "start": 34,
+          "end": 45,
+          "value": "CobaltFinch",
+          "class": "codename",
+          "scope": "policy"
+        },
+        {
+          "path": "records[4].message.content[0].text",
+          "start": 51,
+          "end": 82,
+          "value": "cobaltfinch.svc.example.invalid",
+          "class": "internal_hostname",
+          "scope": "policy"
+        },
+        {
+          "path": "metadata.identityId",
+          "start": 0,
+          "end": 36,
+          "value": "10000000-0000-4000-8000-000000000099",
+          "class": "identity_uuid",
+          "scope": "regex"
+        },
+        {
+          "path": "metadata.contact",
+          "start": 0,
+          "end": 19,
+          "value": "zoe@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        }
+      ],
+      "benign": [
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 82,
+          "end": 90,
+          "value": "--strict"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 92,
+          "end": 104,
+          "value": "--timeout 30"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 110,
+          "end": 123,
+          "value": "--no-progress"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 154,
+          "end": 164,
+          "value": "serde_json"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 171,
+          "end": 198,
+          "value": "https://docs.rs/serde_json/"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 15,
+          "end": 19,
+          "value": "bash"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 24,
+          "end": 35,
+          "value": "cargo check"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 53,
+          "end": 57,
+          "value": "4096"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 92,
+          "end": 112,
+          "value": "2026-02-01T10:20:30Z"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 189,
+          "end": 199,
+          "value": "user_count"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 224,
+          "end": 229,
+          "value": "tokio"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 234,
+          "end": 238,
+          "value": "clap"
+        },
+        {
+          "path": "records[1].message.content[1].name",
+          "start": 0,
+          "end": 4,
+          "value": "bash"
+        },
+        {
+          "path": "records[1].message.content[1].arguments.command",
+          "start": 0,
+          "end": 14,
+          "value": "rg --files src"
+        },
+        {
+          "path": "records[1].message.content[1].arguments.command",
+          "start": 18,
+          "end": 39,
+          "value": "cargo check --offline"
+        },
+        {
+          "path": "records[1].message.content[1].arguments.cwd",
+          "start": 0,
+          "end": 22,
+          "value": "/tmp/synthetic-project"
+        },
+        {
+          "path": "records[2].message.toolName",
+          "start": 0,
+          "end": 4,
+          "value": "bash"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 0,
+          "end": 10,
+          "value": "src/lib.rs"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 11,
+          "end": 33,
+          "value": "warning: unused import"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 34,
+          "end": 42,
+          "value": "0 errors"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 59,
+          "end": 73,
+          "value": "127.0.0.1:8080"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 78,
+          "end": 81,
+          "value": "::1"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 98,
+          "end": 112,
+          "value": "/usr/local/lib"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 17,
+          "end": 47,
+          "value": "let buffer_size: usize = 4096;"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 48,
+          "end": 72,
+          "value": "const LIMIT: u32 = 8080;"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 73,
+          "end": 105,
+          "value": "fn main() { println!(\"ready\"); }"
+        }
+      ]
+    },
+    {
+      "id": "synthetic-4",
+      "split": "holdout",
+      "trace": {
+        "session": {
+          "id": "00000000-0000-4000-8000-000000000004",
+          "version": 3,
+          "type": "session"
+        },
+        "records": [
+          {
+            "id": "trace-4-0",
+            "parentId": "00000000-0000-4000-8000-000000000004",
+            "timestamp": "2026-02-04T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "This is a fictional test task for Renée Talvex. Contact renee@example.invalid. Keep --strict, --timeout 30, and --no-progress in the CLI. Public dependency serde_json is at https://docs.rs/serde_json/."
+                }
+              ]
+            }
+          },
+          {
+            "id": "trace-4-1",
+            "parentId": "trace-4-0",
+            "timestamp": "2026-02-04T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "thinking",
+                  "thinking": "Reasoning: use bash and cargo check. The buffer size 4096 is not a PIN. The build timestamp 2026-02-01T10:20:30Z is not a birthday. Fictional account username=scribe_copper; do not confuse user_count with an account. Public tokio and clap are dependencies."
+                },
+                {
+                  "type": "toolCall",
+                  "id": "call-4",
+                  "name": "bash",
+                  "arguments": {
+                    "command": "rg --files src && cargo check --offline",
+                    "cwd": "/tmp/synthetic-project",
+                    "timeout": 30,
+                    "parallel": false
+                  }
+                }
+              ],
+              "usage": {
+                "input": 4096,
+                "output": 128,
+                "cacheRead": 0,
+                "cost": 0.0125
+              },
+              "stopReason": "toolUse"
+            }
+          },
+          {
+            "id": "trace-4-2",
+            "parentId": "trace-4-1",
+            "timestamp": "2026-02-04T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "toolResult",
+              "toolCallId": "call-4",
+              "toolName": "bash",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "src/lib.rs\nwarning: unused import\n0 errors; local listener 127.0.0.1:8080 and ::1. Compiler cache /usr/local/lib is public fixture layout."
+                }
+              ],
+              "isError": false,
+              "details": {
+                "exitCode": 0,
+                "truncated": false
+              }
+            }
+          },
+          {
+            "id": "trace-4-3",
+            "parentId": "trace-4-2",
+            "timestamp": "2026-02-04T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "assistant",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Proposed source:\nlet buffer_size: usize = 4096;\nconst LIMIT: u32 = 8080;\nfn main() { println!(\"ready\"); }\nRepeat contact renee@example.invalid and renee@example.invalid for occurrence accounting. Patient Renée Talvex has date of birth 1989-06-19; the authentication PIN is 2647. Never use these fabricated credentials: AKIAIOSFODNN7EXAMPLE and sk_test_syntheticOnlyNotARealKey123456789."
+                }
+              ]
+            }
+          },
+          {
+            "id": "trace-4-4",
+            "parentId": "trace-4-3",
+            "timestamp": "2026-02-04T10:20:30.000Z",
+            "type": "message",
+            "message": {
+              "role": "user",
+              "content": [
+                {
+                  "type": "text",
+                  "text": "Known-sensitive fictional project CopperWren uses copperwren.svc.example.invalid. These require an explicit known-sensitive policy, not a universal NER promise."
+                }
+              ]
+            }
+          }
+        ],
+        "metadata": {
+          "identityId": "10000000-0000-4000-8000-000000000099",
+          "contact": "renee@example.invalid",
+          "reviewed": null
+        }
+      },
+      "gold": [
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 34,
+          "end": 47,
+          "value": "Renée Talvex",
+          "class": "person",
+          "scope": "ner"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 57,
+          "end": 78,
+          "value": "renee@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 159,
+          "end": 172,
+          "value": "scribe_copper",
+          "class": "username",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 121,
+          "end": 142,
+          "value": "renee@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 147,
+          "end": 168,
+          "value": "renee@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 204,
+          "end": 217,
+          "value": "Renée Talvex",
+          "class": "person",
+          "scope": "ner"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 236,
+          "end": 246,
+          "value": "1989-06-19",
+          "class": "birth_date",
+          "scope": "ner"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 274,
+          "end": 278,
+          "value": "2647",
+          "class": "pin",
+          "scope": "ner"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 320,
+          "end": 340,
+          "value": "AKIAIOSFODNN7EXAMPLE",
+          "class": "aws_key",
+          "scope": "regex"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 345,
+          "end": 386,
+          "value": "sk_test_syntheticOnlyNotARealKey123456789",
+          "class": "api_key",
+          "scope": "regex"
+        },
+        {
+          "path": "records[4].message.content[0].text",
+          "start": 34,
+          "end": 44,
+          "value": "CopperWren",
+          "class": "codename",
+          "scope": "policy"
+        },
+        {
+          "path": "records[4].message.content[0].text",
+          "start": 50,
+          "end": 80,
+          "value": "copperwren.svc.example.invalid",
+          "class": "internal_hostname",
+          "scope": "policy"
+        },
+        {
+          "path": "metadata.identityId",
+          "start": 0,
+          "end": 36,
+          "value": "10000000-0000-4000-8000-000000000099",
+          "class": "identity_uuid",
+          "scope": "regex"
+        },
+        {
+          "path": "metadata.contact",
+          "start": 0,
+          "end": 21,
+          "value": "renee@example.invalid",
+          "class": "email",
+          "scope": "regex"
+        }
+      ],
+      "benign": [
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 85,
+          "end": 93,
+          "value": "--strict"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 95,
+          "end": 107,
+          "value": "--timeout 30"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 113,
+          "end": 126,
+          "value": "--no-progress"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 157,
+          "end": 167,
+          "value": "serde_json"
+        },
+        {
+          "path": "records[0].message.content[0].text",
+          "start": 174,
+          "end": 201,
+          "value": "https://docs.rs/serde_json/"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 15,
+          "end": 19,
+          "value": "bash"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 24,
+          "end": 35,
+          "value": "cargo check"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 53,
+          "end": 57,
+          "value": "4096"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 92,
+          "end": 112,
+          "value": "2026-02-01T10:20:30Z"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 189,
+          "end": 199,
+          "value": "user_count"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 224,
+          "end": 229,
+          "value": "tokio"
+        },
+        {
+          "path": "records[1].message.content[0].thinking",
+          "start": 234,
+          "end": 238,
+          "value": "clap"
+        },
+        {
+          "path": "records[1].message.content[1].name",
+          "start": 0,
+          "end": 4,
+          "value": "bash"
+        },
+        {
+          "path": "records[1].message.content[1].arguments.command",
+          "start": 0,
+          "end": 14,
+          "value": "rg --files src"
+        },
+        {
+          "path": "records[1].message.content[1].arguments.command",
+          "start": 18,
+          "end": 39,
+          "value": "cargo check --offline"
+        },
+        {
+          "path": "records[1].message.content[1].arguments.cwd",
+          "start": 0,
+          "end": 22,
+          "value": "/tmp/synthetic-project"
+        },
+        {
+          "path": "records[2].message.toolName",
+          "start": 0,
+          "end": 4,
+          "value": "bash"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 0,
+          "end": 10,
+          "value": "src/lib.rs"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 11,
+          "end": 33,
+          "value": "warning: unused import"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 34,
+          "end": 42,
+          "value": "0 errors"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 59,
+          "end": 73,
+          "value": "127.0.0.1:8080"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 78,
+          "end": 81,
+          "value": "::1"
+        },
+        {
+          "path": "records[2].message.content[0].text",
+          "start": 98,
+          "end": 112,
+          "value": "/usr/local/lib"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 17,
+          "end": 47,
+          "value": "let buffer_size: usize = 4096;"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 48,
+          "end": 72,
+          "value": "const LIMIT: u32 = 8080;"
+        },
+        {
+          "path": "records[3].message.content[0].text",
+          "start": 73,
+          "end": 105,
+          "value": "fn main() { println!(\"ready\"); }"
+        }
+      ]
+    }
+  ]
+}

@@ -52,7 +52,7 @@ fn recursive_exclusion_reports_and_preserves_nested_ids() {
                 payload,
                 serde_json::json!([{
                     "category": "contact", "confidence": "high",
-                    "matched_text": "alpha@example.invalid",
+                    "matched_text": "alpha@example.invalid", "start": 0, "end": 21,
                     "path": "messages[0].content", "pattern_name": "email"
                 }])
             );
