@@ -30,7 +30,7 @@ mod streaming_ner;
 
 use config::Config;
 use engine::{
-    BUILTIN_PATTERNS, Confidence, Detector, DetectorConfig, JsonPiiMatch, PiiMatch,
+    BUILTIN_PATTERNS, Confidence, Detector, DetectorConfig, JsonPiiMatch, PiiCategory, PiiMatch,
     ReplacementStrategy, Replacer, ReplacerConfig, detect_json_with_selector,
     process_json_with_selector,
 };
@@ -51,9 +51,24 @@ fn apply_ner_backend(mut dc: DetectorConfig, ner: &config::NerConfig) -> Detecto
 fn main() {
     if let Err(err) = try_main() {
         let _ = writeln!(io::stderr(), "error: {err:?}");
-        std::process::exit(1);
+        let code = err.downcast_ref::<ExitError>().map(|e| e.0).unwrap_or(1);
+        std::process::exit(code);
     }
 }
+
+/// An error carrying an explicit process exit code, used to signal distinct
+/// statuses (e.g. an audit gate that found blockers) without conflating them
+/// with a generic failure.
+#[derive(Debug)]
+struct ExitError(i32);
+
+impl std::fmt::Display for ExitError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "exit code {}", self.0)
+    }
+}
+
+impl std::error::Error for ExitError {}
 
 fn try_main() -> Result<()> {
     let cli = Cli::parse();
@@ -610,6 +625,18 @@ struct DetectCommand {
     /// JSON only: print a coverage report of scanned/skipped paths
     #[arg(long)]
     json_coverage: bool,
+
+    /// Fail (nonzero exit) when any finding matches a pattern name or PII
+    /// category (repeatable, e.g. `--fail-on email --fail-on ssn` or
+    /// `--fail-on financial`). Default inspection behavior is unchanged when
+    /// this is not supplied.
+    #[arg(long = "fail-on", value_name = "PATTERN_OR_CATEGORY")]
+    fail_on: Vec<String>,
+
+    /// Emit a value-free machine-readable summary (aggregate counts only, no
+    /// matched values, no source paths) suitable for a public run manifest.
+    #[arg(long)]
+    summary_json: bool,
 }
 
 // -----------------------------------------------------------------------------
@@ -1837,6 +1864,9 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
 
     let detector = Detector::new(&detector_config);
 
+    // Build the audit fail-on policy (opt-in; empty by default).
+    let fail_policy = engine::FailOnPolicy::new(&cmd.fail_on);
+
     // Detect based on format
     match format {
         FormatArg::Json => {
@@ -1848,7 +1878,15 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
                 print_coverage(&coverage);
             }
 
-            if cmd.summary {
+            let findings: Vec<(&str, PiiCategory)> = json_matches
+                .iter()
+                .map(|m| (m.pii_match.pattern_name.as_str(), m.pii_match.category))
+                .collect();
+            let summary = engine::AuditSummary::from_findings(findings, &fail_policy);
+
+            if cmd.summary_json {
+                println!("{}", engine::to_summary_json(&summary)?);
+            } else if cmd.summary {
                 let summary = create_json_summary(&json_matches);
                 if common.json {
                     println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -1864,11 +1902,24 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
             } else {
                 output_json_matches(common, &json_matches)?;
             }
+
+            if summary.blocked() {
+                return Err(anyhow::Error::new(ExitError(2)).context(
+                    "audit gate: sensitive findings present (use --summary-json for a value-free manifest)",
+                ));
+            }
         }
         FormatArg::Text => {
             let matches = detector.detect(&input_text);
+            let findings: Vec<(&str, PiiCategory)> = matches
+                .iter()
+                .map(|m| (m.pattern_name.as_str(), m.category))
+                .collect();
+            let summary = engine::AuditSummary::from_findings(findings, &fail_policy);
 
-            if cmd.summary {
+            if cmd.summary_json {
+                println!("{}", engine::to_summary_json(&summary)?);
+            } else if cmd.summary {
                 let summary = create_summary(&matches);
                 if common.json {
                     println!("{}", serde_json::to_string_pretty(&summary)?);
@@ -1883,6 +1934,12 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
                 }
             } else {
                 output_text_matches(common, &matches)?;
+            }
+
+            if summary.blocked() {
+                return Err(anyhow::Error::new(ExitError(2)).context(
+                    "audit gate: sensitive findings present (use --summary-json for a value-free manifest)",
+                ));
             }
         }
     }

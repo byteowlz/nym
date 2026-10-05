@@ -374,3 +374,55 @@ fn invalid_path_selector_fails_loudly() {
     );
     assert!(!ok, "malformed path selector must be rejected");
 }
+
+#[test]
+fn fail_on_blocks_on_matching_pattern() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.txt");
+    write(&input, "contact alice@example.com for details");
+
+    // Default behavior: findings present still exit 0.
+    let (ok, _) = run(&["detect", input.to_str().unwrap()], None);
+    assert!(ok, "default detect should succeed even with findings");
+
+    // With --fail-on email, exit nonzero.
+    let (ok, _) = run(
+        &["detect", input.to_str().unwrap(), "--fail-on", "email"],
+        None,
+    );
+    assert!(!ok, "fail-on email should block");
+}
+
+#[test]
+fn fail_on_does_not_block_on_other_pattern() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.txt");
+    write(&input, "contact alice@example.com for details");
+
+    let (ok, _) = run(
+        &["detect", input.to_str().unwrap(), "--fail-on", "ssn"],
+        None,
+    );
+    assert!(ok, "fail-on ssn should not block an email finding");
+}
+
+#[test]
+fn summary_json_is_value_free() {
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("input.txt");
+    write(&input, "contact alice@example.com at 555-123-4567");
+
+    let (ok, stdout) = run(&["detect", input.to_str().unwrap(), "--summary-json"], None);
+    assert!(ok);
+    let v: serde_json::Value = serde_json::from_str(stdout.trim()).expect("valid json summary");
+    assert!(v["total"].as_u64().unwrap() >= 1);
+    assert!(
+        !stdout.contains("alice@example.com"),
+        "no matched values in summary"
+    );
+    assert!(
+        !stdout.contains("555-123-4567"),
+        "no matched values in summary"
+    );
+    assert!(stdout.contains("by_category"), "summary groups by category");
+}

@@ -22,6 +22,7 @@
 //! println!("Anonymized: {}", anonymized);
 //! ```
 
+pub mod audit;
 #[cfg(feature = "decision")]
 pub mod decision;
 pub mod detector;
@@ -42,6 +43,7 @@ pub mod selector;
 #[cfg(feature = "decision")]
 pub use decision::{Decision, DecisionConfig, DecisionGate, Verdict};
 
+pub use audit::{AuditSummary, FailOnPolicy, to_summary_json};
 pub use detector::{Detector, DetectorConfig, PiiMatch};
 #[allow(unused_imports)]
 pub use formats::{
