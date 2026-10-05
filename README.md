@@ -142,6 +142,37 @@ nym detect file.txt --only-contact    # Email, phone, social
 nym detect file.txt --only-financial  # Credit cards, IBANs
 ```
 
+**JSON path selection** (`--format json`, works the same on `nym anon`):
+
+```bash
+# Only detect string values at these paths (repeatable; dot keys, [N], *)
+nym detect data.json --format json --include-path messages.*.content
+
+# Skip a subtree entirely - structural IDs stay untouched.
+# `*` matches exactly one path segment (a key or an array index):
+# `messages.*.id` covers messages[0].id, [1].id, ... but not meta.id -
+# list each depth explicitly.
+nym detect data.json --format json --exclude-path "messages.*.id" --exclude-path "meta.id" --json-coverage
+```
+
+`--json-coverage` prints which paths were scanned vs skipped, so selection
+coverage is explicit.
+
+**Audit policy for CI:**
+
+```bash
+# Exit nonzero when findings match a pattern name or category (repeatable)
+nym detect file.txt --fail-on email --fail-on financial
+
+# Value-free machine-readable summary: aggregate counts only,
+# no matched values, no source paths - safe for run manifests
+nym detect file.txt --summary-json
+```
+
+Exit codes with `--fail-on`: `0` clean, `2` findings matched the policy, `1`
+operational failure. Without `--fail-on`, detection exits `0` even when it
+finds PII (inspection mode).
+
 ### `nym anon [OPTIONS] [INPUT]`
 
 Anonymize PII in the input.
@@ -167,7 +198,23 @@ nym anon input.txt --exclude ssn,passport_us
 
 # Only use specific patterns
 nym anon input.txt --patterns email,phone_us
+
+# JSON: combine path selection with anonymization
+nym anon data.json --format json --include-path messages.*.content --exclude-path "*.id"
+
+# Streaming mode: INPUT defaults to stdin, -o to stdout;
+# --format json emits one anonymized JSON record per line (JSONL)
+nym anon --stream -k keys.jsonl session.jsonl -o session.anon.jsonl
+
+# Reproducible pseudonyms: same seed + same fake strategy give the same
+# replacements across runs; --context is recorded in the key file header
+nym anon input.txt --seed 42 --context "quarterly-export" -k keys.jsonl
 ```
+
+**Key files are merged, never truncated:** writing to an existing key file
+extends it with new mappings under a lock, and refuses strategy/seed/context
+mismatches instead of corrupting it. Multiple runs and processes can share one
+key file safely - later `nym deanon` restores everything.
 
 ### `nym deanon [OPTIONS] [INPUT]`
 
