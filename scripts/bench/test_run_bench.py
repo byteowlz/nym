@@ -260,5 +260,25 @@ class EndToEndProvenanceTests(unittest.TestCase):
             self.assertNotEqual(reports[0]["git"], reports[1]["git"])
 
 
+
+class VersionTests(unittest.TestCase):
+    def version(self, stdout, returncode=0):
+        result = subprocess.CompletedProcess([], returncode, stdout=stdout, stderr="")
+        with patch.object(bench.subprocess, "run", return_value=result):
+            return bench.run_version("nym")
+
+    def test_accepts_plain_and_build_stamped_versions(self):
+        stamped = ("nym 0.3.0+gd0a21a10216145c3d85a3d959b552eb97e3aa995.clean "
+                   "(features=default,ner,ureq;target=aarch64-apple-darwin)")
+        self.assertEqual(self.version("nym 0.3.0\n"), ("nym 0.3.0", None))
+        self.assertEqual(self.version(stamped + "\n"), (stamped, None))
+
+    def test_rejects_unexpected_version_output(self):
+        for stdout in ("nym 0.3.0 (features=x;target=y) extra", "nym 0.3.0\nsecond line",
+                       "nym 0.3.0 (target=aarch64-apple-darwin)", "other 0.3.0"):
+            self.assertEqual(self.version(stdout), ("unknown", "version unavailable"))
+        self.assertEqual(self.version("nym 0.3.0", returncode=1), ("unknown", "version unavailable"))
+
+
 if __name__ == "__main__":
     unittest.main()

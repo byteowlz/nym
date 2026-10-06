@@ -302,7 +302,10 @@ def run_version(binary):
     try:
         proc = subprocess.run([binary, "--version"], capture_output=True, text=True, timeout=10)
         version = proc.stdout.strip()
-        if proc.returncode == 0 and re.fullmatch(r"nym [0-9A-Za-z.+-]+", version):
+        # Plain release versions, or build.rs provenance stamps:
+        # nym 0.3.0+g<rev>.<state> (features=a,b;target=<triple>)
+        if proc.returncode == 0 and re.fullmatch(
+                r"nym [0-9A-Za-z.+-]+(?: \(features=[0-9a-z,_-]+;target=[0-9A-Za-z_.-]+\))?", version):
             return version, None
     except (OSError, subprocess.TimeoutExpired):
         return "unknown", "version unavailable"

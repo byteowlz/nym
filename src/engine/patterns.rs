@@ -163,8 +163,95 @@ static API_KEY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     regex(r"\b(?:sk|pk|api|key|token)[-_]?(?:live|test|prod)?[-_]?[a-zA-Z0-9]{32,}\b")
 });
 
-// IBAN (International Bank Account Number)
-static IBAN_REGEX: LazyLock<Regex> = LazyLock::new(|| regex(r"\b[A-Z]{2}\d{2}[A-Z0-9]{11,30}\b"));
+// IBAN candidates, compact or in space-separated groups of four. Only spans that
+// pass `iban_span` (country length and ISO 13616 mod-97) become findings.
+static IBAN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(r"\b[A-Z]{2}\d{2}(?:[A-Z0-9]{11,30}|(?: [A-Z0-9]{4}){2,7}(?: [A-Z0-9]{1,4})?)\b")
+});
+
+const IBAN_LENGTHS: &[(&str, usize)] = &[
+    ("AD", 24),
+    ("AE", 23),
+    ("AT", 20),
+    ("BE", 16),
+    ("BG", 22),
+    ("CH", 21),
+    ("CY", 28),
+    ("CZ", 24),
+    ("DE", 22),
+    ("DK", 18),
+    ("EE", 20),
+    ("ES", 24),
+    ("FI", 18),
+    ("FR", 27),
+    ("GB", 22),
+    ("GI", 23),
+    ("GR", 27),
+    ("HR", 21),
+    ("HU", 28),
+    ("IE", 22),
+    ("IS", 26),
+    ("IT", 27),
+    ("LI", 21),
+    ("LT", 20),
+    ("LU", 20),
+    ("LV", 21),
+    ("MC", 27),
+    ("MT", 31),
+    ("NL", 18),
+    ("NO", 15),
+    ("PL", 28),
+    ("PT", 25),
+    ("RO", 24),
+    ("SE", 24),
+    ("SI", 19),
+    ("SK", 24),
+    ("SM", 27),
+    ("TR", 26),
+    ("VA", 22),
+];
+
+/// Validate an IBAN candidate match and return the exact IBAN byte range.
+///
+/// Known countries must have their registered length; a spaced candidate that
+/// swallowed a following word is trimmed to that length at a token boundary.
+/// Unknown countries are accepted only when the whole candidate validates.
+pub(crate) fn iban_span(text: &str, start: usize, end: usize) -> Option<std::ops::Range<usize>> {
+    let candidate = &text[start..end];
+    let expected = IBAN_LENGTHS
+        .iter()
+        .find(|(country, _)| candidate.starts_with(country))
+        .map(|&(_, length)| length);
+    let mut compact = String::new();
+    let mut span_end = start;
+    for (offset, c) in candidate.char_indices() {
+        if c == ' ' {
+            continue;
+        }
+        compact.push(c);
+        span_end = start + offset + c.len_utf8();
+        if Some(compact.len()) == expected {
+            break;
+        }
+    }
+    let length_ok = expected.map_or((15..=34).contains(&compact.len()), |n| compact.len() == n);
+    let boundary_ok = !text[span_end..]
+        .chars()
+        .next()
+        .is_some_and(|c| c.is_ascii_alphanumeric());
+    (length_ok && boundary_ok && iban_checksum_valid(&compact)).then_some(start..span_end)
+}
+
+fn iban_checksum_valid(iban: &str) -> bool {
+    let mut remainder = 0u32;
+    for c in iban[4..].chars().chain(iban[..4].chars()) {
+        let Some(value) = c.to_digit(36) else {
+            return false;
+        };
+        remainder = (remainder * if value < 10 { 10 } else { 100 } + value) % 97;
+    }
+    remainder == 1
+}
 
 // US Passport
 static PASSPORT_US_REGEX: LazyLock<Regex> = LazyLock::new(|| regex(r"\b[A-Z]\d{8}\b"));
@@ -476,7 +563,7 @@ pub static BUILTIN_PATTERNS: &[PiiPattern] = &[
         name: "iban",
         description: "International Bank Account Number",
         regex: &IBAN_REGEX,
-        confidence: Confidence::Medium,
+        confidence: Confidence::High,
         category: PiiCategory::Financial,
         example: "DE89370400440532013000",
         replacement_template: "<IBAN>",
@@ -677,6 +764,32 @@ mod tests {
         assert!(re.is_match("user+tag@example.co.uk"));
         assert!(!re.is_match("not-an-email"));
         assert!(!re.is_match("@missing-local.com"));
+    }
+
+    #[test]
+    fn iban_spans_require_country_length_and_checksum() {
+        fn span(text: &str) -> Option<&str> {
+            IBAN_REGEX
+                .find(text)
+                .and_then(|m| iban_span(text, m.start(), m.end()))
+                .map(|range| &text[range])
+        }
+        assert_eq!(
+            span("IBAN: DE89370400440532013000"),
+            Some("DE89370400440532013000")
+        );
+        assert_eq!(
+            span("IBAN DE89 3704 0044 0532 0130 00 TEST"),
+            Some("DE89 3704 0044 0532 0130 00")
+        );
+        assert_eq!(
+            span("to GB82 WEST 1234 5698 7654 32."),
+            Some("GB82 WEST 1234 5698 7654 32")
+        );
+        // Wrong check digits, wrong country length, and a truncated token.
+        assert_eq!(span("DE88370400440532013000"), None);
+        assert_eq!(span("DE8937040044053201300"), None);
+        assert_eq!(span("DE89370400440532013000X1"), None);
     }
 
     #[test]

@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Detect compact and space-grouped IBANs by country length and mod-97 checksum at high confidence, so default scans redact the whole IBAN instead of a phone/card digit fragment. Accept build-stamped `--version` output in benchmark provenance checks.
 - Add an opt-in agent-trace privacy profile, guarded literal lists and value-free policy counts; preserve default detection and protected sensitive findings.
 - Verify residual pseudonyms by default before staged text/JSON/JSONL/office restoration; restore full exact aliases only, with an explicit `--no-verify-restore` legacy opt-out.
 - Add exact-labelled disjoint trace corpora, local-only canary/stratified review tooling, trainable small-checkpoint recovery and advisory local System-1 safety tests; tooling success is not a production-quality claim. See `docs/agent-trace-policy.md`.

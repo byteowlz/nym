@@ -10,7 +10,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::config::NerProvider;
 
-use super::patterns::{BUILTIN_PATTERNS, Confidence, PiiCategory, PiiPattern};
+use super::patterns::{BUILTIN_PATTERNS, Confidence, PiiCategory, PiiPattern, iban_span};
 use super::trace_policy::{TracePolicy, TracePolicyConfig, TracePolicyStats};
 
 /// Static regex for TLD detection in social handle validation.
@@ -740,11 +740,19 @@ impl Detector {
                 {
                     continue;
                 }
+                let range = if pattern.name == "iban" {
+                    let Some(range) = iban_span(text, m.start(), m.end()) else {
+                        continue;
+                    };
+                    range
+                } else {
+                    m.range()
+                };
                 matches.push(PiiMatch {
                     pattern_name: pattern.name.to_string(),
-                    matched_text: m.as_str().to_string(),
-                    start: m.start(),
-                    end: m.end(),
+                    matched_text: text[range.clone()].to_string(),
+                    start: range.start,
+                    end: range.end,
                     confidence: pattern.confidence,
                     category: pattern.category,
                 });
@@ -947,6 +955,35 @@ pub(crate) mod tests {
             );
             assert!(!format!("{expected:?}").contains("synthetic-private"));
         }
+    }
+
+    #[test]
+    fn default_detection_redacts_whole_valid_ibans_not_digit_fragments() {
+        let detector = Detector::with_defaults();
+        for (text, iban) in [
+            ("IBAN: DE89370400440532013000\n", "DE89370400440532013000"),
+            (
+                "pay DE89 3704 0044 0532 0130 00 today",
+                "DE89 3704 0044 0532 0130 00",
+            ),
+        ] {
+            let matches = detector.detect(text).unwrap();
+            let start = text.find(iban).unwrap();
+            assert!(
+                matches.iter().any(|m| m.pattern_name == "iban"
+                    && m.start == start
+                    && m.end == start + iban.len()
+                    && m.confidence == Confidence::High),
+                "{matches:?}"
+            );
+        }
+        assert!(
+            detector
+                .detect("IBAN: DE88370400440532013000")
+                .unwrap()
+                .iter()
+                .all(|m| m.pattern_name != "iban")
+        );
     }
 
     #[cfg(feature = "ner")]
