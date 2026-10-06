@@ -30,6 +30,40 @@ fn provider_config_is_explicit_and_validated() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
+#[cfg(feature = "decision")]
+#[test]
+#[ignore = "requires NYM_TEST_CACHED_NER_MODEL; CPU only, never downloads"]
+fn cached_batch_preserves_original_byte_offsets()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let model = std::env::var("NYM_TEST_CACHED_NER_MODEL")?;
+    let detector = TokenClassDetector::from_dir(model, Some(0.5), NerProvider::Cpu)?;
+    let texts = [
+        " \t\u{2003}Alice Smith.\r\n",
+        "\nJörg Beispiel\t",
+        "No private entities here.",
+        "\u{2003}\t",
+    ];
+    let singles = texts
+        .iter()
+        .map(|text| detector.detect(text))
+        .collect::<Result<Vec<_>, _>>()?;
+    assert!(!singles[0].is_empty(), "the cached NER must actually run");
+    let batch = detector.detect_batch(&texts)?;
+    assert_eq!(
+        serde_json::to_value(&batch)?,
+        serde_json::to_value(&singles)?
+    );
+    for (text, matches) in texts.iter().zip(batch) {
+        for found in matches {
+            assert_eq!(
+                text.get(found.start..found.end),
+                Some(found.matched_text.as_str())
+            );
+        }
+    }
+    Ok(())
+}
+
 /// An abort must fail the parent test, not terminate the entire test suite.
 #[test]
 fn invalid_model_returns_error() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

@@ -450,14 +450,15 @@ impl TokenClassDetector {
                 encodings.push(None);
                 continue;
             }
-            let encoding = self.tokenizer.encode(trimmed, true)?;
+            // Preserve the caller's text: trimming shifts UTF-8 byte offsets.
+            let encoding = self.tokenizer.encode(text, true)?;
             let ids = encoding.get_ids();
             if ids.is_empty() {
                 encodings.push(None);
                 continue;
             }
             max_seq = max_seq.max(ids.len());
-            encodings.push(Some((encoding, trimmed.to_string())));
+            encodings.push(Some((encoding, text)));
         }
 
         // If nothing encoded, return empties.
