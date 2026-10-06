@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Expand token-model password and API-key spans to the whole secret token (stopping at whitespace, quotes, brackets and key/value delimiters), so context-dependent sub-word decoding no longer leaves part of a secret in the output.
 - Detect compact and space-grouped IBANs by country length and mod-97 checksum at high confidence, so default scans redact the whole IBAN instead of a phone/card digit fragment. Accept build-stamped `--version` output in benchmark provenance checks.
 - Add an opt-in agent-trace privacy profile, guarded literal lists and value-free policy counts; preserve default detection and protected sensitive findings.
 - Verify residual pseudonyms by default before staged text/JSON/JSONL/office restoration; restore full exact aliases only, with an explicit `--no-verify-restore` legacy opt-out.

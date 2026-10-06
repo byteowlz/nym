@@ -625,13 +625,18 @@ impl TokenClassDetector {
             if start >= end {
                 continue;
             }
+            let (pattern_name, category) = label_to_pattern(&span.base_label);
+            let (start, end) = if category == PiiCategory::Authentication {
+                expand_secret_token(text, start, end)
+            } else {
+                (start, end)
+            };
             let matched_text = &text[start..end];
             let avg_prob = if span.token_count > 0 {
                 span.prob_sum / span.token_count as f32
             } else {
                 0.0
             };
-            let (pattern_name, category) = label_to_pattern(&span.base_label);
             if !is_valid_entity(&span.base_label, matched_text) {
                 continue;
             }
@@ -935,6 +940,45 @@ fn trim_span(text: &str, mut start: usize, mut end: usize) -> (usize, usize) {
     (start, end)
 }
 
+/// Grow a credential span to the whole surrounding secret token.
+///
+/// A partially redacted password or key still leaks, and sub-word decoding can
+/// stop mid-token depending on context. Expansion stops at whitespace, quotes,
+/// brackets and common key/value delimiters, and never shrinks the span.
+fn expand_secret_token(text: &str, mut start: usize, mut end: usize) -> (usize, usize) {
+    let is_delimiter = |c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                '"' | '\''
+                    | '`'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | '<'
+                    | '>'
+                    | '='
+                    | ':'
+                    | ','
+                    | ';'
+            )
+    };
+    while let Some(c) = text[..start]
+        .chars()
+        .next_back()
+        .filter(|&c| !is_delimiter(c))
+    {
+        start -= c.len_utf8();
+    }
+    while let Some(c) = text[end..].chars().next().filter(|&c| !is_delimiter(c)) {
+        end += c.len_utf8();
+    }
+    (start, end)
+}
+
 /// Convert a probability to a [`Confidence`] level (matches the GLiNER backend).
 fn probability_to_confidence(prob: f32) -> Confidence {
     if prob > 0.8 {
@@ -1160,6 +1204,26 @@ mod tests {
         assert_eq!(merged[0].base_label, "EMAIL");
         assert_eq!((merged[0].start, merged[0].end), (0, 10));
         assert_eq!(merged[1].base_label, "CITY");
+    }
+
+    #[test]
+    fn credential_spans_expand_to_the_whole_secret_token() {
+        let expand = |text: &str, part: &str| {
+            let start = text.find(part).unwrap();
+            let (a, b) = expand_secret_token(text, start, start + part.len());
+            text[a..b].to_string()
+        };
+        assert_eq!(
+            expand("password: TraceOnly!79xQ\n", "Only!79xQ"),
+            "TraceOnly!79xQ"
+        );
+        assert_eq!(
+            expand("OPENAI_API_KEY=\"sk-trace-fake-79b26e41\"", "79b26e41"),
+            "sk-trace-fake-79b26e41"
+        );
+        assert_eq!(expand("pw=Zoë-geheim; next", "geheim"), "Zoë-geheim");
+        assert_eq!(expand("pass Secret ok", "Secret"), "Secret");
+        assert_eq!(expand("{'token': 'abcDEF123'}", "DEF"), "abcDEF123");
     }
 
     #[test]
