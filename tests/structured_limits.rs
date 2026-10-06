@@ -169,7 +169,7 @@ fn uppercase_json_bom_and_array_are_structured() {
     );
 }
 #[test]
-fn structured_restoration_decodes_aliases_and_reescapes_originals() {
+fn legacy_structured_restoration_decodes_aliases_and_reescapes_originals() {
     let dir = tempfile::tempdir().unwrap();
     let key = dir.path().join("keys.jsonl");
     let input = dir.path().join("input.jsonl");
@@ -209,6 +209,7 @@ fn structured_restoration_decodes_aliases_and_reescapes_originals() {
             input.to_str().unwrap(),
             "-k",
             key.to_str().unwrap(),
+            "--no-verify-restore",
         ])
         .output()
         .unwrap();
@@ -234,6 +235,7 @@ fn structured_restoration_decodes_aliases_and_reescapes_originals() {
             input.to_str().unwrap(),
             "-k",
             key.to_str().unwrap(),
+            "--no-verify-restore",
             "-o",
             destination.to_str().unwrap(),
         ])

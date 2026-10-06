@@ -23,6 +23,10 @@ use serde::{Deserialize, Serialize};
 
 use super::replacer::{Replacement, Replacer};
 
+/// Provenance-aware checks used before publishing restored output.
+#[path = "restore_verification.rs"]
+pub mod restore_verification;
+
 /// Current key-file format version.
 pub const KEY_FILE_VERSION: &str = "1";
 

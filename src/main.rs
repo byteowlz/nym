@@ -33,8 +33,7 @@ mod streaming_ner;
 use config::Config;
 use engine::{
     BUILTIN_PATTERNS, Confidence, Detector, DetectorConfig, JsonPiiMatch, PiiCategory, PiiMatch,
-    ReplacementStrategy, Replacer, ReplacerConfig, detect_json_with_selector,
-    process_json_with_selector,
+    ReplacementStrategy, Replacer, ReplacerConfig, process_json_with_selector,
 };
 use session::Session;
 
@@ -326,7 +325,7 @@ fn resolve_ruleset(
 #[derive(Debug, Parser)]
 #[command(
     author,
-    version,
+    version = env!("NYM_BUILD_VERSION"),
     about = "Fast, reversible PII anonymization CLI",
     long_about = "nym detects and anonymizes personally identifiable information (PII) in text files.\n\n\
                   It supports text, JSON, JSONL and dedicated document handlers, and can optionally \
@@ -468,6 +467,81 @@ enum ModelsAction {
     Refresh,
 }
 
+/// Shared CLI overrides; a supplied list replaces the corresponding config list.
+#[derive(Debug, Clone, Default, Args)]
+struct TraceOpts {
+    /// Opt-in trace heuristics, or disable configured heuristics
+    #[arg(long, value_enum)]
+    profile: Option<ProfileArg>,
+    /// UTF-8 file of literal sensitive terms (repeatable; replaces configured files)
+    #[arg(long = "sensitive-terms-file", value_name = "FILE")]
+    sensitive_terms_files: Vec<String>,
+    /// UTF-8 file of benign literals (repeatable; never vetoes sensitive/regex findings)
+    #[arg(long = "benign-terms-file", value_name = "FILE")]
+    benign_terms_files: Vec<String>,
+    /// Exact public DNS host (repeatable; replaces configured hosts)
+    #[arg(long = "public-host", value_name = "HOST")]
+    public_hosts: Vec<String>,
+    /// Literal matching boundary (Unicode word or substring)
+    #[arg(long, value_enum)]
+    term_boundary: Option<BoundaryArg>,
+    /// Literal matching case sensitivity (true or false)
+    #[arg(long, action = clap::ArgAction::Set)]
+    term_case_sensitive: Option<bool>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ProfileArg {
+    Default,
+    AgentTrace,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum BoundaryArg {
+    Word,
+    Substring,
+}
+
+fn configure_trace(
+    mut detector: DetectorConfig,
+    config: &Config,
+    opts: &TraceOpts,
+) -> Result<DetectorConfig> {
+    let settings = &config.trace_policy;
+    let files = |cli: &[String], configured: &[String]| {
+        config::load_term_files(if cli.is_empty() { configured } else { cli })
+    };
+    let policy = engine::TracePolicyConfig {
+        profile: match opts.profile {
+            Some(ProfileArg::Default) => None,
+            Some(ProfileArg::AgentTrace) => Some(engine::TraceProfile::AgentTrace),
+            None => settings.profile,
+        },
+        public_hosts: if opts.public_hosts.is_empty() {
+            settings.public_hosts.clone()
+        } else {
+            opts.public_hosts.clone()
+        },
+        sensitive_terms: files(&opts.sensitive_terms_files, &settings.sensitive_terms_files)?,
+        benign_terms: files(&opts.benign_terms_files, &settings.benign_terms_files)?,
+        case_sensitive: opts.term_case_sensitive.unwrap_or(settings.case_sensitive),
+        term_boundary: match opts.term_boundary {
+            Some(BoundaryArg::Word) => engine::TermBoundary::Word,
+            Some(BoundaryArg::Substring) => engine::TermBoundary::Substring,
+            None => settings.term_boundary,
+        },
+    };
+    policy.validate()?;
+    if policy.profile.is_some()
+        || !policy.sensitive_terms.is_empty()
+        || !policy.benign_terms.is_empty()
+        || !policy.public_hosts.is_empty()
+    {
+        detector = detector.with_trace_policy(policy);
+    }
+    Ok(detector)
+}
+
 // -----------------------------------------------------------------------------
 // Anon Command
 // -----------------------------------------------------------------------------
@@ -475,6 +549,8 @@ enum ModelsAction {
 #[derive(Debug, Clone, Args)]
 #[expect(clippy::struct_excessive_bools, reason = "CLI flags from clap")]
 struct AnonCommand {
+    #[command(flatten)]
+    trace: TraceOpts,
     /// Input file (reads from stdin if not specified)
     #[arg(value_name = "INPUT")]
     input: Option<PathBuf>,
@@ -636,6 +712,10 @@ impl From<ConfidenceArg> for Confidence {
 
 #[derive(Debug, Clone, Args)]
 struct DeanonCommand {
+    /// Disable fail-closed checks for recognizable residual pseudonyms
+    #[arg(long)]
+    no_verify_restore: bool,
+
     /// Text/JSON/JSONL input format (otherwise resolved like anon/detect)
     #[arg(short = 'f', long, value_enum)]
     format: Option<FormatArg>,
@@ -660,6 +740,8 @@ struct DeanonCommand {
 #[derive(Debug, Clone, Args)]
 #[expect(clippy::struct_excessive_bools, reason = "CLI flags from clap")]
 struct DetectCommand {
+    #[command(flatten)]
+    trace: TraceOpts,
     /// Input file (reads from stdin if not specified)
     #[arg(value_name = "INPUT")]
     input: Option<PathBuf>,
@@ -768,6 +850,8 @@ struct DetectCommand {
 )]
 #[derive(Debug, Clone, Args)]
 struct DecideCommand {
+    #[command(flatten)]
+    trace: TraceOpts,
     /// Input file (reads from stdin if not specified)
     #[arg(value_name = "INPUT")]
     input: Option<PathBuf>,
@@ -1021,6 +1105,7 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         cmd.ner_model.as_deref(),
         cmd.ner_threshold,
     )?;
+    detector_config = configure_trace(detector_config, config, &cmd.trace)?;
     #[cfg(feature = "streaming")]
     if cmd.stream && format == FormatArg::Text {
         return handle_anon_streaming(
@@ -1567,6 +1652,7 @@ fn restoration_mappings(replacements: &[engine::Replacement]) -> Result<Vec<(&st
 struct TextRestorer<'a> {
     originals: std::collections::HashMap<&'a str, &'a str>,
     pattern: regex::Regex,
+    verifier: Option<&'a engine::keyfile::restore_verification::RestoreVerifier<'a>>,
 }
 
 impl<'a> TextRestorer<'a> {
@@ -1579,7 +1665,7 @@ impl<'a> TextRestorer<'a> {
             .iter()
             .map(|(alias, _)| {
                 let escaped = regex::escape(alias);
-                if alias.len() <= 3 {
+                if alias.chars().count() <= 3 {
                     format!(r"\b{escaped}\b")
                 } else {
                     escaped
@@ -1588,7 +1674,11 @@ impl<'a> TextRestorer<'a> {
             .collect();
         let pattern = regex::Regex::new(&alternatives.join("|"))
             .map_err(|_| anyhow!("failed to prepare restoration aliases"))?;
-        Ok(Self { originals, pattern })
+        Ok(Self {
+            originals,
+            pattern,
+            verifier: None,
+        })
     }
 
     fn restore(&self, text: &str) -> (String, usize) {
@@ -1600,6 +1690,18 @@ impl<'a> TextRestorer<'a> {
                 self.originals[&matched[0]].to_string()
             });
         (restored.into_owned(), count)
+    }
+
+    fn restore_verified(&self, text: &str) -> Result<(String, usize)> {
+        if let Some(verifier) = self.verifier {
+            let spans: Vec<_> = self
+                .pattern
+                .find_iter(text)
+                .map(|matched| matched.range())
+                .collect();
+            verifier.verify_text(text, &spans)?.ensure_clear()?;
+        }
+        Ok(self.restore(text))
     }
 }
 
@@ -1614,16 +1716,19 @@ fn restore_json_once(
             error.column()
         )
     })?;
-    let count = restore_json_value(&mut value, restorer);
+    if let Some(verifier) = restorer.verifier {
+        verifier.verify_json_keys(&value)?.ensure_clear()?;
+    }
+    let count = restore_json_value(&mut value, restorer)?;
     Ok((value, count))
 }
 
-fn restore_json_value(value: &mut serde_json::Value, restorer: &TextRestorer<'_>) -> usize {
+fn restore_json_value(value: &mut serde_json::Value, restorer: &TextRestorer<'_>) -> Result<usize> {
     match value {
         serde_json::Value::String(text) => {
-            let (restored, count) = restorer.restore(text);
+            let (restored, count) = restorer.restore_verified(text)?;
             *text = restored;
-            count
+            Ok(count)
         }
         serde_json::Value::Array(values) => values
             .iter_mut()
@@ -1633,7 +1738,7 @@ fn restore_json_value(value: &mut serde_json::Value, restorer: &TextRestorer<'_>
             .values_mut()
             .map(|value| restore_json_value(value, restorer))
             .sum(),
-        _ => 0,
+        _ => Ok(0),
     }
 }
 
@@ -1690,7 +1795,23 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
 
     info!("Loaded {} replacement mappings", replacements.len());
 
-    let all_mappings = restoration_mappings(&replacements)?;
+    let verifier = if cmd.no_verify_restore {
+        None
+    } else {
+        Some(engine::keyfile::restore_verification::RestoreVerifier::new(
+            &replacements,
+        )?)
+    };
+    let all_mappings = if verifier.is_some() {
+        let mut mappings: Vec<_> = replacements
+            .iter()
+            .map(|entry| (entry.replacement.as_str(), entry.original.as_str()))
+            .collect();
+        mappings.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(b.0)));
+        mappings
+    } else {
+        restoration_mappings(&replacements)?
+    };
 
     debug!(
         "Total mappings (including components): {}",
@@ -1709,21 +1830,27 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
             .iter()
             .map(|(r, o)| ((*r).to_string(), (*o).to_string()))
             .collect();
-        let (out_bytes, restored) = engine::office::deanonymize(&bytes, fmt, &owned)
-            .map_err(|e| anyhow!("Failed to restore office document: {e}"))?;
+        let (out_bytes, restored) = if let Some(verifier) = &verifier {
+            engine::office::deanonymize_verified(&bytes, fmt, &owned, verifier)
+        } else {
+            engine::office::deanonymize(&bytes, fmt, &owned)
+        }
+        .map_err(|_| anyhow!("office restore failed; output not published"))?;
         let out_path = cmd
             .output
             .clone()
             .unwrap_or_else(|| derive_document_output(path, "restored"));
-        fs::write(&out_path, &out_bytes)
-            .with_context(|| format!("Failed to write output: {}", out_path.display()))?;
+        let mut staged = tempfile::tempfile()?;
+        staged.write_all(&out_bytes)?;
+        publish_staged(Some(&out_path), &mut staged)?;
         if !common.quiet {
             eprintln!("Restored {restored} PII values -> {}", out_path.display());
         }
         return Ok(());
     }
 
-    let restorer = TextRestorer::new(&all_mappings)?;
+    let mut restorer = TextRestorer::new(&all_mappings)?;
+    restorer.verifier = verifier.as_ref();
     let restored_count = match format {
         FormatArg::Jsonl => {
             let mut staged = tempfile::tempfile()?;
@@ -1752,7 +1879,7 @@ fn handle_deanon(common: &CommonOpts, cmd: DeanonCommand) -> Result<()> {
             count
         }
         FormatArg::Text => {
-            let (restored, count) = restorer.restore(&input_text);
+            let (restored, count) = restorer.restore_verified(&input_text)?;
             write_output(cmd.output.as_ref(), &restored)?;
             count
         }
@@ -1904,6 +2031,7 @@ fn build_decide_detector(config: &Config, cmd: &DecideCommand) -> Result<Detecto
     let ner_enabled = !cmd.no_ner && config.ner.enabled;
     detector_config = detector_config.with_ner(ner_enabled);
     detector_config = configure_ner(detector_config, &config.ner, None, None)?;
+    detector_config = configure_trace(detector_config, config, &cmd.trace)?;
     Ok(Detector::new(&detector_config)?)
 }
 
@@ -2094,6 +2222,7 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
         cmd.ner_model.as_deref(),
         cmd.ner_threshold,
     )?;
+    detector_config = configure_trace(detector_config, config, &cmd.trace)?;
     #[cfg(feature = "streaming")]
     if cmd.stream && format != FormatArg::Json {
         return handle_detect_streaming(
@@ -2122,8 +2251,8 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
     match format {
         FormatArg::Json => {
             let selector = build_path_selector(&cmd.include_paths, &cmd.exclude_paths)?;
-            let (json_matches, coverage) =
-                detect_json_with_selector(&input_text, &detector, &selector)
+            let (json_matches, coverage, trace_stats) =
+                engine::formats::detect_json_with_stats(&input_text, &detector, &selector)
                     .with_context(|| "Failed to parse input as JSON")?;
             if cmd.json_coverage {
                 print_coverage(&coverage);
@@ -2133,7 +2262,8 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
                 .iter()
                 .map(|m| (m.pii_match.pattern_name.as_str(), m.pii_match.category))
                 .collect();
-            let summary = engine::AuditSummary::from_findings(findings, &fail_policy);
+            let mut summary = engine::AuditSummary::from_findings(findings, &fail_policy);
+            summary.trace_policy = detector_config.trace_policy.as_ref().map(|_| trace_stats);
 
             if cmd.summary_json {
                 println!("{}", engine::to_summary_json(&summary)?);
@@ -2169,15 +2299,19 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
                     .ok_or_else(|| anyhow!("text reader unavailable"))?,
                 &detector,
                 &fail_policy,
+                detector_config.trace_policy.is_some(),
             )?;
         }
         FormatArg::Text => {
-            let matches = detector.detect(&input_text)?;
+            let detected = detector.detect_with_stats(&input_text)?;
+            let trace_stats = detected.stats;
+            let matches = detected.matches;
             let findings: Vec<(&str, PiiCategory)> = matches
                 .iter()
                 .map(|m| (m.pattern_name.as_str(), m.category))
                 .collect();
-            let summary = engine::AuditSummary::from_findings(findings, &fail_policy);
+            let mut summary = engine::AuditSummary::from_findings(findings, &fail_policy);
+            summary.trace_policy = detector_config.trace_policy.as_ref().map(|_| trace_stats);
 
             if cmd.summary_json {
                 println!("{}", engine::to_summary_json(&summary)?);
@@ -2223,6 +2357,7 @@ fn handle_detect_streaming(
     detector_config: DetectorConfig,
 ) -> Result<()> {
     use streaming::StreamConfig;
+    let trace_enabled = detector_config.trace_policy.is_some();
 
     let stream_config = StreamConfig {
         detector_config,
@@ -2256,6 +2391,12 @@ fn handle_detect_streaming(
             "Processed {} lines, found {} PII occurrences",
             stats.lines_processed, stats.pii_found
         );
+        if trace_enabled {
+            eprintln!(
+                "Trace policy counts: {}",
+                serde_json::to_string(&stats.trace_stats)?
+            );
+        }
     }
 
     Ok(())
@@ -3176,14 +3317,9 @@ fn derive_document_output(path: &std::path::Path, tag: &str) -> PathBuf {
 }
 
 fn write_output(path: Option<&PathBuf>, content: &str) -> Result<()> {
-    if let Some(p) = path {
-        fs::write(p, content)
-            .with_context(|| format!("Failed to write output file: {}", p.display()))
-    } else {
-        print!("{content}");
-        io::stdout().flush()?;
-        Ok(())
-    }
+    let mut staged = tempfile::tempfile()?;
+    staged.write_all(content.as_bytes())?;
+    publish_staged(path.map(PathBuf::as_path), &mut staged)
 }
 
 /// Persist a key file non-destructively.
@@ -3391,16 +3527,22 @@ fn detect_jsonl(
     reader: &mut input::TextReader,
     detector: &Detector,
     policy: &engine::FailOnPolicy,
+    trace_enabled: bool,
 ) -> Result<()> {
     let selector = build_path_selector(&cmd.include_paths, &cmd.exclude_paths)?;
     let mut summary = engine::AuditSummary::from_findings(std::iter::empty(), policy);
+    summary.trace_policy = trace_enabled.then(engine::TracePolicyStats::default);
     let mut staged = tempfile::tempfile()?;
     let mut first = true;
     if common.json {
         write!(staged, "[")?;
     }
     for_each_jsonl(reader, |line, text| {
-        let (matches, coverage) = detect_json_with_selector(text, detector, &selector)?;
+        let (matches, coverage, trace_stats) =
+            engine::formats::detect_json_with_stats(text, detector, &selector)?;
+        if let Some(total) = &mut summary.trace_policy {
+            engine::audit::merge_trace_stats(total, trace_stats);
+        }
         let partial = engine::AuditSummary::from_findings(
             matches
                 .iter()
@@ -3562,8 +3704,15 @@ mod jsonl_runtime_tests {
         let policy = engine::FailOnPolicy::new(&detect.fail_on, std::iter::empty()).unwrap();
         for backend in [NerBackend::Gliner, NerBackend::TokenClass, NerBackend::Both] {
             let detector = injected(backend, Some("Alice"), false);
-            let error =
-                detect_jsonl(&cli.common, &detect, &mut reader(), &detector, &policy).unwrap_err();
+            let error = detect_jsonl(
+                &cli.common,
+                &detect,
+                &mut reader(),
+                &detector,
+                &policy,
+                false,
+            )
+            .unwrap_err();
             assert_eq!(error_exit_code(&error), 1);
             assert!(format!("{error:?}").contains("line 2"));
             assert!(!format!("{error:?}").contains("Alice"));

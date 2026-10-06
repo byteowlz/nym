@@ -5,6 +5,7 @@
 
 use serde_json::Value as JsonValue;
 
+use super::TracePolicyStats;
 use super::detector::{DetectionError, Detector, PiiMatch};
 
 /// Structured processing errors never retain parser payloads or private values.
@@ -19,6 +20,12 @@ pub enum FormatError {
 }
 use super::replacer::{Replacement, Replacer};
 use super::selector::{CoverageReport, PathSelector};
+
+#[derive(Default)]
+struct JsonReport {
+    coverage: CoverageReport,
+    stats: TracePolicyStats,
+}
 
 fn parse_json(input: &str) -> Result<JsonValue, FormatError> {
     // A single optional BOM is allowed before the document (after whitespace),
@@ -52,9 +59,20 @@ pub fn process_json_with_selector(
     replacer: &mut Replacer,
     selector: &PathSelector,
 ) -> Result<(String, Vec<Replacement>, CoverageReport), FormatError> {
+    process_json_with_stats(input, detector, replacer, selector)
+        .map(|(output, replacements, coverage, _)| (output, replacements, coverage))
+}
+
+/// Structured replacement with aggregate trace decisions from decoded values only.
+pub fn process_json_with_stats(
+    input: &str,
+    detector: &Detector,
+    replacer: &mut Replacer,
+    selector: &PathSelector,
+) -> Result<(String, Vec<Replacement>, CoverageReport, TracePolicyStats), FormatError> {
     let mut value = parse_json(input)?;
     let mut all_replacements = Vec::new();
-    let mut report = CoverageReport::default();
+    let mut report = JsonReport::default();
 
     walk_json_mut(
         &mut value,
@@ -67,7 +85,7 @@ pub fn process_json_with_selector(
     )?;
 
     let output = serde_json::to_string_pretty(&value).map_err(|_| FormatError::Serialization)?;
-    Ok((output, all_replacements, report))
+    Ok((output, all_replacements, report.coverage, report.stats))
 }
 
 /// Walk a JSON value, applying selection at each string leaf.
@@ -78,21 +96,24 @@ fn walk_json_mut(
     replacer: &mut Replacer,
     replacements: &mut Vec<Replacement>,
     selector: &PathSelector,
-    report: &mut CoverageReport,
+    report: &mut JsonReport,
 ) -> Result<(), FormatError> {
     match value {
         JsonValue::String(s) => {
             let display = if path.is_empty() { "(root)" } else { path };
             if selector.should_scan(path) {
-                report.scanned.insert(display.to_string());
-                let matches = detector.detect(s)?;
+                report.coverage.scanned.insert(display.to_string());
+                // Real decoded field paths can only guard privacy, never authorize suppression.
+                let detected = detector.detect_with_stats_in_context(s, path)?;
+                super::audit::merge_trace_stats(&mut report.stats, detected.stats);
+                let matches = detected.matches;
                 if !matches.is_empty() {
                     let (replaced, new_replacements) = replacer.replace_all(s, &matches);
                     *s = replaced;
                     replacements.extend(new_replacements);
                 }
             } else {
-                report.skipped.insert(display.to_string());
+                report.coverage.skipped.insert(display.to_string());
             }
         }
         JsonValue::Array(arr) => {
@@ -158,9 +179,18 @@ pub fn detect_json_with_selector(
     detector: &Detector,
     selector: &PathSelector,
 ) -> Result<(Vec<JsonPiiMatch>, CoverageReport), FormatError> {
+    detect_json_with_stats(input, detector, selector).map(|(matches, report, _)| (matches, report))
+}
+
+/// Structured detection with aggregate trace decisions from decoded values only.
+pub fn detect_json_with_stats(
+    input: &str,
+    detector: &Detector,
+    selector: &PathSelector,
+) -> Result<(Vec<JsonPiiMatch>, CoverageReport, TracePolicyStats), FormatError> {
     let value = parse_json(input)?;
     let mut matches = Vec::new();
-    let mut report = CoverageReport::default();
+    let mut report = JsonReport::default();
 
     detect_json_value(
         &value,
@@ -171,7 +201,7 @@ pub fn detect_json_with_selector(
         &mut report,
     )?;
 
-    Ok((matches, report))
+    Ok((matches, report.coverage, report.stats))
 }
 
 #[expect(
@@ -184,7 +214,7 @@ fn detect_json_value(
     path: String,
     selector: &PathSelector,
     matches: &mut Vec<JsonPiiMatch>,
-    report: &mut CoverageReport,
+    report: &mut JsonReport,
 ) -> Result<(), FormatError> {
     match value {
         JsonValue::String(s) => {
@@ -194,15 +224,17 @@ fn detect_json_value(
                 path.clone()
             };
             if selector.should_scan(&path) {
-                report.scanned.insert(display.clone());
-                for pii_match in detector.detect(s)? {
+                report.coverage.scanned.insert(display.clone());
+                let detected = detector.detect_with_stats_in_context(s, &path)?;
+                super::audit::merge_trace_stats(&mut report.stats, detected.stats);
+                for pii_match in detected.matches {
                     matches.push(JsonPiiMatch {
                         path: display.clone(),
                         pii_match,
                     });
                 }
             } else {
-                report.skipped.insert(display);
+                report.coverage.skipped.insert(display);
             }
         }
         JsonValue::Array(arr) => {
@@ -274,6 +306,64 @@ mod tests {
                 assert!(std::error::Error::source(&error).is_none());
             }
         }
+    }
+
+    #[test]
+    fn trace_stats_and_offsets_use_decoded_values_not_structural_context() {
+        let detector = Detector::new(&crate::engine::DetectorConfig::default().with_trace_policy(
+            crate::engine::TracePolicyConfig {
+                sensitive_terms: vec!["SecretLiteral".into()],
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        let input = r#"{"SecretLiteral":"ordinary","date_of_birth":{"text":"雪 SecretLiteral"}}"#;
+        let (matches, coverage, stats) =
+            detect_json_with_stats(input, &detector, &PathSelector::default()).unwrap();
+        assert_eq!(
+            stats,
+            TracePolicyStats {
+                sensitive_term_matches: 1,
+                ..Default::default()
+            }
+        );
+        assert_eq!(matches.len(), 1);
+        assert_eq!(matches[0].path, "date_of_birth.text");
+        assert_eq!(
+            matches[0].pii_match,
+            PiiMatch {
+                pattern_name: "sensitive_term".into(),
+                category: crate::engine::PiiCategory::Other,
+                confidence: crate::engine::Confidence::High,
+                start: 4,
+                end: 17,
+                matched_text: "SecretLiteral".into(),
+            }
+        );
+        assert!(coverage.scanned.contains("SecretLiteral"));
+        let mut replacer = Replacer::new(ReplacerConfig {
+            strategy: ReplacementStrategy::Placeholder,
+            ..Default::default()
+        });
+        let (output, replacements, _, replacement_stats) =
+            process_json_with_stats(input, &detector, &mut replacer, &PathSelector::default())
+                .unwrap();
+        assert_eq!(replacement_stats, stats);
+        assert_eq!(replacements.len(), 1);
+        let value: JsonValue = serde_json::from_str(&output).unwrap();
+        assert_eq!(value["SecretLiteral"], "ordinary");
+        assert!(
+            value["date_of_birth"]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("雪 ")
+        );
+        assert!(
+            !value["date_of_birth"]["text"]
+                .as_str()
+                .unwrap()
+                .contains("SecretLiteral")
+        );
     }
 
     #[test]

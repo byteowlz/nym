@@ -56,6 +56,14 @@ test-fast:
 # Building
 # =============================================================================
 
+# Build an immutable local release with verified provenance (does not activate)
+build-local profile="default":
+    uv run --script scripts/build_local.py --profile "$1"
+
+# Offline builder/activation tests (fake Cargo, no downloads or Rust builds)
+test-build-local:
+    uv run --script scripts/test_build_local.py
+
 # Build debug binary
 build:
     cargo build
@@ -103,6 +111,10 @@ build-minimal:
 # =============================================================================
 # Installation
 # =============================================================================
+
+# Explicitly activate a verified versioned build in the Cargo bin directory
+install-versioned profile="default":
+    uv run --script scripts/build_local.py --profile "$1" --activate "${HOME:-${USERPROFILE}}/.cargo/bin/nym{{ if os() == 'windows' { '.exe' } else { '' } }}"
 
 # Interactive install with hardware selection
 install:

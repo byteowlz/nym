@@ -31,6 +31,11 @@ processing may normalize outer JSON formatting; reversal preserves data, not the
 original serialized whitespace. An empty JSONL file is a complete scan with zero
 records.
 
+Restoration now defaults to strict residual verification: only full exact aliases
+are restored, while recognizable components/case variants and aliases in unchanged
+keys block staged publication. `--no-verify-restore` explicitly selects legacy
+restoration. See [trace policy and restoration limits](agent-trace-policy.md).
+
 Automatic JSONL does not silently enable `--stream`. Normal detection supports
 `--fail-on`, summaries, selectors, and coverage. Summary JSON contains counts and
 blocker classes, never values or paths. Exit codes: **0** complete inspection,

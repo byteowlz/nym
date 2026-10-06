@@ -105,6 +105,7 @@ const NER_PATTERN_NAMES: &[&str] = &[
     "license_plate",
     "vehicle_identifier",
     "ner_entity",
+    "sensitive_term",
 ];
 
 /// Match a field (pattern or category) for reporting; never leaks the value.
@@ -130,6 +131,9 @@ fn is_category_label(s: &str) -> bool {
 pub struct AuditSummary {
     /// Total number of findings, regardless of class.
     pub total: usize,
+    /// Trace decisions, counted before overlap merging. Omitted when disabled.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_policy: Option<super::TracePolicyStats>,
     /// Findings count per pattern name.
     pub by_pattern: BTreeMap<String, usize>,
     /// Findings count per category label.
@@ -162,6 +166,7 @@ impl AuditSummary {
         }
         Self {
             total,
+            trace_policy: None,
             by_pattern,
             by_category,
             blockers,
@@ -172,6 +177,15 @@ impl AuditSummary {
     pub fn blocked(&self) -> bool {
         !self.blockers.is_empty()
     }
+}
+
+/// Merge count-only trace statistics without retaining any input context.
+pub fn merge_trace_stats(total: &mut super::TracePolicyStats, partial: super::TracePolicyStats) {
+    total.ner_candidates += partial.ner_candidates;
+    total.suppressed_public_urls += partial.suppressed_public_urls;
+    total.suppressed_technical_values += partial.suppressed_technical_values;
+    total.suppressed_benign_terms += partial.suppressed_benign_terms;
+    total.sensitive_term_matches += partial.sensitive_term_matches;
 }
 
 /// Serialize a value-free summary to JSON (compact, for manifests).

@@ -60,7 +60,10 @@ fn deanon_with_mappings(mappings: &[serde_json::Value], input: &str) -> std::pro
     let mut lines = vec![r#"{"version":"1"}"#.to_string()];
     lines.extend(mappings.iter().map(serde_json::Value::to_string));
     write(&key, &lines.join("\n"));
-    run_output(&["deanon", "-k", key.to_str().unwrap()], Some(input))
+    run_output(
+        &["deanon", "--no-verify-restore", "-k", key.to_str().unwrap()],
+        Some(input),
+    )
 }
 
 #[test]
@@ -826,7 +829,7 @@ fn deanon_matches_literals_longest_first_and_preserves_short_alias_boundaries() 
         })
     })
     .collect();
-    // Preserve the existing byte-length threshold and \b behavior, even for D.
+    // Explicit legacy mode preserves component guessing and short-alias boundaries.
     let out = deanon_with_mappings(
         &mappings,
         "alias-long alias a+b(c)[d].* [D. D.x XD.y] ID xID IDx _ID ID_ éID IDé (ID) 東京 [EQ]",

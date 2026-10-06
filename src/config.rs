@@ -32,6 +32,7 @@ pub struct Config {
     pub paths: PathsConfig,
     pub ner: NerConfig,
     pub ocr: OcrConfig,
+    pub trace_policy: TracePolicySettings,
     /// Decision-model adjudication layer (System-One gate over candidate spans).
     #[cfg(feature = "decision")]
     #[serde(default)]
@@ -42,6 +43,67 @@ pub struct Config {
     /// Per-pattern configuration overrides
     #[serde(default)]
     pub patterns: HashMap<String, PatternConfig>,
+}
+
+/// File-backed trace policy settings. Lists contain one literal per nonblank line.
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(default, deny_unknown_fields)]
+pub struct TracePolicySettings {
+    pub profile: Option<crate::engine::TraceProfile>,
+    pub public_hosts: Vec<String>,
+    pub sensitive_terms_files: Vec<String>,
+    pub benign_terms_files: Vec<String>,
+    pub term_boundary: crate::engine::TermBoundary,
+    #[serde(default = "default_case_sensitive")]
+    pub case_sensitive: bool,
+}
+
+const fn default_case_sensitive() -> bool {
+    true
+}
+
+impl Default for TracePolicySettings {
+    fn default() -> Self {
+        let policy = crate::engine::TracePolicyConfig::default();
+        Self {
+            profile: policy.profile,
+            public_hosts: policy.public_hosts,
+            sensitive_terms_files: Vec::default(),
+            benign_terms_files: Vec::default(),
+            term_boundary: policy.term_boundary,
+            case_sensitive: policy.case_sensitive,
+        }
+    }
+}
+
+impl std::fmt::Debug for TracePolicySettings {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("TracePolicySettings")
+            .field("profile", &self.profile)
+            .field("public_host_count", &self.public_hosts.len())
+            .field("sensitive_file_count", &self.sensitive_terms_files.len())
+            .field("benign_file_count", &self.benign_terms_files.len())
+            .field("term_boundary", &self.term_boundary)
+            .field("case_sensitive", &self.case_sensitive)
+            .finish()
+    }
+}
+
+/// Load UTF-8 literal lists in declared file/line order; never expose values or paths.
+pub fn load_term_files(paths: &[String]) -> Result<Vec<String>> {
+    let mut terms = Vec::new();
+    for path in paths {
+        let expanded = shellexpand::full(path)
+            .map_err(|_| anyhow::anyhow!("failed to expand trace term list path"))?;
+        let content = std::fs::read_to_string(expanded.as_ref())
+            .map_err(|_| anyhow::anyhow!("failed to read UTF-8 trace term list"))?;
+        for line in content.lines().filter(|line| !line.trim().is_empty()) {
+            if !terms.iter().any(|term| term == line) {
+                terms.push(line.to_string());
+            }
+        }
+    }
+    Ok(terms)
 }
 
 /// Detection configuration.
@@ -1139,6 +1201,36 @@ mod tests {
         // A schema-inserted default would become an explicit restriction and
         // conflict with the default token backend; document GL defaults instead.
         assert!(ner["properties"]["labels"].get("default").is_none());
+    }
+
+    #[test]
+    fn trace_defaults_and_literal_loading_are_deterministic_and_value_free() {
+        let config = Config::default();
+        assert!(config.trace_policy.profile.is_none());
+        assert!(config.trace_policy.case_sensitive);
+        assert_eq!(
+            config.trace_policy.term_boundary,
+            crate::engine::TermBoundary::Word
+        );
+        let decoded: Config = toml::from_str(&toml::to_string(&config).unwrap()).unwrap();
+        assert!(decoded.trace_policy.case_sensitive);
+        let dir = tempfile::tempdir().unwrap();
+        let first = dir.path().join("first.txt");
+        let second = dir.path().join("second.txt");
+        std::fs::write(&first, "alpha\n\r\n literal spaces \r\n東京\n").unwrap();
+        std::fs::write(&second, "東京\nalpha\nβeta\n").unwrap();
+        let paths = [
+            first.to_string_lossy().into_owned(),
+            second.to_string_lossy().into_owned(),
+        ];
+        assert_eq!(
+            load_term_files(&paths).unwrap(),
+            vec!["alpha", " literal spaces ", "東京", "βeta"]
+        );
+        let error = load_term_files(&["${NYM_UNSET_LITERAL_PATH_FOR_TEST}".into()]).unwrap_err();
+        assert!(!format!("{error:?}").contains("NYM_UNSET_LITERAL_PATH_FOR_TEST"));
+        let debug = format!("{:?}", config.trace_policy);
+        assert!(debug.contains("sensitive_file_count"));
     }
 
     #[test]

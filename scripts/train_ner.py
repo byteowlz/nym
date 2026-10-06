@@ -16,6 +16,11 @@ Example:
     --base-model jhu-clsp/mmBERT-base --output-dir models/nym-pii-mmbert \
     --epochs 3 --batch-size 16 --max-length 256
 
+Continuation from a trained checkpoint (never rebuild or reset its label head):
+  --base-model /local/checkpoint --frozen-label-config /local/checkpoint/config.json
+The supplied BIO map is authoritative even for a corpus subset. Unknown labels,
+changed checkpoint IDs, and missing/mismatched learned tensors fail closed.
+
 Dry run (no GPU, verifies data + label alignment):
   uv run --with "transformers>=4.48" --with torch scripts/train_ner.py \
     --train "data/pii*.train.jsonl" --dry-run
@@ -43,10 +48,62 @@ def load_jsonl(patterns):
     return rows
 
 
-def build_labels(rows):
-    types = sorted({e["label"] for r in rows for e in r["entities"]})
-    labels = ["O"] + [f"{p}-{t}" for t in types for p in ("B", "I")]
-    return labels, {l: i for i, l in enumerate(labels)}
+def validate_labels(rows, label2id):
+    """Reject unknown entity types even when truncation would hide their tokens."""
+    unknown = sorted({e["label"] for r in rows for e in r["entities"]
+                      if any(f"{p}-{e['label']}" not in label2id for p in ("B", "I"))})
+    if unknown:
+        raise ValueError(f"unmapped corpus labels in frozen taxonomy: {unknown}")
+
+
+def build_labels(rows, frozen_label_config=None):
+    """Derive BIO IDs as before, or preserve an explicit checkpoint map exactly.
+
+    Frozen mode validates contiguous, bijective, complete BIO maps and every
+    corpus entity. It never sorts, shrinks, adds labels or mutates the config.
+    """
+    if frozen_label_config is None:
+        types = sorted({e["label"] for r in rows for e in r["entities"]})
+        labels = ["O"] + [f"{p}-{t}" for t in types for p in ("B", "I")]
+        return labels, {l: i for i, l in enumerate(labels)}
+    config = json.loads(Path(frozen_label_config).read_text(encoding="utf-8"))
+    mapping = config.get("id2label")
+    if not isinstance(mapping, dict) or not mapping or set(mapping) != {str(i) for i in range(len(mapping))}:
+        raise ValueError("frozen id2label must have contiguous IDs starting at zero")
+    labels = [mapping[str(i)] for i in range(len(mapping))]
+    if not all(isinstance(label, str) for label in labels):
+        raise ValueError("frozen labels must be strings")
+    types = {label[2:] for label in labels if label.startswith("B-") and label[2:]}
+    expected = {"O"} | {f"{p}-{t}" for t in types for p in ("B", "I")}
+    label2id = {label: i for i, label in enumerate(labels)}
+    if len(label2id) != len(labels) or set(labels) != expected or config.get("label2id") != label2id:
+        raise ValueError("frozen BIO maps must be complete, unique and inverse")
+    validate_labels(rows, label2id)
+    return labels, label2id
+
+
+def validate_checkpoint_labels(config, label2id):
+    """Fail on same-size ID permutation as well as a differently sized head."""
+    if config.label2id != label2id or config.id2label != {i: l for l, i in label2id.items()}:
+        raise ValueError("base checkpoint label IDs differ from frozen taxonomy; refusing head reset")
+
+
+def load_training_model(model_cls, base_model, labels, label2id, frozen=False):
+    """Frozen continuation requires every learned tensor, not default init."""
+    kwargs = dict(num_labels=len(labels), id2label={i: l for l, i in label2id.items()},
+                  label2id=label2id, ignore_mismatched_sizes=not frozen)
+    if not frozen:
+        return model_cls.from_pretrained(base_model, **kwargs)
+    # Do not override config IDs in frozen mode: that would hide a same-size
+    # permutation before validate_checkpoint_labels could detect it.
+    model, info = model_cls.from_pretrained(base_model, output_loading_info=True,
+                                          ignore_mismatched_sizes=False)
+    problems = {key: info[key] for key in ("missing_keys", "unexpected_keys", "mismatched_keys", "error_msgs")
+                if info.get(key)}
+    if problems:
+        raise ValueError(f"frozen continuation requires exact learned tensors: {problems}")
+    validate_checkpoint_labels(model.config, label2id)
+    return model
 
 
 def align(rows, tokenizer, label2id, max_length, mask_o_sources=frozenset()):
@@ -89,6 +146,9 @@ def main():
     ap.add_argument("--val", nargs="+", default=None)
     ap.add_argument("--test", nargs="+", default=None)
     ap.add_argument("--base-model", default="jhu-clsp/mmBERT-base")
+    ap.add_argument("--frozen-label-config", type=Path,
+                    help="checkpoint config.json: preserve all BIO IDs and learned head; "
+                         "fail on unknown corpus labels, changed IDs or incomplete weights")
     ap.add_argument("--output-dir", default="models/nym-pii-mmbert")
     ap.add_argument("--epochs", type=float, default=3)
     ap.add_argument("--batch-size", type=int, default=16)
@@ -141,7 +201,15 @@ def main():
         sys.stderr.write(f"mask-o-sources {sorted(mask_srcs)}: kept {kept_neg} PII-free weak "
                          f"records with O supervision (weak-neg-keep={args.weak_neg_keep}), "
                          f"dropped {n0 - len(train_rows)}; O masked on weak positives\n")
-    labels, label2id = build_labels(train_rows)
+    labels, label2id = build_labels(train_rows, args.frozen_label_config)
+    val_rows = load_jsonl(args.val) if args.val else None
+    test_rows = load_jsonl(args.test) if args.test else None
+    if args.frozen_label_config:
+        for rows in (val_rows, test_rows):
+            if rows is not None:
+                validate_labels(rows, label2id)
+        from transformers import AutoConfig
+        validate_checkpoint_labels(AutoConfig.from_pretrained(args.base_model), label2id)
     id2label = {i: l for l, i in label2id.items()}
     sys.stderr.write(f"{len(labels)} BIO labels over {(len(labels)-1)//2} entity types\n")
 
@@ -177,9 +245,8 @@ def main():
         from gemma3_tc import Gemma3ForTokenClassification
         model_cls = Gemma3ForTokenClassification
 
-    model = model_cls.from_pretrained(
-        args.base_model, num_labels=len(labels), id2label=id2label, label2id=label2id,
-        ignore_mismatched_sizes=True)  # layer-dropped inits may carry a differently-sized head
+    model = load_training_model(model_cls, args.base_model, labels, label2id,
+                                frozen=bool(args.frozen_label_config))
 
     teacher = None
     if args.distill_from:
@@ -191,7 +258,7 @@ def main():
             p.requires_grad_(False)
 
     train_ds = align(train_rows, tokenizer, label2id, args.max_length, mask_o_sources=mask_srcs)
-    val_ds = align(load_jsonl(args.val), tokenizer, label2id, args.max_length) if args.val else None
+    val_ds = align(val_rows, tokenizer, label2id, args.max_length) if val_rows is not None else None
 
     collator = DataCollatorForTokenClassification(tokenizer)
 
@@ -274,7 +341,7 @@ def main():
     sys.stderr.write(f"\nsaved model to {args.output_dir}\n")
 
     if args.test:
-        test_ds = align(load_jsonl(args.test), tokenizer, label2id, args.max_length)
+        test_ds = align(test_rows, tokenizer, label2id, args.max_length)
         sys.stderr.write(f"test metrics: {trainer.evaluate(test_ds)}\n")
 
     sys.stderr.write(f"\nExport to ONNX for nym:\n"

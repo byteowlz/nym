@@ -12,6 +12,21 @@
 # Minimum confidence level: "high", "medium", "low"
 min_confidence = "high"
 
+[trace_policy]
+# Disabled by default. CLI: --profile agent-trace / --profile default.
+# profile = "agent_trace"
+# Trust only explicitly named public-reference hosts, never suffixes/wildcards.
+public_hosts = []
+# UTF-8 files: one literal per nonblank line; keep private lists outside git.
+# Paths expand ~ and environment variables. CLI lists replace configured lists.
+sensitive_terms_files = []
+benign_terms_files = []
+# Unicode word boundaries or "substring" for paths/identifiers; no normalization.
+term_boundary = "word"
+case_sensitive = true
+# Sensitive matches work without the profile and win over benign lists.
+# Benign lists require the profile and never suppress regex/private-cue matches.
+
 [replacement]
 # Strategy: "placeholder", "mask", "hash", "random", "consistent"
 # - placeholder: Use fixed placeholders like <EMAIL>, <PHONE>

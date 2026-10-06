@@ -32,7 +32,12 @@ use zip::ZipWriter;
 use zip::write::SimpleFileOptions;
 
 use super::detector::Detector;
+use super::keyfile::restore_verification::{ResidualCounts, RestoreVerifier};
 use super::replacer::{Replacement, Replacer};
+
+#[cfg(test)]
+#[path = "office_verification_tests.rs"]
+mod verification_tests;
 
 /// Errors are surfaced as boxed trait objects, matching the other engine modules.
 type Error = Box<dyn std::error::Error + Send + Sync>;
@@ -218,6 +223,7 @@ fn process_part(
     xml: &[u8],
     profile: &PartProfile,
     f: &mut dyn FnMut(&str) -> Result<Option<Vec<Span>>, Error>,
+    include_cdata: bool,
 ) -> Result<Vec<u8>, Error> {
     let mut reader = Reader::from_reader(xml);
     reader.config_mut().check_end_names = false;
@@ -288,6 +294,13 @@ fn process_part(
                         text,
                     });
                 }
+            }
+            Event::CData(e) if include_cdata && in_text_context(profile, &elem_stack) => {
+                nodes.push(TextNode {
+                    ev_idx: para.len(),
+                    start_ev_idx: start_stack.last().copied().flatten(),
+                    text: e.decode()?.into_owned(),
+                });
             }
             // quick-xml emits entity references (`&lt;` &c.) as separate events;
             // resolve them so they are part of the paragraph text. Unresolvable
@@ -419,6 +432,15 @@ fn rewrite_archive(
     fmt: OfficeFormat,
     f: &mut dyn FnMut(&str) -> Result<Option<Vec<Span>>, Error>,
 ) -> Result<Vec<u8>, Error> {
+    rewrite_archive_internal(bytes, fmt, f, false)
+}
+
+fn rewrite_archive_internal(
+    bytes: &[u8],
+    fmt: OfficeFormat,
+    f: &mut dyn FnMut(&str) -> Result<Option<Vec<Span>>, Error>,
+    include_cdata: bool,
+) -> Result<Vec<u8>, Error> {
     let mut zin = ZipArchive::new(Cursor::new(bytes))?;
     let mut out = ZipWriter::new(Cursor::new(Vec::new()));
 
@@ -429,7 +451,7 @@ fn rewrite_archive(
             let mut data = Vec::with_capacity(usize::try_from(file.size()).unwrap_or(0));
             let mut file = file;
             file.read_to_end(&mut data)?;
-            let new = process_part(&data, &profile, f)?;
+            let new = process_part(&data, &profile, f, include_cdata)?;
             out.start_file(
                 name,
                 SimpleFileOptions::default().compression_method(zip::CompressionMethod::Deflated),
@@ -522,6 +544,279 @@ pub fn deanonymize(
         Ok(Some(spans))
     })?;
     Ok((out, count))
+}
+
+/// Strict restoration checks original decoded paragraph text against full exact
+/// restoration spans before returning any archive bytes. Unchanged XML surfaces
+/// (including attributes, formulas, relationships and entry paths) are checked
+/// without exemptions. DTDs, unresolved entities and malformed XML fail closed.
+/// Opaque binary objects/images, unrecognized-extension attachments and arbitrary
+/// paraphrases are outside the XML handler's verification scope; this is not a
+/// universal reversibility claim. XML-family parts (.xml/.rels/.vml/.svg/.rdf)
+/// are checked even when their content is not a supported restoration surface.
+pub fn deanonymize_verified(
+    bytes: &[u8],
+    fmt: OfficeFormat,
+    mappings: &[(String, String)],
+    verifier: &RestoreVerifier<'_>,
+) -> Result<(Vec<u8>, usize), Error> {
+    verify_office_original(bytes, fmt, verifier)?;
+    let mut sorted: Vec<_> = mappings
+        .iter()
+        .filter(|(alias, _)| !alias.is_empty())
+        .collect();
+    sorted.sort_by(|a, b| b.0.len().cmp(&a.0.len()).then_with(|| a.0.cmp(&b.0)));
+    let patterns: Vec<_> = sorted
+        .iter()
+        .map(|(alias, original)| {
+            let escaped = regex::escape(alias);
+            let expression = if alias.chars().count() <= 3 {
+                format!(r"\b{escaped}\b")
+            } else {
+                escaped
+            };
+            let pattern = regex::Regex::new(&expression).map_err(|_| invalid_verified_office())?;
+            Ok((pattern, original))
+        })
+        .collect::<Result<_, Error>>()?;
+    let mut count = 0;
+    let mut residuals = ResidualCounts::default();
+    let out = rewrite_archive_internal(
+        bytes,
+        fmt,
+        &mut |paragraph| {
+            let mut spans: Vec<Span> = Vec::new();
+            for (pattern, original) in &patterns {
+                for matched in pattern.find_iter(paragraph) {
+                    let (start, end) = (matched.start(), matched.end());
+                    if !spans.iter().any(|(a, b, _)| start < *b && end > *a) {
+                        spans.push((start, end, (*original).clone()));
+                    }
+                }
+            }
+            spans.sort_by_key(|(start, _, _)| *start);
+            let provenance: Vec<_> = spans.iter().map(|(start, end, _)| *start..*end).collect();
+            residuals.merge(verifier.verify_text(paragraph, &provenance)?);
+            count += spans.len();
+            Ok((!spans.is_empty()).then_some(spans))
+        },
+        true,
+    )
+    .map_err(|_| invalid_verified_office())?;
+    residuals.ensure_clear()?;
+    Ok((out, count))
+}
+
+fn invalid_verified_office() -> Error {
+    std::io::Error::other("invalid or unsupported XML in verified office restoration").into()
+}
+
+/// Inspect decoded XML, not compressed bytes. Supported paragraph text is
+/// verified by the restoration callback; everything left unchanged is checked
+/// here. Legacy restoration keeps its historical coverage and behavior.
+fn verify_office_original(
+    bytes: &[u8],
+    fmt: OfficeFormat,
+    verifier: &RestoreVerifier<'_>,
+) -> Result<(), Error> {
+    let mut archive = ZipArchive::new(Cursor::new(bytes)).map_err(|_| invalid_verified_office())?;
+    let mut recognized_part = false;
+    for index in 0..archive.len() {
+        let mut file = archive
+            .by_index(index)
+            .map_err(|_| invalid_verified_office())?;
+        verifier.verify_text(file.name(), &[])?.ensure_clear()?;
+        let extension = Path::new(file.name())
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .unwrap_or("")
+            .to_ascii_lowercase();
+        if !matches!(extension.as_str(), "xml" | "rels" | "vml" | "svg" | "rdf") {
+            continue;
+        }
+        let profile = profile_for(fmt, file.name());
+        recognized_part |= profile.is_some();
+        let mut xml = Vec::new();
+        file.read_to_end(&mut xml)
+            .map_err(|_| invalid_verified_office())?;
+        verify_unchanged_xml(&xml, profile.as_ref(), verifier)?;
+    }
+    if !recognized_part {
+        return Err(invalid_verified_office());
+    }
+    Ok(())
+}
+
+fn verify_xml_element(
+    element: &quick_xml::events::BytesStart<'_>,
+    decoder: quick_xml::encoding::Decoder,
+    verifier: &RestoreVerifier<'_>,
+) -> Result<(), Error> {
+    let name = element.name();
+    let name = std::str::from_utf8(name.as_ref()).map_err(|_| invalid_verified_office())?;
+    verifier.verify_text(name, &[])?.ensure_clear()?;
+    for attribute in element.attributes() {
+        let attribute = attribute.map_err(|_| invalid_verified_office())?;
+        let key =
+            std::str::from_utf8(attribute.key.as_ref()).map_err(|_| invalid_verified_office())?;
+        verifier.verify_text(key, &[])?.ensure_clear()?;
+        // Inspect decoded original spelling without normalizing alias whitespace.
+        let decoded = decoder
+            .decode(attribute.value.as_ref())
+            .map_err(|_| invalid_verified_office())?;
+        let value = quick_xml::escape::unescape(&decoded).map_err(|_| invalid_verified_office())?;
+        verifier.verify_text(&value, &[])?.ensure_clear()?;
+    }
+    Ok(())
+}
+
+fn resolved_reference(reference: &quick_xml::events::BytesRef<'_>) -> Result<char, Error> {
+    let decoded = reference.decode().map_err(|_| invalid_verified_office())?;
+    let builtin = match decoded.as_ref() {
+        "lt" => Some('<'),
+        "gt" => Some('>'),
+        "amp" => Some('&'),
+        "apos" => Some('\''),
+        "quot" => Some('"'),
+        _ => None,
+    };
+    builtin
+        .or(reference
+            .resolve_char_ref()
+            .map_err(|_| invalid_verified_office())?)
+        .ok_or_else(invalid_verified_office)
+}
+
+/// Track structural validity and which original text the paragraph callback
+/// will verify. The unchanged stream catches aliases fragmented across nodes.
+struct XmlVerificationScope<'a> {
+    profile: Option<&'a PartProfile>,
+    stack: Vec<Vec<u8>>,
+    groups: usize,
+    root_seen: bool,
+    unchanged: String,
+}
+
+impl XmlVerificationScope<'_> {
+    fn enter(&mut self, name: &[u8], empty: bool) -> Result<(), Error> {
+        if self.stack.is_empty() {
+            if self.root_seen {
+                return Err(invalid_verified_office());
+            }
+            self.root_seen = true;
+        }
+        if empty {
+            return Ok(());
+        }
+        if self.profile.is_some_and(|profile| is_group(profile, name)) {
+            self.groups += 1;
+        }
+        self.stack.push(name.to_vec());
+        Ok(())
+    }
+
+    fn leave(&mut self, name: &[u8]) -> Result<(), Error> {
+        let previous = self.stack.pop().ok_or_else(invalid_verified_office)?;
+        if previous != name {
+            return Err(invalid_verified_office());
+        }
+        if self.profile.is_some_and(|profile| is_group(profile, name)) {
+            self.groups -= 1;
+        }
+        Ok(())
+    }
+
+    fn covered(&self) -> bool {
+        self.groups > 0
+            && self
+                .profile
+                .is_some_and(|profile| in_text_context(profile, &self.stack))
+    }
+
+    fn require_element(&self) -> Result<(), Error> {
+        if self.stack.is_empty() {
+            return Err(invalid_verified_office());
+        }
+        Ok(())
+    }
+
+    fn text(&mut self, decoded: &str, verifier: &RestoreVerifier<'_>) -> Result<(), Error> {
+        if self.stack.is_empty() && !decoded.trim().is_empty() {
+            return Err(invalid_verified_office());
+        }
+        if !self.covered() {
+            verifier.verify_text(decoded, &[])?.ensure_clear()?;
+            self.unchanged.push_str(decoded);
+        }
+        Ok(())
+    }
+
+    fn finish(self, verifier: &RestoreVerifier<'_>) -> Result<(), Error> {
+        if !self.stack.is_empty() || !self.root_seen {
+            return Err(invalid_verified_office());
+        }
+        verifier.verify_text(&self.unchanged, &[])?.ensure_clear()?;
+        Ok(())
+    }
+}
+
+fn verify_unchanged_xml(
+    xml: &[u8],
+    profile: Option<&PartProfile>,
+    verifier: &RestoreVerifier<'_>,
+) -> Result<(), Error> {
+    let mut reader = Reader::from_reader(xml);
+    let mut scope = XmlVerificationScope {
+        profile,
+        stack: Vec::new(),
+        groups: 0,
+        root_seen: false,
+        unchanged: String::new(),
+    };
+    loop {
+        match reader.read_event().map_err(|_| invalid_verified_office())? {
+            Event::Start(element) => {
+                verify_xml_element(&element, reader.decoder(), verifier)?;
+                scope.enter(element.name().as_ref(), false)?;
+            }
+            Event::Empty(element) => {
+                verify_xml_element(&element, reader.decoder(), verifier)?;
+                scope.enter(element.name().as_ref(), true)?;
+            }
+            Event::End(element) => scope.leave(element.name().as_ref())?,
+            Event::Text(text) => {
+                let decoded = text.decode().map_err(|_| invalid_verified_office())?;
+                let decoded =
+                    quick_xml::escape::unescape(&decoded).map_err(|_| invalid_verified_office())?;
+                scope.text(&decoded, verifier)?;
+            }
+            Event::CData(text) => {
+                scope.require_element()?;
+                let decoded = text.decode().map_err(|_| invalid_verified_office())?;
+                scope.text(&decoded, verifier)?;
+            }
+            Event::GeneralRef(reference) => {
+                scope.require_element()?;
+                let character = resolved_reference(&reference)?;
+                if !scope.covered() {
+                    scope.unchanged.push(character);
+                }
+            }
+            Event::Comment(text) => {
+                let decoded = text.decode().map_err(|_| invalid_verified_office())?;
+                verifier.verify_text(&decoded, &[])?.ensure_clear()?;
+            }
+            Event::PI(instruction) => {
+                let decoded = std::str::from_utf8(instruction.as_ref())
+                    .map_err(|_| invalid_verified_office())?;
+                verifier.verify_text(decoded, &[])?.ensure_clear()?;
+            }
+            Event::DocType(_) => return Err(invalid_verified_office()),
+            Event::Eof => break,
+            _ => {}
+        }
+    }
+    scope.finish(verifier)
 }
 
 #[cfg(test)]

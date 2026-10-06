@@ -93,6 +93,7 @@ pub struct ProcessedLine {
     pub content: String,
     /// Replacements made on this line
     pub replacements: Vec<Replacement>,
+    pub trace_stats: crate::engine::TracePolicyStats,
 }
 
 /// Streaming output format.
@@ -191,16 +192,19 @@ where
             match lines.next_line().await {
                 Ok(Some(line)) => {
                     // Detect PII in this line
-                    let matches = match detector.detect(&line) {
-                        Ok(matches) => matches,
+                    let detected = match detector.detect_with_stats(&line) {
+                        Ok(detected) => detected,
                         Err(error) => { yield Err(error.into()); return; }
                     };
 
+                    let matches = detected.matches;
+                    let trace_stats = detected.stats;
                     if matches.is_empty() {
                         // No PII found, yield line unchanged
                         yield Ok(ProcessedLine {
                             content: line,
                             replacements: vec![],
+                            trace_stats,
                         });
                     } else {
                         // Replace PII
@@ -211,6 +215,7 @@ where
                         yield Ok(ProcessedLine {
                             content: anonymized,
                             replacements,
+                            trace_stats,
                         });
                     }
                 }
@@ -285,17 +290,19 @@ where
                 continue;
             }
             stats.lines_processed += 1;
-            let (anonymized, replacements, coverage) = crate::engine::process_json_with_selector(
-                &line,
-                &detector,
-                &mut replacer,
-                &config.path_selector,
-            )
-            .map_err(|error| record_error(line_number, error))?;
+            let (anonymized, replacements, coverage, trace_stats) =
+                crate::engine::formats::process_json_with_stats(
+                    &line,
+                    &detector,
+                    &mut replacer,
+                    &config.path_selector,
+                )
+                .map_err(|error| record_error(line_number, error))?;
             if config.json_coverage {
                 crate::print_coverage(&coverage);
             }
             stats.pii_found += replacements.len();
+            crate::engine::audit::merge_trace_stats(&mut stats.trace_stats, trace_stats);
             stats.replacements.extend(replacements);
             // JSONL requires exactly one JSON document per line, so compact the
             // pretty-printed output from `process_json`.
@@ -317,6 +324,10 @@ where
             Ok(processed) => {
                 stats.lines_processed += 1;
                 stats.pii_found += processed.replacements.len();
+                crate::engine::audit::merge_trace_stats(
+                    &mut stats.trace_stats,
+                    processed.trace_stats,
+                );
                 stats.replacements.extend(processed.replacements);
 
                 writer.write_all(processed.content.as_bytes()).await?;
@@ -340,6 +351,8 @@ pub struct StreamStats {
     pub lines_processed: usize,
     /// Total PII occurrences found
     pub pii_found: usize,
+    /// Counts only, never values or field names.
+    pub trace_stats: crate::engine::TracePolicyStats,
     /// All replacement mappings collected while streaming (so the caller can
     /// persist them safely through the keyfile module).
     pub replacements: Vec<Replacement>,
@@ -396,23 +409,27 @@ where
                 }
                 stats.lines_processed += 1;
                 let matches = if config.format == StreamFormat::Json {
-                    let (matches, coverage) = crate::engine::detect_json_with_selector(
-                        line,
-                        &detector,
-                        &config.path_selector,
-                    )
-                    .map_err(|error| record_error(line_number, error))?;
+                    let (matches, coverage, trace_stats) =
+                        crate::engine::formats::detect_json_with_stats(
+                            line,
+                            &detector,
+                            &config.path_selector,
+                        )
+                        .map_err(|error| record_error(line_number, error))?;
                     if config.json_coverage {
                         crate::print_coverage(&coverage);
                     }
+                    crate::engine::audit::merge_trace_stats(&mut stats.trace_stats, trace_stats);
                     matches
                         .into_iter()
                         .map(|matched| matched.pii_match)
                         .collect()
                 } else {
-                    detector
-                        .detect(line)
-                        .map_err(|error| record_error(line_number, error))?
+                    let detected = detector
+                        .detect_with_stats(line)
+                        .map_err(|error| record_error(line_number, error))?;
+                    crate::engine::audit::merge_trace_stats(&mut stats.trace_stats, detected.stats);
+                    detected.matches
                 };
 
                 if !matches.is_empty() {
@@ -604,6 +621,43 @@ mod tests {
             assert!(error.to_string().contains("line 2"));
             assert!(!error.to_string().contains("confidentialCredential"));
             assert!(!format!("{error:?}").contains("confidentialCredential"));
+        }
+    }
+
+    #[tokio::test]
+    async fn trace_counts_cover_text_and_structured_anon_and_detection() {
+        for (format, input) in [
+            (StreamFormat::Text, "PrivateTerm\n雪 PrivateTerm\n"),
+            (
+                StreamFormat::Json,
+                "{\"PrivateTerm\":\"ordinary\",\"value\":\"PrivateTerm\"}\n{\"value\":\"雪 PrivateTerm\"}\n",
+            ),
+        ] {
+            let config = StreamConfig {
+                format,
+                detector_config: DetectorConfig::default().with_trace_policy(
+                    crate::engine::TracePolicyConfig {
+                        sensitive_terms: vec!["PrivateTerm".into()],
+                        ..Default::default()
+                    },
+                ),
+                ..Default::default()
+            };
+            let mut output = Vec::new();
+            let stats = stream_detect(config.clone(), input.as_bytes(), &mut output)
+                .await
+                .unwrap();
+            let expected = crate::engine::TracePolicyStats {
+                sensitive_term_matches: 2,
+                ..Default::default()
+            };
+            assert_eq!(stats.trace_stats, expected);
+            output.clear();
+            let stats = stream_anon(config, input.as_bytes(), &mut output)
+                .await
+                .unwrap();
+            assert_eq!(stats.trace_stats, expected);
+            assert_eq!(stats.pii_found, 2);
         }
     }
 

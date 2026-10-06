@@ -40,12 +40,17 @@ pub mod patterns;
 pub mod pdf;
 pub mod replacer;
 pub mod selector;
+pub mod trace_policy;
 
 #[cfg(feature = "decision")]
 pub use decision::{Decision, DecisionConfig, DecisionGate, Verdict};
 
 pub use audit::{AuditSummary, FailOnPolicy, to_summary_json};
-pub use detector::{Detector, DetectorConfig, PiiMatch};
+#[allow(
+    unused_imports,
+    reason = "Public detection result for parent audit integration"
+)]
+pub use detector::{DetectionResult, Detector, DetectorConfig, PiiMatch};
 #[allow(unused_imports)]
 pub use formats::{
     FormatError, JsonPiiMatch, detect_json, detect_json_with_selector, process_json,
@@ -57,3 +62,10 @@ pub use ner::set_exit_code;
 pub use patterns::{BUILTIN_PATTERNS, Confidence, PiiCategory, PiiPattern, get_pattern};
 pub use replacer::{Replacement, ReplacementStrategy, Replacer, ReplacerConfig};
 pub use selector::{CoverageReport, PathSelector};
+#[allow(
+    unused_imports,
+    reason = "Public policy types for parent configuration integration"
+)]
+pub use trace_policy::{
+    TermBoundary, TracePolicy, TracePolicyConfig, TracePolicyError, TracePolicyStats, TraceProfile,
+};

@@ -34,6 +34,19 @@
       },
       "additionalProperties": false
     },
+    "trace_policy": {
+      "type": "object",
+      "description": "Opt-in contextual trace policy and local literal-list files. Disabled by default; no blanket code/metadata exclusions.",
+      "additionalProperties": false,
+      "properties": {
+        "profile": { "type": ["string", "null"], "enum": ["agent_trace", null], "default": null },
+        "public_hosts": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Exact ASCII public-reference hosts; no suffixes or wildcards." },
+        "sensitive_terms_files": { "type": "array", "items": { "type": "string" }, "default": [], "description": "UTF-8 literal lists, one term per nonblank line; supports ~ and environment variables." },
+        "benign_terms_files": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Benign NER terms; requires profile, never overrides sensitive lists or regex/private-cue findings." },
+        "term_boundary": { "type": "string", "enum": ["word", "substring"], "default": "word" },
+        "case_sensitive": { "type": "boolean", "default": true }
+      }
+    },
     "replacement": {
       "type": "object",
       "description": "PII replacement settings",

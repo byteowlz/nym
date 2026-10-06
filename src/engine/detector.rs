@@ -11,6 +11,7 @@ use serde::{Deserialize, Serialize};
 use crate::config::NerProvider;
 
 use super::patterns::{BUILTIN_PATTERNS, Confidence, PiiCategory, PiiPattern};
+use super::trace_policy::{TracePolicy, TracePolicyConfig, TracePolicyStats};
 
 /// Static regex for TLD detection in social handle validation.
 #[expect(clippy::unwrap_used, reason = "Static regex literal is infallible")]
@@ -56,6 +57,8 @@ pub enum DetectionError {
     NerUnavailable,
     #[error("invalid NER configuration")]
     Configuration,
+    #[error("invalid trace policy configuration")]
+    TracePolicyConfiguration,
     #[cfg(feature = "ner")]
     #[error("{backend} NER initialization failed")]
     Initialization { backend: &'static str },
@@ -109,7 +112,7 @@ impl NerRuntime for TokenClassDetector {
 }
 
 /// A detected PII match.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct PiiMatch {
     /// The pattern name that matched
     pub pattern_name: String,
@@ -141,6 +144,14 @@ impl PiiMatch {
     }
 }
 
+/// Complete detection plus value-free policy counters. Errors return neither
+/// partial findings nor success statistics.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DetectionResult {
+    pub matches: Vec<PiiMatch>,
+    pub stats: TracePolicyStats,
+}
+
 /// Configuration for the PII detector.
 #[derive(Debug, Clone)]
 pub struct DetectorConfig {
@@ -170,6 +181,8 @@ pub struct DetectorConfig {
     /// Path to the token-classification model: a local dir (model.onnx + tokenizer.json
     /// + config.json) or a HuggingFace repo id. Used for the TokenClass/Both backends.
     pub ner_token_model: Option<std::path::PathBuf>,
+    /// Opt-in trace filtering and literal lists. None preserves existing behavior.
+    pub trace_policy: Option<TracePolicyConfig>,
 }
 
 impl Default for DetectorConfig {
@@ -187,6 +200,7 @@ impl Default for DetectorConfig {
             ner_backend: NerBackend::default(),
             ner_provider: NerProvider::default(),
             ner_token_model: None,
+            trace_policy: None,
         }
     }
 }
@@ -282,6 +296,16 @@ impl DetectorConfig {
         self
     }
 
+    /// Configure literal lists and optional agent-trace filtering.
+    #[allow(
+        dead_code,
+        reason = "Public policy builder for parent configuration integration"
+    )]
+    pub fn with_trace_policy(mut self, policy: TracePolicyConfig) -> Self {
+        self.trace_policy = Some(policy);
+        self
+    }
+
     /// Set the token-classification model (local dir or HuggingFace repo id).
     pub fn with_ner_token_model(mut self, dir: impl Into<std::path::PathBuf>) -> Self {
         self.ner_token_model = Some(dir.into());
@@ -299,6 +323,7 @@ pub struct Detector {
     regex_set: RegexSet,
     /// Ordered list of patterns corresponding to regex set indices
     patterns: Vec<&'static PiiPattern>,
+    trace_policy: Option<TracePolicy>,
     /// Optional GLiNER detector for name/address detection
     #[cfg(feature = "ner")]
     ner: Option<Box<dyn NerRuntime>>,
@@ -310,6 +335,12 @@ pub struct Detector {
 impl Detector {
     /// Create a new detector with the given configuration.
     pub fn new(config: &DetectorConfig) -> Result<Self, DetectionError> {
+        let trace_policy = config
+            .trace_policy
+            .as_ref()
+            .map(TracePolicy::new)
+            .transpose()
+            .map_err(|_| DetectionError::TracePolicyConfiguration)?;
         #[cfg(not(feature = "ner"))]
         if config.ner_enabled {
             return Err(DetectionError::NerUnavailable);
@@ -394,6 +425,7 @@ impl Detector {
         Ok(Self {
             regex_set,
             patterns,
+            trace_policy,
             #[cfg(feature = "ner")]
             ner: ner_detector,
             #[cfg(feature = "ner")]
@@ -530,7 +562,34 @@ impl Detector {
     /// Returns matches sorted by start position. Combines regex-based
     /// detection with NER-based detection if enabled.
     pub fn detect(&self, text: &str) -> Result<Vec<PiiMatch>, DetectionError> {
+        self.detect_with_stats(text).map(|result| result.matches)
+    }
+
+    /// Same fail-closed scan as `detect`, with aggregate policy counters.
+    pub fn detect_with_stats(&self, text: &str) -> Result<DetectionResult, DetectionError> {
+        self.detect_with_stats_in_context(text, "")
+    }
+
+    /// Scan the original leaf text with an optional structured-field privacy cue.
+    /// Context only vetoes NER suppressions when it contains a private cue; it
+    /// never authorizes a suppression. Inference inputs, regex/literal matching
+    /// and returned byte offsets refer exclusively to `text`, not `context`.
+    pub fn detect_with_stats_in_context(
+        &self,
+        text: &str,
+        context: &str,
+    ) -> Result<DetectionResult, DetectionError> {
+        #[cfg(not(feature = "ner"))]
+        let _ = context;
+        #[cfg(feature = "ner")]
+        let private_context = TracePolicy::has_private_context(context);
         let mut matches = self.regex_matches(text);
+        let sensitive = self.sensitive_matches(text);
+        #[allow(unused_mut, reason = "NER builds update runtime counters")]
+        let mut stats = TracePolicyStats {
+            sensitive_term_matches: sensitive.len(),
+            ..Default::default()
+        };
         #[cfg(feature = "ner")]
         for (backend, runtime) in self.runtimes() {
             let detected = Self::guard_ner(DetectionError::Inference { backend }, || {
@@ -538,10 +597,46 @@ impl Detector {
                     .detect(text)
                     .map_err(|_| DetectionError::Inference { backend })
             })?;
+            let detected = self.filter_ner(text, detected, &sensitive, private_context, &mut stats);
             Self::merge_matches(&mut matches, detected);
         }
-        Self::sort_matches(&mut matches);
-        Ok(matches)
+        Self::finish_matches(text, &mut matches, sensitive);
+        Ok(DetectionResult { matches, stats })
+    }
+
+    fn sensitive_matches(&self, text: &str) -> Vec<PiiMatch> {
+        self.trace_policy
+            .as_ref()
+            .map_or_else(Vec::new, |policy| policy.sensitive_matches(text))
+    }
+
+    #[cfg(feature = "ner")]
+    fn filter_ner(
+        &self,
+        text: &str,
+        detected: Vec<PiiMatch>,
+        sensitive: &[PiiMatch],
+        private_context: bool,
+        stats: &mut TracePolicyStats,
+    ) -> Vec<PiiMatch> {
+        match &self.trace_policy {
+            Some(policy) => policy.filter_ner_with_private_context(
+                text,
+                detected,
+                sensitive,
+                private_context,
+                stats,
+            ),
+            None => {
+                stats.ner_candidates += detected.len();
+                detected
+            }
+        }
+    }
+
+    fn finish_matches(text: &str, matches: &mut Vec<PiiMatch>, sensitive: Vec<PiiMatch>) {
+        TracePolicy::add_sensitive_coverage(text, matches, sensitive);
+        Self::sort_matches(matches);
     }
 
     #[cfg(feature = "ner")]
@@ -575,10 +670,34 @@ impl Detector {
     /// returned, including when regex has already found PII.
     #[cfg(any(feature = "decision", test))]
     pub fn detect_batch(&self, texts: &[&str]) -> Result<Vec<Vec<PiiMatch>>, DetectionError> {
+        self.detect_batch_with_stats(texts)
+            .map(|results| results.into_iter().map(|result| result.matches).collect())
+    }
+
+    /// Batch counterpart of `detect_with_stats`; all engines must succeed.
+    #[cfg(any(feature = "decision", test))]
+    pub fn detect_batch_with_stats(
+        &self,
+        texts: &[&str],
+    ) -> Result<Vec<DetectionResult>, DetectionError> {
         if texts.is_empty() {
             return Ok(Vec::new());
         }
-        let mut per_text: Vec<_> = texts.iter().map(|text| self.regex_matches(text)).collect();
+        let sensitive: Vec<_> = texts
+            .iter()
+            .map(|text| self.sensitive_matches(text))
+            .collect();
+        let mut per_text: Vec<_> = texts
+            .iter()
+            .zip(&sensitive)
+            .map(|(text, terms)| DetectionResult {
+                matches: self.regex_matches(text),
+                stats: TracePolicyStats {
+                    sensitive_term_matches: terms.len(),
+                    ..Default::default()
+                },
+            })
+            .collect();
         #[cfg(feature = "ner")]
         for (backend, runtime) in self.runtimes() {
             let batch = Self::guard_ner(DetectionError::Inference { backend }, || {
@@ -590,12 +709,15 @@ impl Detector {
             if batch.len() != texts.len() {
                 return Err(DetectionError::Inference { backend });
             }
-            for (matches, detected) in per_text.iter_mut().zip(batch) {
-                Self::merge_matches(matches, detected);
+            for (((result, detected), text), terms) in
+                per_text.iter_mut().zip(batch).zip(texts).zip(&sensitive)
+            {
+                let detected = self.filter_ner(text, detected, terms, false, &mut result.stats);
+                Self::merge_matches(&mut result.matches, detected);
             }
         }
-        for matches in &mut per_text {
-            Self::sort_matches(matches);
+        for ((result, text), terms) in per_text.iter_mut().zip(texts).zip(sensitive) {
+            Self::finish_matches(text, &mut result.matches, terms);
         }
         Ok(per_text)
     }
@@ -1067,6 +1189,277 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn disabled_policy_is_identical_and_sensitive_lists_work_without_ner_or_profile() {
+        let text = "東京 secret@example.invalid buffer 4096";
+        let baseline = Detector::with_defaults().detect(text).unwrap();
+        let disabled = Detector::new(
+            &DetectorConfig::default().with_trace_policy(TracePolicyConfig::default()),
+        )
+        .unwrap();
+        assert_eq!(
+            disabled.detect_with_stats(text).unwrap(),
+            DetectionResult {
+                matches: baseline.clone(),
+                stats: TracePolicyStats::default()
+            }
+        );
+        let policy = TracePolicyConfig {
+            sensitive_terms: vec!["東京".into()],
+            benign_terms: vec!["東京".into(), "secret@example.invalid".into()],
+            ..Default::default()
+        };
+        let detector = Detector::new(&DetectorConfig::default().with_trace_policy(policy)).unwrap();
+        let result = detector.detect_with_stats(text).unwrap();
+        let mut expected = vec![PiiMatch {
+            pattern_name: "sensitive_term".into(),
+            matched_text: "東京".into(),
+            start: 0,
+            end: "東京".len(),
+            confidence: Confidence::High,
+            category: PiiCategory::Other,
+        }];
+        expected.extend(baseline);
+        assert_eq!(
+            result,
+            DetectionResult {
+                matches: expected,
+                stats: TracePolicyStats {
+                    sensitive_term_matches: 1,
+                    ..Default::default()
+                }
+            }
+        );
+        assert_eq!(detector.detect(text).unwrap(), result.matches);
+        assert_eq!(
+            detector.detect_batch_with_stats(&[text, "clean"]).unwrap(),
+            vec![
+                result,
+                DetectionResult {
+                    matches: vec![],
+                    stats: TracePolicyStats::default()
+                }
+            ]
+        );
+    }
+
+    #[test]
+    fn whole_sensitive_overlap_is_redacted_without_removing_regex_findings() {
+        let text = "person@example.invalid-extra";
+        let baseline = Detector::with_defaults().detect(text).unwrap();
+        let config = DetectorConfig::default().with_trace_policy(TracePolicyConfig {
+            sensitive_terms: vec!["invalid-extra".into()],
+            term_boundary: super::super::trace_policy::TermBoundary::Substring,
+            ..Default::default()
+        });
+        let detector = Detector::new(&config).unwrap();
+        let result = detector.detect_with_stats(text).unwrap();
+        let mut expected = vec![PiiMatch {
+            pattern_name: "sensitive_term".into(),
+            matched_text: text.into(),
+            start: 0,
+            end: text.len(),
+            confidence: Confidence::High,
+            category: PiiCategory::Other,
+        }];
+        expected.extend(baseline.clone());
+        assert_eq!(
+            result,
+            DetectionResult {
+                matches: expected,
+                stats: TracePolicyStats {
+                    sensitive_term_matches: 1,
+                    ..Default::default()
+                }
+            }
+        );
+        for regex in baseline {
+            assert!(result.matches.contains(&regex));
+        }
+        let (redacted, replacements) =
+            crate::engine::Replacer::with_defaults().replace_all(text, &result.matches);
+        assert!(!redacted.contains("invalid-extra"));
+        assert_eq!(replacements.len(), 1);
+        assert_eq!(replacements[0].original, text);
+    }
+
+    #[test]
+    fn trace_lists_preserve_every_active_high_confidence_regex_credential() {
+        use super::super::trace_policy::TraceProfile;
+        let baseline = Detector::with_defaults();
+        let credentials: Vec<_> = baseline
+            .patterns
+            .iter()
+            .filter(|p| {
+                p.category == PiiCategory::Authentication && p.confidence == Confidence::High
+            })
+            .collect();
+        assert!(!credentials.is_empty());
+        for pattern in credentials {
+            let text = format!("code metadata buffer: {}", pattern.example);
+            let expected = baseline.detect(&text).unwrap();
+            assert!(
+                expected.iter().any(|m| m.pattern_name == pattern.name),
+                "credential fixture {}",
+                pattern.name
+            );
+            let detector = Detector::new(&DetectorConfig::default().with_trace_policy(
+                TracePolicyConfig {
+                    profile: Some(TraceProfile::AgentTrace),
+                    benign_terms: expected.iter().map(|m| m.matched_text.clone()).collect(),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+            assert_eq!(detector.detect(&text).unwrap(), expected);
+            assert_eq!(
+                detector.detect_batch(&[&text]).unwrap(),
+                vec![expected.clone()]
+            );
+            let detector = Detector::new(&DetectorConfig::default().with_trace_policy(
+                TracePolicyConfig {
+                    profile: Some(TraceProfile::AgentTrace),
+                    sensitive_terms: expected.iter().map(|m| m.matched_text.clone()).collect(),
+                    benign_terms: expected.iter().map(|m| m.matched_text.clone()).collect(),
+                    ..Default::default()
+                },
+            ))
+            .unwrap();
+            let result = detector.detect_with_stats(&text).unwrap();
+            for original in &expected {
+                assert!(result.matches.contains(original));
+            }
+            assert!(result.stats.sensitive_term_matches > 0);
+        }
+    }
+
+    #[test]
+    fn invalid_trace_policy_configuration_is_a_sanitized_operational_error() {
+        let config = DetectorConfig::default().with_trace_policy(TracePolicyConfig {
+            sensitive_terms: vec!["synthetic-secret\ninvalid".into()],
+            ..Default::default()
+        });
+        let error = Detector::new(&config).err().unwrap();
+        assert_eq!(error, DetectionError::TracePolicyConfiguration);
+        assert_eq!(error.to_string(), "invalid trace policy configuration");
+        assert!(std::error::Error::source(&error).is_none());
+        assert!(!format!("{config:?}").contains("synthetic-secret"));
+    }
+
+    #[cfg(feature = "ner")]
+    #[test]
+    fn trace_policy_is_applied_before_ner_merge_and_both_paths_agree() {
+        use super::super::trace_policy::TraceProfile;
+        struct CounterRuntime;
+        impl NerRuntime for CounterRuntime {
+            fn detect(
+                &self,
+                text: &str,
+            ) -> Result<Vec<PiiMatch>, Box<dyn std::error::Error + Send + Sync>> {
+                let start = text.find("4096").unwrap();
+                Ok(vec![PiiMatch {
+                    pattern_name: "pin".into(),
+                    matched_text: "4096".into(),
+                    start,
+                    end: start + 4,
+                    confidence: Confidence::High,
+                    category: PiiCategory::Financial,
+                }])
+            }
+        }
+        let mut detector = Detector::new(&DetectorConfig::default().with_trace_policy(
+            TracePolicyConfig {
+                profile: Some(TraceProfile::AgentTrace),
+                ..Default::default()
+            },
+        ))
+        .unwrap();
+        detector.token = Some(Box::new(CounterRuntime));
+        let texts = [
+            "buffer 4096 bytes",
+            "PIN: 4096",
+            "not a PIN 4096; account credential",
+        ];
+        let results: Vec<_> = texts
+            .iter()
+            .map(|text| detector.detect_with_stats(text).unwrap())
+            .collect();
+        assert_eq!(
+            results[0],
+            DetectionResult {
+                matches: vec![],
+                stats: TracePolicyStats {
+                    ner_candidates: 1,
+                    suppressed_technical_values: 1,
+                    ..Default::default()
+                }
+            }
+        );
+        for (result, text) in results.iter().zip(texts).skip(1) {
+            let start = text.find("4096").unwrap();
+            assert_eq!(
+                *result,
+                DetectionResult {
+                    matches: vec![PiiMatch {
+                        pattern_name: "pin".into(),
+                        matched_text: "4096".into(),
+                        start,
+                        end: start + 4,
+                        confidence: Confidence::High,
+                        category: PiiCategory::Financial
+                    }],
+                    stats: TracePolicyStats {
+                        ner_candidates: 1,
+                        ..Default::default()
+                    }
+                }
+            );
+        }
+        assert_eq!(detector.detect_batch_with_stats(&texts).unwrap(), results);
+        assert_eq!(
+            detector.detect_batch(&texts).unwrap(),
+            results
+                .into_iter()
+                .map(|result| result.matches)
+                .collect::<Vec<_>>()
+        );
+    }
+
+    #[cfg(feature = "ner")]
+    #[test]
+    fn trace_policy_and_term_success_never_hide_engine_failure() {
+        use super::super::trace_policy::TraceProfile;
+        for backend in [NerBackend::Gliner, NerBackend::TokenClass, NerBackend::Both] {
+            for batch_fails in [false, true] {
+                let mut detector = injected(backend, Some("Alice"), batch_fails);
+                detector.trace_policy = Some(
+                    TracePolicy::new(&TracePolicyConfig {
+                        profile: Some(TraceProfile::AgentTrace),
+                        sensitive_terms: vec!["Alice".into()],
+                        benign_terms: vec!["Alice".into()],
+                        ..Default::default()
+                    })
+                    .unwrap(),
+                );
+                assert!(
+                    detector
+                        .detect_with_stats("Alice secret@example.invalid")
+                        .is_err()
+                );
+                assert!(
+                    detector
+                        .detect_batch_with_stats(&["buffer 4096", "Alice secret@example.invalid"])
+                        .is_err()
+                );
+                assert!(
+                    detector
+                        .contains_pii("Alice secret@example.invalid")
+                        .is_err()
+                );
+            }
+        }
+    }
+
+    #[test]
     fn test_detect_email() {
         let detector = Detector::with_defaults();
         let matches = detector
@@ -1150,5 +1543,292 @@ pub(crate) mod tests {
 
         // High confidence detector should have fewer patterns
         assert!(high_only.active_patterns().len() <= all.active_patterns().len());
+    }
+}
+
+#[cfg(test)]
+mod structured_context_tests {
+    use super::*;
+    use crate::engine::trace_policy::TraceProfile;
+
+    fn profile() -> TracePolicyConfig {
+        TracePolicyConfig {
+            profile: Some(TraceProfile::AgentTrace),
+            public_hosts: vec!["docs.example".into()],
+            ..Default::default()
+        }
+    }
+
+    #[cfg(feature = "ner")]
+    struct ExactLeafRuntime {
+        text: String,
+        finding: PiiMatch,
+    }
+
+    #[cfg(feature = "ner")]
+    impl NerRuntime for ExactLeafRuntime {
+        fn detect(
+            &self,
+            text: &str,
+        ) -> Result<Vec<PiiMatch>, Box<dyn std::error::Error + Send + Sync>> {
+            // Every call proves context was not prepended to the model input.
+            assert_eq!(text, self.text);
+            Ok(vec![self.finding.clone()])
+        }
+    }
+
+    #[cfg(feature = "ner")]
+    fn leaf_detector(
+        config: TracePolicyConfig,
+        text: &str,
+        value: &str,
+        name: &str,
+        category: PiiCategory,
+    ) -> (Detector, PiiMatch) {
+        let start = text.find(value).unwrap();
+        let finding = PiiMatch {
+            pattern_name: name.into(),
+            matched_text: value.into(),
+            start,
+            end: start + value.len(),
+            confidence: Confidence::High,
+            category,
+        };
+        let mut detector =
+            Detector::new(&DetectorConfig::default().with_trace_policy(config)).unwrap();
+        detector.token = Some(Box::new(ExactLeafRuntime {
+            text: text.into(),
+            finding: finding.clone(),
+        }));
+        (detector, finding)
+    }
+
+    #[cfg(feature = "ner")]
+    #[test]
+    fn structured_private_field_vetoes_dob_filtering_with_original_utf8_offsets() {
+        let record: serde_json::Value =
+            serde_json::from_str(r#"{"dob":"東京 build 1990-04-06"}"#).unwrap();
+        let text = record["dob"].as_str().unwrap();
+        let (detector, finding) = leaf_detector(
+            profile(),
+            text,
+            "1990-04-06",
+            "date_of_birth",
+            PiiCategory::Identity,
+        );
+        assert_eq!(
+            detector.detect_with_stats(text).unwrap(),
+            DetectionResult {
+                matches: vec![],
+                stats: TracePolicyStats {
+                    ner_candidates: 1,
+                    suppressed_technical_values: 1,
+                    ..Default::default()
+                },
+            }
+        );
+        for context in [
+            "$.dob",
+            "$.birth",
+            "$.date_of_birth",
+            "$.client",
+            "$.name",
+            "$.firstName",
+            "$.license",
+        ] {
+            let result = detector
+                .detect_with_stats_in_context(text, context)
+                .unwrap();
+            assert_eq!(
+                result,
+                DetectionResult {
+                    matches: vec![finding.clone()],
+                    stats: TracePolicyStats {
+                        ner_candidates: 1,
+                        ..Default::default()
+                    },
+                }
+            );
+            assert_eq!(result.matches[0].start, "東京 build ".len());
+            assert_eq!(
+                &text[result.matches[0].start..result.matches[0].end],
+                "1990-04-06"
+            );
+        }
+    }
+
+    #[cfg(feature = "ner")]
+    #[test]
+    fn private_context_vetoes_public_technical_and_benign_suppressions() {
+        for (text, value, pattern, category, baseline_stats) in [
+            (
+                "buffer 4096",
+                "4096",
+                "pin",
+                PiiCategory::Financial,
+                TracePolicyStats {
+                    ner_candidates: 1,
+                    suppressed_technical_values: 1,
+                    ..Default::default()
+                },
+            ),
+            (
+                "docs https://docs.example/crate",
+                "https://docs.example/crate",
+                "url",
+                PiiCategory::Network,
+                TracePolicyStats {
+                    ner_candidates: 1,
+                    suppressed_public_urls: 1,
+                    ..Default::default()
+                },
+            ),
+            (
+                "Cargo",
+                "Cargo",
+                "person",
+                PiiCategory::Identity,
+                TracePolicyStats {
+                    ner_candidates: 1,
+                    suppressed_benign_terms: 1,
+                    ..Default::default()
+                },
+            ),
+        ] {
+            let mut config = profile();
+            config.benign_terms = vec!["Cargo".into()];
+            let (detector, finding) = leaf_detector(config, text, value, pattern, category);
+            assert_eq!(
+                detector.detect_with_stats(text).unwrap(),
+                DetectionResult {
+                    matches: vec![],
+                    stats: baseline_stats
+                }
+            );
+            assert_eq!(
+                detector
+                    .detect_with_stats_in_context(text, "$.client")
+                    .unwrap(),
+                DetectionResult {
+                    matches: vec![finding],
+                    stats: TracePolicyStats {
+                        ner_candidates: 1,
+                        ..Default::default()
+                    }
+                }
+            );
+        }
+    }
+
+    #[cfg(feature = "ner")]
+    #[test]
+    fn unknown_fields_cannot_authorize_any_suppression_or_change_batch_semantics() {
+        for (text, pattern, category) in [
+            ("4096", "pin", PiiCategory::Financial),
+            ("1990-04-06", "date_of_birth", PiiCategory::Identity),
+            ("https://docs.example/crate", "url", PiiCategory::Network),
+            ("bash", "person", PiiCategory::Identity),
+        ] {
+            let (detector, finding) = leaf_detector(profile(), text, text, pattern, category);
+            let expected = DetectionResult {
+                matches: vec![finding],
+                stats: TracePolicyStats {
+                    ner_candidates: 1,
+                    ..Default::default()
+                },
+            };
+            for context in [
+                "",
+                "$.build",
+                "$.buffer",
+                "$.tool",
+                "$.docs",
+                "$.metadata",
+                "unknown public reference timestamp",
+            ] {
+                assert_eq!(
+                    detector
+                        .detect_with_stats_in_context(text, context)
+                        .unwrap(),
+                    expected
+                );
+            }
+            assert_eq!(detector.detect_with_stats(text).unwrap(), expected);
+            assert_eq!(detector.detect(text).unwrap(), expected.matches);
+            assert_eq!(
+                detector.detect_batch_with_stats(&[text]).unwrap(),
+                vec![expected]
+            );
+        }
+    }
+
+    #[test]
+    fn regex_credentials_and_literals_ignore_context_and_keep_leaf_offsets() {
+        let text = "é 東京 AKIAIOSFODNN7EXAMPLE";
+        let mut config = profile();
+        config.sensitive_terms = vec!["東京".into()];
+        config.benign_terms = vec!["東京".into(), "AKIAIOSFODNN7EXAMPLE".into()];
+        let detector = Detector::new(&DetectorConfig::default().with_trace_policy(config)).unwrap();
+        let expected = DetectionResult {
+            matches: vec![
+                PiiMatch {
+                    pattern_name: "sensitive_term".into(),
+                    matched_text: "東京".into(),
+                    start: "é ".len(),
+                    end: "é 東京".len(),
+                    confidence: Confidence::High,
+                    category: PiiCategory::Other,
+                },
+                PiiMatch {
+                    pattern_name: "aws_key".into(),
+                    matched_text: "AKIAIOSFODNN7EXAMPLE".into(),
+                    start: "é 東京 ".len(),
+                    end: text.len(),
+                    confidence: Confidence::High,
+                    category: PiiCategory::Authentication,
+                },
+            ],
+            stats: TracePolicyStats {
+                sensitive_term_matches: 1,
+                ..Default::default()
+            },
+        };
+        for context in [
+            "",
+            "$.dob",
+            "$.docs",
+            "東京 AKIAJQ7S6CFTMN2P5HUX",
+            "a very long arbitrary field context unrelated to the leaf",
+        ] {
+            assert_eq!(
+                detector
+                    .detect_with_stats_in_context(text, context)
+                    .unwrap(),
+                expected
+            );
+            assert_eq!(
+                detector
+                    .detect_with_stats_in_context("clean", context)
+                    .unwrap(),
+                DetectionResult {
+                    matches: vec![],
+                    stats: TracePolicyStats::default()
+                }
+            );
+        }
+    }
+
+    #[cfg(feature = "ner")]
+    #[test]
+    fn private_field_context_does_not_skip_inference_or_hide_errors() {
+        for backend in [NerBackend::Gliner, NerBackend::TokenClass, NerBackend::Both] {
+            let mut detector = super::tests::injected(backend, Some("Alice"), false);
+            detector.trace_policy = Some(TracePolicy::new(&profile()).unwrap());
+            assert!(
+                detector
+                    .detect_with_stats_in_context("Alice secret@example.invalid", "$.name")
+                    .is_err()
+            );
+        }
     }
 }

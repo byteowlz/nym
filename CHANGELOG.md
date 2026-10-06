@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Add an opt-in agent-trace privacy profile, guarded literal lists and value-free policy counts; preserve default detection and protected sensitive findings.
+- Verify residual pseudonyms by default before staged text/JSON/JSONL/office restoration; restore full exact aliases only, with an explicit `--no-verify-restore` legacy opt-out.
+- Add exact-labelled disjoint trace corpora, local-only canary/stratified review tooling, trainable small-checkpoint recovery and advisory local System-1 safety tests; tooling success is not a production-quality claim. See `docs/agent-trace-policy.md`.
+- Embed source revision, dirty state, features and target in build versions, with isolated versioned local build/install provenance.
 - Preserve original UTF-8 byte offsets in batched token NER, including leading Unicode whitespace; verify cached CPU batch/single parity without downloading models.
 - Automatically parse JSONL/NDJSON and bounded, replay-safe stdin/extensionless structured input; preserve string selectors, scalar types, ordering, audit policies, and reversible aliases. Restore JSON/JSONL aliases after decoding strings so quotes, newlines, and backslashes remain valid. Stage structured results and streaming destinations to avoid clobbering files on failure; see `docs/structured-input.md`.
 - Fail closed on requested NER initialization, record/chunk inference, and batch failures (including native-wrapper panics), including both backends; preserve operational and policy exit codes through the macOS ONNX exit hook.
