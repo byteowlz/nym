@@ -64,6 +64,31 @@ fn cached_batch_preserves_original_byte_offsets()
     Ok(())
 }
 
+#[test]
+#[ignore = "requires NYM_TEST_CACHED_NER_MODEL; CPU only, never downloads"]
+fn cached_runtime_owns_tokenizer_padding() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let model = std::env::var("NYM_TEST_CACHED_NER_MODEL")?;
+    let detector = TokenClassDetector::from_dir(model, Some(0.5), NerProvider::Cpu)?;
+    let text = " \t\u{2003}Patient John Doe was born on 1987-04-19.\r\n";
+    let matches = detector.detect(text)?;
+    assert!(!matches.is_empty(), "the cached NER must actually run");
+    assert!(detector.tokenizer.get_padding().is_none());
+    for found in matches {
+        assert_eq!(
+            text.get(found.start..found.end),
+            Some(found.matched_text.as_str())
+        );
+    }
+    let long_text = text.repeat(80);
+    for found in detector.detect(&long_text)? {
+        assert_eq!(
+            long_text.get(found.start..found.end),
+            Some(found.matched_text.as_str())
+        );
+    }
+    Ok(())
+}
+
 /// An abort must fail the parent test, not terminate the entire test suite.
 #[test]
 fn invalid_model_returns_error() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

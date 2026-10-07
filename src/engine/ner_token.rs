@@ -259,8 +259,11 @@ impl TokenClassDetector {
         // tokenizer.json ships with truncation baked in at the value used for
         // training (256 for our models), which would silently drop everything
         // past that token -- undetectable false negatives on long input. We
-        // window explicitly below, so take full control here.
+        // window explicitly below, so take full control here. Fixed padding
+        // also inserts empty-offset tokens that are not source window boundaries;
+        // single inference needs none, and batched inference pads explicitly.
         tokenizer.with_truncation(None)?;
+        tokenizer.with_padding(None);
         let cpu_only = provider == NerProvider::Cpu;
         let session = match Self::try_create_session(model_path, cpu_only) {
             Ok(session) => session,
