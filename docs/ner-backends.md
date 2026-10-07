@@ -14,7 +14,7 @@ model is `Wismut/nym-pii-multilingual-small/int8`.
 
 ## 1. Convert an OpenMed model to ONNX
 
-OpenMed publishes PyTorch checkpoints; nym loads ONNX. Convert one with:
+OpenMed publishes PyTorch checkpoints and prebuilt mobile ONNX exports; nym loads ONNX. ClinicalE5 33M and LiteClinical 66M have prebuilt `-onnx-android` repositories, but neither qualified as a stock trace-privacy replacement in the evaluation below. The converter examples use the older DeBERTa family:
 
 ```bash
 # Defaults to the small 44M PII model -> models/<name>-onnx/
@@ -28,15 +28,45 @@ This produces `model.onnx` (fp32), `tokenizer.json`, and `config.json` in the
 output directory. Requires [`uv`](https://docs.astral.sh/uv/); all Python deps run
 in an ephemeral environment. Set `NYM_QUANTIZE=1` to additionally emit
 `model_int8.onnx` (preferred by the backend when present) — see the quantization
-caveat below; it is reliable only for the small model.
+caveat below. Historical small-DeBERTa results do not establish fidelity for other exports; evaluate each quantized artifact.
 
-Recommended models (all `DebertaV2ForTokenClassification`, 106 BIO labels):
+Converter-family examples (all `DebertaV2ForTokenClassification`, 106 BIO labels; model names are not total parameter counts):
 
 | Model | Size | Notes |
 |-------|------|-------|
-| `OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1` | small | fastest, good first choice |
+| `OpenMed/OpenMed-PII-SuperClinical-Small-44M-v1` | 141.4M total parameters | converter default; its name excludes the large embedding table |
 | `OpenMed/OpenMed-PII-SuperClinical-Base-184M-v1` | base | balanced |
 | `OpenMed/OpenMed-PII-SuperClinical-Large-434M-v1` | large | flagship accuracy |
+
+### Stock compact-model evaluation (2026-10-07)
+
+Pinned mobile exports: ClinicalE5 `79f7db205869b1be4be23ac4f42aa95bdedc5aee` (33,252,970 parameters) and LiteClinical `48d93765f074085182b2d5e51eeaff79144846d5` (66,444,394 parameters). Each FP32/INT8 variant used an isolated, single-model directory. Loader fix `3eddefe` clears inherited fixed padding before source windowing; the offline cached regression failed before and passed afterward for all four variants and the baseline.
+
+Apple M2 Ultra CPU measurements; MB means decimal megabytes:
+
+| Model | ONNX MB | Peak CLI RSS MB | Process-cold p50 ms | Warm 128 / 480 tokens p50 ms |
+|-------|--------:|----------------:|-------------------:|---------------------------:|
+| Current multilingual INT8 | 138.7 | 840.5 | 1178 | 24.8 / 95.4 |
+| ClinicalE5 FP32 | 133.3 | 330.1 | 443 | 15.4 / 82.4 |
+| ClinicalE5 INT8 | 69.6 | 255.1 | 377 | 8.9 / 52.3 |
+| LiteClinical FP32 | 265.9 | 509.9 | 462 | 22.5 / 111.9 |
+| LiteClinical INT8 | 138.4 | 389.6 | 327 | 9.1 / 64.0 |
+
+Process-cold: three fresh CLI processes, warm filesystem cache, identical 994-byte synthetic input; peak RSS includes the CLI/runtime, not just weights. Warm: 20 tokenization-plus-forward measurements after warmup, exact token lengths, Python ORT 1.30.0 with eight intra-op threads; excludes span decoding, regex and I/O. CLI NER uses available parallelism (24 here), not `runtime.parallelism`. These separate runtimes/scopes must not be conflated, and Mac measurements are not phone measurements.
+
+All five models completed exact replacement reconciliation on the same frozen 499-leaf selection with 541 inserted canary spans, default profile, CPU, threshold 0.5 and decisions off. The rerun baseline's clean results, canary results and canary scores were byte-identical to the earlier binary's results. Full removals out of 42 occurrences:
+
+| Model | API key | Password | PIN |
+|-------|--------:|---------:|----:|
+| Current multilingual INT8 | 38 | 42 | 42 |
+| ClinicalE5 FP32 | 0 | 38 | 0 |
+| ClinicalE5 INT8 | 0 | 16 | 0 |
+| LiteClinical FP32 | 14 | 39 | 32 |
+| LiteClinical INT8 | 3 | 36 | 18 |
+
+Every stock variant regressed seven privacy classes versus the baseline: API key, password, PIN, given name, surname, street address and username. DOB remained 42/42. Paired quantization also reduced street-address removals from 21/41 to 5/41 for ClinicalE5; LiteClinical API-key/PIN removals fell from 14/42 and 32/42 to 3/42 and 18/42. Twenty synthetic paired probes per family found 81/1033 and 70/1033 valid-token entity-decision disagreements, respectively; these are fidelity observations, not accuracy estimates or parity certification.
+
+**No stock candidate qualified for promotion.** Clean finding counts are not precision; contextual human precision and natural-entity recall remain unmeasured here. The existing baseline also has known misses. Reserved validation was not scanned; no retraining, activation, global configuration change or installation occurred. Earlier strict failed reports and the public nested-output accounting limitation remain unchanged.
 
 ## 2. Configure nym
 
