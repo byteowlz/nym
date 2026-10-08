@@ -15,6 +15,8 @@ usage() {
         '  --output-dir DIR     New private run directory; must not already exist' \
         '  --no-open            Do not open the review page' \
         '  --no-progress        Disable the stderr progress bar/stage counts' \
+        '  --strict-unicode     Reject unpaired UTF-16 instead of explicit discovery projection' \
+        '  --frequency-ranking Use raw spread ranking instead of source-specific suggestions' \
         '  --limit N            Displayed suggestions (default: 200)' \
         '  --max-distinct N     Bounded proposal slots (default: 200000)' \
         '  --phrase-words N     Phrase size, 1..3 (default: 1 for lighter discovery)' \
@@ -32,7 +34,7 @@ supports_recursive() {
     local help
     [[ -x "$1" ]] || return 1
     help=$("$1" terms discover --help 2>/dev/null) || return 1
-    [[ "$help" == *'--recursive'* && "$help" == *'--bounded'* && "$help" == *'--progress'* ]]
+    [[ "$help" == *'--recursive'* && "$help" == *'--bounded'* && "$help" == *'--progress'* && "$help" == *'--repair-unicode'* && "$help" == *'--specific'* ]]
 }
 
 sessions="${HOME:?HOME is required}/.pi/agent/sessions"
@@ -40,6 +42,8 @@ binary="${NYM_BINARY:-}"
 run_dir=""
 open_review=true
 progress_flag=--progress
+unicode_flags=(--repair-unicode)
+ranking_flags=(--specific)
 limit=200
 max_distinct=200000
 phrase_words=1
@@ -50,6 +54,8 @@ while (($#)); do
         -h|--help) usage; exit 0 ;;
         --no-open) open_review=false; shift ;;
         --no-progress) progress_flag=--no-progress; shift ;;
+        --strict-unicode) unicode_flags=(); shift ;;
+        --frequency-ranking) ranking_flags=(); shift ;;
         --sessions|--binary|--output-dir|--limit|--max-distinct|--phrase-words|--min-count|--exclude-file)
             (($# >= 2)) || fail 'option requires a value'
             case "$1" in
@@ -99,7 +105,7 @@ run_dir=$(cd "$run_dir" && pwd -P)
 printf '[ner]\nenabled = false\n[decision]\nenabled = false\n' > "$run_dir/config.toml"
 
 "$binary" --config "$run_dir/config.toml" terms discover "$sessions" \
-    --recursive --bounded "$progress_flag" --extension jsonl,ndjson \
+    --recursive --bounded "$progress_flag" ${unicode_flags[@]+"${unicode_flags[@]}"} ${ranking_flags[@]+"${ranking_flags[@]}"} --extension jsonl,ndjson \
     --include '**.text' --include '**.thinking' \
     --phrase-words "$phrase_words" --max-distinct "$max_distinct" \
     --min-count "$min_count" --limit "$limit" \

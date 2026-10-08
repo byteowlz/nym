@@ -9,7 +9,7 @@ import unittest
 SCRIPT = Path(__file__).with_name("review-pi-terms.sh")
 FAKE = r'''#!/usr/bin/env bash
 set -eu
-if [[ "$*" == *"--help"* ]]; then printf '%s\n' '--recursive --bounded --progress'; exit 0; fi
+if [[ "$*" == *"--help"* ]]; then printf '%s\n' '--recursive --bounded --progress --repair-unicode --specific'; exit 0; fi
 printf '%s\0' "$0" "$@" >> "$FAKE_LOG"
 printf '\n' >> "$FAKE_LOG"
 if [[ "$*" == *" discover "* && "${FAKE_FAIL:-0}" != 0 ]]; then exit "$FAKE_FAIL"; fi
@@ -55,10 +55,20 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(run.stat().st_mode & 0o777, 0o700)
             self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in run.iterdir()))
         argv = self.log.read_bytes().split(b'\0')
-        for value in [str(self.sessions), "--recursive", "--bounded", "--progress", "jsonl,ndjson", "**.text", "**.thinking",
+        for value in [str(self.sessions), "--recursive", "--bounded", "--progress", "--repair-unicode", "--specific", "jsonl,ndjson", "**.text", "**.thinking",
                       "--limit", "30", "--max-distinct", "1000", "--exclude-file"]:
             self.assertIn(value.encode(), argv)
         self.assertFalse((self.root / ".config/nym").exists())
+
+    def test_frequency_ranking_disables_specific_suggestions(self):
+        result = self.invoke("--frequency-ranking", shell="/bin/bash")
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertNotIn(b'--specific', self.log.read_bytes().split(b'\0'))
+
+    def test_strict_unicode_disables_projection(self):
+        result = self.invoke("--strict-unicode", shell="/bin/bash")
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertNotIn(b'--repair-unicode', self.log.read_bytes().split(b'\0'))
 
     def test_no_progress_is_forwarded_instead_of_progress(self):
         result = self.invoke("--no-progress")

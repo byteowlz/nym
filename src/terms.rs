@@ -2,6 +2,7 @@
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use crate::terms_sketch::{Sketch, SourceBits};
+use crate::terms_unicode::Projection;
 use anyhow::{Result, bail};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -76,6 +77,33 @@ pub struct Example {
     pub end: usize,
     pub context_start: usize,
     pub context: String,
+    /// Example comes from a repaired record; offsets/hash refer to its decoded scalar view.
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub projected: bool,
+}
+
+impl Example {
+    fn validate(&self, projection: Option<&Projection>, term: &str) -> Result<()> {
+        if self.projected && projection.is_none_or(|p| p.record_units == 0) {
+            bail!("vocabulary projected example lacks provenance");
+        }
+        let a = self.start.checked_sub(self.context_start);
+        let b = self.end.checked_sub(self.context_start);
+        if !valid_hash(&self.unit_sha256)
+            || self.source.is_empty()
+            || self.source.len() > 128
+            || self.path.len() > 2048
+            || self.context.chars().count() > 384
+            || a.zip(b).and_then(|(a, b)| self.context.get(a..b)) != Some(term)
+        {
+            bail!("invalid vocabulary example offsets or provenance");
+        }
+        Ok(())
+    }
+}
+
+fn is_false(value: &bool) -> bool {
+    !value
 }
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
@@ -96,13 +124,24 @@ pub struct Selection {
     pub method: String,
     pub capacity: usize,
     pub recounted: usize,
+    #[serde(default = "default_factor", skip_serializing_if = "is_default_factor")]
+    pub pool_factor: usize,
+}
+
+fn default_factor() -> usize {
+    10
+}
+fn is_default_factor(value: &usize) -> bool {
+    *value == default_factor()
 }
 
 impl Selection {
     fn validate(&self, discovery: &Discovery) -> Result<()> {
         if self.method != "space_saving_occurrences"
             || self.capacity != discovery.settings.max_distinct
-            || self.recounted > discovery.settings.max_candidates * 10
+            || ![10, 100].contains(&self.pool_factor)
+            || self.recounted > discovery.settings.max_candidates * self.pool_factor
+            || (self.pool_factor == 100 && discovery.ranking != "source_specificity")
             || self.recounted > self.capacity
             || discovery.candidate_count != self.recounted as u64
             || discovery.background_sha256.is_some()
@@ -128,20 +167,25 @@ pub struct Discovery {
     pub candidate_count: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub selection: Option<Selection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub projection: Option<Projection>,
     pub candidates: Vec<Candidate>,
 }
 
 impl Discovery {
     pub fn validate(&self) -> Result<()> {
         self.settings.validate()?;
-        let max_units = self.validate_selection()?;
+        let max_units = self.validate_modes()?;
         if self.schema != SCHEMA
             || !valid_hash(&self.corpus_sha256)
             || self
                 .background_sha256
                 .as_deref()
                 .is_some_and(|s| !valid_hash(s))
-            || !matches!(self.ranking.as_str(), "spread" | "background_log_lift")
+            || !matches!(
+                self.ranking.as_str(),
+                "spread" | "background_log_lift" | "source_specificity"
+            )
             || (self.ranking == "background_log_lift") != self.background_sha256.is_some()
             || self.source_count > self.unit_count
             || self.unit_count > max_units
@@ -171,24 +215,16 @@ impl Discovery {
                 bail!("invalid vocabulary candidate");
             }
             for example in &candidate.examples {
-                let a = example.start.checked_sub(example.context_start);
-                let b = example.end.checked_sub(example.context_start);
-                if !valid_hash(&example.unit_sha256)
-                    || example.source.is_empty()
-                    || example.source.len() > 128
-                    || example.path.len() > 2048
-                    || example.context.chars().count() > 384
-                    || a.zip(b).and_then(|(a, b)| example.context.get(a..b))
-                        != Some(candidate.term.as_str())
-                {
-                    bail!("invalid vocabulary example offsets or provenance");
-                }
+                example.validate(self.projection.as_ref(), &candidate.term)?;
             }
         }
         Ok(())
     }
 
-    fn validate_selection(&self) -> Result<u64> {
+    fn validate_modes(&self) -> Result<u64> {
+        if let Some(projection) = &self.projection {
+            projection.validate(self.unit_count)?;
+        }
         if let Some(selection) = &self.selection {
             selection.validate(self)?;
             Ok(MAX_BOUNDED_UNITS)
@@ -213,6 +249,7 @@ struct Unit<'a> {
     source_index: u32,
     unit_sha: &'a str,
     fresh: bool,
+    projected: bool,
 }
 
 struct Counts {
@@ -238,6 +275,9 @@ pub struct Builder {
     selected: Option<HashSet<String>>,
     selection: Option<Selection>,
     expected_corpus: Option<String>,
+    projection: Option<Projection>,
+    record_projected: bool,
+    specific: bool,
     failed: bool,
 }
 
@@ -277,6 +317,9 @@ impl Builder {
             selected: None,
             selection: None,
             expected_corpus: None,
+            projection: None,
+            record_projected: false,
+            specific: false,
             failed: false,
         })
     }
@@ -298,20 +341,95 @@ impl Builder {
             .sketch
             .take()
             .ok_or_else(|| anyhow::anyhow!("bounded vocabulary proposal is missing"))?;
+        let pool_factor = if self.specific { 100 } else { 10 };
         let terms: HashSet<_> = sketch
-            .shortlist(self.settings.max_candidates * 10)
+            .shortlist(self.settings.max_candidates * pool_factor)
             .into_iter()
             .collect();
         let selection = Selection {
             method: "space_saving_occurrences".into(),
             capacity: self.settings.max_distinct,
             recounted: terms.len(),
+            pool_factor,
         };
         let mut builder = Self::new(self.settings, None)?;
+        if self.projection.is_some() {
+            builder.enable_unicode_projection();
+        }
+        builder.specific = self.specific;
         builder.expected_corpus = Some(format!("{:x}", self.digest.finalize()));
         builder.selected = Some(terms);
         builder.selection = Some(selection);
         Ok(builder)
+    }
+
+    pub fn prefer_specificity(&mut self) -> Result<()> {
+        if self.background.is_some() {
+            bail!("source-specificity ranking cannot also use background ranking");
+        }
+        self.specific = true;
+        Ok(())
+    }
+
+    fn specificity_score(&self, counts: &Counts) -> f64 {
+        let frequency = (1.0 + counts.distinct_texts as f64).ln();
+        if self.sources.len() <= 1 {
+            return frequency;
+        }
+        frequency * ((self.sources.len() as f64 + 1.0) / (counts.sources.len() as f64 + 1.0)).ln()
+    }
+
+    pub fn enable_unicode_projection(&mut self) {
+        self.projection = Some(Projection::default());
+    }
+    pub fn repairs_unicode(&self) -> bool {
+        self.projection.is_some()
+    }
+    pub fn end_record(&mut self) {
+        self.record_projected = false;
+    }
+
+    /// Bind original repaired-record bytes, not just their potentially equal scalar projections.
+    pub fn bind_record(
+        &mut self,
+        source: &str,
+        location: &str,
+        raw: &str,
+        replacements: u64,
+    ) -> Result<()> {
+        self.record_projected = replacements != 0;
+        if replacements == 0 {
+            return Ok(());
+        }
+        if self.failed {
+            bail!("vocabulary discovery is incomplete; start a new scan");
+        }
+        self.failed = true;
+        let projection = self
+            .projection
+            .as_mut()
+            .ok_or_else(|| anyhow::anyhow!("Unicode projection was not enabled"))?;
+        projection.records += 1;
+        projection.replacements = projection
+            .replacements
+            .checked_add(replacements)
+            .ok_or_else(|| anyhow::anyhow!("vocabulary count overflow"))?;
+        if projection.records > 10_000_000 {
+            bail!("vocabulary projection record budget exceeded");
+        }
+        // Impossible source-length prefix domain-separates record markers from ordinary units.
+        self.digest.update(u64::MAX.to_le_bytes());
+        for value in [
+            crate::terms_unicode::POLICY,
+            source,
+            location,
+            &sha256(raw.as_bytes()),
+        ] {
+            self.digest.update((value.len() as u64).to_le_bytes());
+            self.digest.update(value.as_bytes());
+        }
+        self.failed = false;
+        Ok(())
     }
 
     fn max_units(&self) -> u64 {
@@ -350,6 +468,11 @@ impl Builder {
         let fresh = self.sketch.is_none() && self.seen_texts.insert(text_hash);
         let unit_sha = sha256(text.as_bytes());
         self.units += 1;
+        if self.record_projected
+            && let Some(projection) = &mut self.projection
+        {
+            projection.record_units += 1;
+        }
         self.bytes = self
             .bytes
             .checked_add(text.len() as u64)
@@ -373,6 +496,7 @@ impl Builder {
             source_index,
             unit_sha: &unit_sha,
             fresh,
+            projected: self.record_projected,
         };
         let mut seen_in_unit = HashSet::new();
         // Whole hosts, URLs, emails and absolute paths complement components.
@@ -424,6 +548,7 @@ impl Builder {
             source_index,
             unit_sha,
             fresh,
+            projected,
         } = unit;
         let term = &text[start..end];
         if !valid_term(term) {
@@ -505,6 +630,7 @@ impl Builder {
                 end,
                 context_start,
                 context: text[context_start..context_end].to_owned(),
+                projected,
             };
             if let Some(i) = replacement {
                 counts.examples[i] = example;
@@ -550,16 +676,22 @@ impl Builder {
             .filter(|(_, c)| c.occurrences >= self.settings.min_count)
             .map(|(term, c)| {
                 // Laplace-smoothed log lift; ranking only, never an automatic privacy decision.
-                let score = self
-                    .background
-                    .as_ref()
-                    .map_or(c.distinct_texts as f64, |b| {
+                let score = self.background.as_ref().map_or_else(
+                    || {
+                        if self.specific {
+                            self.specificity_score(c)
+                        } else {
+                            c.distinct_texts as f64
+                        }
+                    },
+                    |b| {
                         let foreground =
                             (c.distinct_texts as f64 + 1.0) / (total as f64 + vocabulary);
                         let reference = (*b.get(term).unwrap_or(&0) as f64 + 1.0)
                             / (background_total as f64 + vocabulary);
                         (foreground / reference).ln() * (1.0 + c.distinct_texts as f64).ln()
-                    });
+                    },
+                );
                 (term, c, score)
             })
             .collect();
@@ -589,6 +721,8 @@ impl Builder {
             corpus_sha256,
             ranking: if self.background.is_some() {
                 "background_log_lift"
+            } else if self.specific {
+                "source_specificity"
             } else {
                 "spread"
             }
@@ -600,6 +734,7 @@ impl Builder {
             byte_count: self.bytes,
             candidate_count: self.counts.len() as u64,
             selection: self.selection,
+            projection: self.projection,
             candidates,
         };
         discovery.validate()?;

@@ -58,6 +58,24 @@ The artifact records `selection.method`, proposal capacity and pool size; `candi
 
 The selected-unit/source/path/order checksum must match across passes or no artifact is published. The resolved file set is fixed before scanning; file bytes are not snapshotted, and changes outside selected units are not covered by this checksum. Freeze live session files separately for a reproducible corpus. Malformed/unreadable input and other resource failures still fail closed. Bounded mode supports at most 10 million units; exact mode retains its one-million-unit limit. Exact duplicate accounting still consumes memory proportional to distinct text hashes, bounded by the unit limit; only candidate proposal storage is independent of total vocabulary cardinality. This is not an arbitrary-size or constant-total-memory claim.
 
+## Source-specific suggestions
+
+`terms discover --specific` ranks repeated literals by `ln(1 + distinct_texts) × ln((source_count + 1) / (term_sources + 1))`. Terms spread across almost every source fall below repeatedly mentioned, more localized vocabulary. Counts are still exact for the recounted pool; ranking is not a privacy classifier. With one contributing source there is no source contrast, so ranking falls back to logarithmic distinct-text frequency. Background ranking is a separate, mutually exclusive option.
+
+Bounded specificity widens the proposal/recount pool from 10× to 100× the display limit, capped by `--max-distinct`, and records `selection.pool_factor: 100`. This costs more recount memory/time and gives localized terms more opportunity to enter review, but occurrence-heavy proposals can still omit rare terms. It is not exhaustive. No dictionary, embeddings, external service or automatic benign exemption is added.
+
+The Pi launcher now explicitly requests this mode. `--frequency-ranking` restores its old spread ranking and 10× proposal pool. Existing native discovery defaults and older artifacts/reviews remain unchanged. Widely shared personal names, usernames or other sensitive values can rank low; omitted literals remain unmeasured, not safe. Human review must still decide whether any displayed literal is private. Review source-specific output before considering embeddings or a language-model triage layer.
+
+## Explicit Unicode projection
+
+`terms discover --repair-unicode` accepts unpaired UTF-16 `\uXXXX` escapes in **JSON string values** by replacing each invalid code unit with U+FFFD in a discovery-only decoded view. Strict native discovery remains the default. The Pi launcher enables this explicitly; use `--strict-unicode` there to reject instead. Input session files are never rewritten, skipped or uploaded. This option does not affect detection/redaction/restoration or gold preparation/training.
+
+Valid surrogate pairs, ordinary Unicode (including existing U+FFFD), literal/double-escaped `\\ud800` text and other JSON escape semantics remain unchanged. Non-Unicode grammar errors, invalid UTF-8 bytes and parser/resource limits still fail closed. **Unpaired surrogates in object keys are rejected**, not repaired: changing keys could alter selectors or collapse distinct keys.
+
+Artifacts and summaries include `projection.policy`, repaired-record/replacement counts and selected units from those records. Every retained example from a repaired record is conservatively marked `projected`, even when its own string did not change. The offline review labels these contexts and warns that offsets, unit hashes, counts and duplicate-text grouping refer to the **decoded scalar view**, not original UTF-16 values. Different invalid original values can project to identical strings and be grouped as identical view text. Do not use this view as original-offset NER training gold.
+
+The corpus fingerprint also incorporates each repaired record's **original parser-input bytes** (including framing/BOM), source identity, physical location and projection policy. Bounded proposal/recount rejects changed original repaired bytes even if their projected strings are equal; prior reviews cannot silently apply to a different original corpus. For ordinary records the existing selected-unit checksum contract remains unchanged. Exports still require explicit human approval and do not automatically enforce corpus scope.
+
 ## Progress
 
 Interactive `terms discover` shows a count-only bar on stderr; the launcher explicitly enables it. `--progress` also requests stage-start/end count lines when stderr is redirected. `--no-progress` and global `--quiet` suppress it. JSON/YAML stdout stays machine-readable. Minimal-feature builds support the same behavior without an extra dependency.

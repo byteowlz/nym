@@ -31,6 +31,7 @@ mod terms_cli;
 mod terms_input;
 mod terms_progress;
 mod terms_sketch;
+mod terms_unicode;
 use input::FormatArg;
 #[cfg(feature = "streaming")]
 mod streaming;

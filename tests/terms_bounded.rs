@@ -221,6 +221,97 @@ fn parser_accepted_deep_json_is_scanned_not_skipped_and_excess_depth_fails() {
 }
 
 #[test]
+fn unicode_projection_is_opt_in_original_bound_and_visible_in_review() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    fs::write(root.join("config.toml"), "").unwrap();
+    let input = root.join("input.jsonl");
+    let output = root.join("out.json");
+    let raw =
+        "\u{feff}".to_owned() + r#"{"text":"Jane \ud800 Doë \udfff","other":"Unchanged"}"# + "\r\n";
+    fs::write(&input, &raw).unwrap();
+    fs::write(&output, "preserve").unwrap();
+    let base = [
+        input.to_str().unwrap(),
+        "--bounded",
+        "--include",
+        "**.text",
+        "--min-count",
+        "1",
+        "--phrase-words",
+        "1",
+        "--output",
+        output.to_str().unwrap(),
+        "--force",
+    ];
+    assert_eq!(run(root, &base).status.code(), Some(1));
+    assert_eq!(fs::read_to_string(&output).unwrap(), "preserve");
+    let mut args = base.to_vec();
+    args.push("--repair-unicode");
+    let result = run(root, &args);
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert_eq!(fs::read_to_string(&input).unwrap(), raw);
+    let d = read_discovery(&output);
+    assert_eq!(
+        d["projection"],
+        serde_json::json!({"policy":"replace_unpaired_utf16_v1","records":1,"replacements":2,"record_units":1})
+    );
+    assert_eq!(
+        d["candidates"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|c| (
+                c["term"].as_str().unwrap(),
+                c["examples"][0]["start"].as_u64().unwrap(),
+                c["examples"][0]["end"].as_u64().unwrap(),
+                c["examples"][0]["projected"].as_bool().unwrap()
+            ))
+            .collect::<Vec<_>>(),
+        vec![("Doë", 9, 13, true), ("Jane", 0, 4, true)]
+    );
+    let binary = env!("CARGO_BIN_EXE_nym");
+    let html = root.join("review.html");
+    assert!(
+        Command::new(binary)
+            .args([
+                "--config",
+                root.join("config.toml").to_str().unwrap(),
+                "terms",
+                "review",
+                output.to_str().unwrap(),
+                "--html",
+                "--output",
+                html.to_str().unwrap()
+            ])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        fs::read_to_string(&html)
+            .unwrap()
+            .contains("view-relative offsets")
+    );
+    fs::write(&input, raw.replace("ud800", "ud801")).unwrap();
+    assert!(run(root, &args).status.success());
+    let other = read_discovery(&output);
+    assert_eq!(d["candidates"], other["candidates"]);
+    assert_ne!(d["corpus_sha256"], other["corpus_sha256"]);
+    let previous = fs::read(&output).unwrap();
+    for malformed in [r#"{"\ud800":"Jane"}"#, r#"{"text":"Jane \ud800""#] {
+        fs::write(&input, malformed).unwrap();
+        assert_eq!(run(root, &args).status.code(), Some(1));
+        assert_eq!(fs::read(&output).unwrap(), previous);
+    }
+}
+
+#[test]
 fn unsupported_replay_modes_and_malformed_children_never_publish() {
     let dir = TempDir::new().unwrap();
     let root = dir.path();

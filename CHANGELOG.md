@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Add opt-in `terms discover --specific` source-IDF ranking and a wider bounded recount pool; use it in the Pi launcher to reduce ubiquitous-word dominance, with `--frequency-ranking` restoring old behavior. Suggestions still require human privacy decisions and omissions remain unmeasured.
+- Add explicit discovery-only `--repair-unicode` for lone UTF-16 escapes in JSON values; preserve original logs, bind repaired original-record bytes into corpus provenance, label projected contexts/view-relative offsets and keep object-key/grammar errors fail-closed. Enable it in the Pi launcher with a `--strict-unicode` opt-out; native detection/redaction/gold stay strict.
 - Align vocabulary JSON traversal with the parser's guarded 128-level budget instead of rejecting valid structured session data beyond 64 levels; retain fail-closed parsing and the separate directory-depth limit.
 - Show count-only stderr progress for vocabulary discovery and both bounded passes, including file totals, text-unit counts and elapsed time; support `--progress`, `--no-progress` and quiet mode. Enable it in the Pi launcher without changing machine-readable stdout.
 - Add bounded vocabulary proposals with exact corpus recount (`terms discover --bounded`) to avoid distinct-vocabulary overflow on large histories; use it in the Pi launcher and label approximate shortlist scope explicitly. Preserve exact counts, duplicate downweighting, replay checks and failure-safe publication.

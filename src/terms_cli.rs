@@ -90,6 +90,12 @@ struct DiscoverArgs {
     /// Disable progress, including interactive auto-progress
     #[arg(long)]
     no_progress: bool,
+    /// Discovery-only replacement of unpaired UTF-16 value escapes; originals remain unchanged
+    #[arg(long)]
+    repair_unicode: bool,
+    /// Prefer source-specific repetition over ubiquitous vocabulary; wider bounded recount pool
+    #[arg(long, conflicts_with = "background")]
+    specific: bool,
     #[arg(long)]
     phrase_words: Option<usize>,
     #[arg(long)]
@@ -112,6 +118,8 @@ struct Summary {
     input_stats: Option<FileStats>,
     #[serde(skip_serializing_if = "Option::is_none")]
     selection: Option<terms::Selection>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    projection: Option<crate::terms_unicode::Projection>,
 }
 
 pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsCommand) -> Result<()> {
@@ -171,6 +179,7 @@ pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsComman
                 action: "review",
                 input_stats: None,
                 selection: discovery.selection.clone(),
+                projection: discovery.projection.clone(),
                 candidates: discovery.candidates.len(),
                 approved: review.approve_terms(&discovery)?.len(),
                 units: discovery.unit_count,
@@ -201,6 +210,7 @@ pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsComman
                 action: "export",
                 input_stats: None,
                 selection: discovery.selection.clone(),
+                projection: discovery.projection.clone(),
                 candidates: discovery.candidates.len(),
                 approved: approved.len(),
                 units: discovery.unit_count,
@@ -222,6 +232,12 @@ pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsComman
                 summary.pending,
                 summary.units
             );
+            if let Some(projection) = &summary.projection {
+                println!(
+                    "Unicode projection: {} replacements in {} records; {} selected record units use view-relative offsets. Originals unchanged.",
+                    projection.replacements, projection.records, projection.record_units
+                );
+            }
             if let Some(selection) = &summary.selection {
                 println!(
                     "Bounded candidate proposals; {} literals recounted exactly. Omitted literals are unmeasured, not safe.",
@@ -278,6 +294,7 @@ fn discover(args: DiscoverArgs, defaults: &Settings, quiet: bool) -> Result<Summ
         pending: discovery.candidates.len(),
         input_stats: Some(inputs.stats),
         selection: discovery.selection.clone(),
+        projection: discovery.projection.clone(),
     })
 }
 
@@ -290,6 +307,12 @@ impl DiscoverArgs {
         limit: usize,
         quiet: bool,
     ) -> Result<Discovery> {
+        if self.repair_unicode {
+            builder.enable_unicode_projection();
+        }
+        if self.specific {
+            builder.prefer_specificity()?;
+        }
         let enabled =
             !self.no_progress && !quiet && (self.progress || std::io::stderr().is_terminal());
         let stage = if self.bounded {
@@ -353,6 +376,7 @@ fn collect_input(
     }) {
         bail!("terms discovery supports text, JSON and JSONL; extract binary documents first");
     }
+    builder.end_record();
     let source = match path {
         Some(p) => {
             let canonical = fs::canonicalize(p)
@@ -378,7 +402,7 @@ fn collect_input(
         if text.len() > limit {
             bail!("JSON discovery document limit exceeded");
         }
-        let value = parse_json(text.strip_prefix('\u{feff}').unwrap_or(&text), 1)?;
+        let value = builder.parse_record(&source, "document", &text, 1)?;
         walk(&value, "", "", &source, selector, builder, 0)?;
     } else {
         let mut number = 0;
@@ -407,7 +431,8 @@ fn collect_input(
                 if text.trim().is_empty() {
                     continue;
                 }
-                let value = parse_json(text, number)?;
+                let value =
+                    builder.parse_record(&source, &format!("record[{number}]"), &line, number)?;
                 walk(
                     &value,
                     "",
@@ -421,11 +446,6 @@ fn collect_input(
         }
     }
     Ok(())
-}
-
-fn parse_json(text: &str, number: usize) -> Result<Value> {
-    serde_json::from_str(text)
-        .map_err(|_| anyhow::anyhow!("invalid JSON vocabulary input at line {number}"))
 }
 
 fn walk(

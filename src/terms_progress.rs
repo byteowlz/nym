@@ -41,6 +41,23 @@ impl<'a> Scan<'a> {
         scan
     }
 
+    pub fn end_record(&mut self) {
+        self.builder.end_record();
+    }
+
+    pub fn parse_record(
+        &mut self,
+        source: &str,
+        location: &str,
+        raw: &str,
+        number: usize,
+    ) -> Result<serde_json::Value> {
+        let parsed = crate::terms_unicode::parse(raw, number, self.builder.repairs_unicode())?;
+        self.builder
+            .bind_record(source, location, raw, parsed.replacements)?;
+        Ok(parsed.value)
+    }
+
     pub fn ingest(&mut self, source: &str, path: &str, text: &str) -> Result<()> {
         self.builder.ingest(source, path, text)?;
         self.units += 1;
