@@ -4,6 +4,7 @@ use crate::{
     input::{self, FormatArg},
     terms::{self, Builder, Choice, Decision, Discovery, Review, Settings},
     terms_input::{FileStats, InputArgs},
+    terms_progress::Scan,
 };
 use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
@@ -11,7 +12,7 @@ use serde::Serialize;
 use serde_json::Value;
 use std::{
     fs,
-    io::{BufRead, Read, Write},
+    io::{BufRead, IsTerminal, Read, Write},
     path::{Path, PathBuf},
 };
 
@@ -83,6 +84,12 @@ struct DiscoverArgs {
     /// Bounded approximate candidate proposals, then exact full-corpus recount (named inputs only)
     #[arg(long)]
     bounded: bool,
+    /// Show count-only progress on stderr (terminal bar; stage lines when redirected)
+    #[arg(long, conflicts_with = "no_progress")]
+    progress: bool,
+    /// Disable progress, including interactive auto-progress
+    #[arg(long)]
+    no_progress: bool,
     #[arg(long)]
     phrase_words: Option<usize>,
     #[arg(long)]
@@ -109,7 +116,7 @@ struct Summary {
 
 pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsCommand) -> Result<()> {
     let summary = match command.action {
-        Action::Discover(args) => discover(args, defaults)?,
+        Action::Discover(args) => discover(args, defaults, common.quiet)?,
         Action::Review {
             discovery,
             output,
@@ -235,7 +242,7 @@ pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsComman
     Ok(())
 }
 
-fn discover(args: DiscoverArgs, defaults: &Settings) -> Result<Summary> {
+fn discover(args: DiscoverArgs, defaults: &Settings, quiet: bool) -> Result<Summary> {
     let selector = PathSelector::new(&args.include, &args.exclude)
         .map_err(|_| anyhow::anyhow!("invalid discovery selector"))?;
     let mut excluded = vec![args.output.as_path()];
@@ -256,17 +263,12 @@ fn discover(args: DiscoverArgs, defaults: &Settings) -> Result<Summary> {
     if args.bounded && (inputs.paths.is_empty() || background.is_some()) {
         bail!("bounded discovery requires named inputs and does not support background ranking");
     }
-    let mut builder = if args.bounded {
+    let builder = if args.bounded {
         Builder::bounded(settings)?
     } else {
         Builder::new(settings, background)?
     };
-    collect_corpus(&mut builder, &inputs.paths, args.format, &selector, limit)?;
-    if args.bounded {
-        builder = builder.recount()?;
-        collect_corpus(&mut builder, &inputs.paths, args.format, &selector, limit)?;
-    }
-    let discovery = builder.finish()?;
+    let discovery = args.collect(builder, &inputs.paths, &selector, limit, quiet)?;
     write_json(&args.output, &discovery, args.force)?;
     Ok(Summary {
         action: "discover",
@@ -279,24 +281,64 @@ fn discover(args: DiscoverArgs, defaults: &Settings) -> Result<Summary> {
     })
 }
 
+impl DiscoverArgs {
+    fn collect(
+        &self,
+        mut builder: Builder,
+        paths: &[PathBuf],
+        selector: &PathSelector,
+        limit: usize,
+        quiet: bool,
+    ) -> Result<Discovery> {
+        let enabled =
+            !self.no_progress && !quiet && (self.progress || std::io::stderr().is_terminal());
+        let stage = if self.bounded {
+            "1/2 Proposal"
+        } else {
+            "Discovery"
+        };
+        collect_corpus(
+            Scan::new(&mut builder, stage, paths.len(), enabled),
+            paths,
+            self.format,
+            selector,
+            limit,
+        )?;
+        if self.bounded {
+            builder = builder.recount()?;
+            collect_corpus(
+                Scan::new(&mut builder, "2/2 Exact recount", paths.len(), enabled),
+                paths,
+                self.format,
+                selector,
+                limit,
+            )?;
+        }
+        builder.finish()
+    }
+}
+
 fn collect_corpus(
-    builder: &mut Builder,
+    mut scan: Scan<'_>,
     paths: &[PathBuf],
     format: Option<FormatArg>,
     selector: &PathSelector,
     limit: usize,
 ) -> Result<()> {
     if paths.is_empty() {
-        collect_input(builder, None, format, selector, limit)?;
+        collect_input(&mut scan, None, format, selector, limit)?;
+        scan.file_scanned();
     }
     for path in paths {
-        collect_input(builder, Some(path), format, selector, limit)?;
+        collect_input(&mut scan, Some(path), format, selector, limit)?;
+        scan.file_scanned();
     }
+    scan.finish();
     Ok(())
 }
 
 fn collect_input(
-    builder: &mut Builder,
+    builder: &mut Scan<'_>,
     path: Option<&Path>,
     explicit: Option<FormatArg>,
     selector: &PathSelector,
@@ -392,10 +434,12 @@ fn walk(
     prefix: &str,
     source: &str,
     selector: &PathSelector,
-    builder: &mut Builder,
+    builder: &mut Scan<'_>,
     depth: usize,
 ) -> Result<()> {
-    if depth > 64 {
+    // Match serde_json's default recursion budget; never disable its parser guard.
+    // Directory traversal retains its separate 64-level budget.
+    if depth > 128 {
         bail!("vocabulary JSON depth limit exceeded");
     }
     match value {

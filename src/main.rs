@@ -29,6 +29,7 @@ mod terms;
 mod terms_bounded_tests;
 mod terms_cli;
 mod terms_input;
+mod terms_progress;
 mod terms_sketch;
 use input::FormatArg;
 #[cfg(feature = "streaming")]

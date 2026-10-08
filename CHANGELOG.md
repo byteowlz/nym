@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Align vocabulary JSON traversal with the parser's guarded 128-level budget instead of rejecting valid structured session data beyond 64 levels; retain fail-closed parsing and the separate directory-depth limit.
+- Show count-only stderr progress for vocabulary discovery and both bounded passes, including file totals, text-unit counts and elapsed time; support `--progress`, `--no-progress` and quiet mode. Enable it in the Pi launcher without changing machine-readable stdout.
 - Add bounded vocabulary proposals with exact corpus recount (`terms discover --bounded`) to avoid distinct-vocabulary overflow on large histories; use it in the Pi launcher and label approximate shortlist scope explicitly. Preserve exact counts, duplicate downweighting, replay checks and failure-safe publication.
 - Add `scripts/review-pi-terms.sh` to discover Pi-session vocabulary with a compatible local build and private durable offline-review artifacts, without installation, session changes or training.
 - Discover corpus terms directly from recursive directory trees (`--recursive`, `--extension`, `--exclude-file`, `--max-files`) with deterministic deduplicated input sets, no symlink following, bounded traversal and failure-safe publication; report skipped-file counts without source values.
