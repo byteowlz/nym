@@ -12,6 +12,15 @@
 # Minimum confidence level: "high", "medium", "low"
 min_confidence = "high"
 
+[terms]
+# Discovery suggests literals; it never decides privacy. CLI overrides these limits.
+min_count = 2
+max_candidates = 200
+max_distinct = 50000
+max_examples = 3
+max_phrase_words = 3
+max_unit_bytes = 16777216
+
 [trace_policy]
 # Disabled by default. CLI: --profile agent-trace / --profile default.
 # profile = "agent_trace"

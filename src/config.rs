@@ -33,6 +33,8 @@ pub struct Config {
     pub ner: NerConfig,
     pub ocr: OcrConfig,
     pub trace_policy: TracePolicySettings,
+    /// Bounded, model-independent vocabulary discovery defaults.
+    pub terms: crate::terms::Settings,
     /// Decision-model adjudication layer (System-One gate over candidate spans).
     #[cfg(feature = "decision")]
     #[serde(default)]

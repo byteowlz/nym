@@ -40,6 +40,17 @@ check-ner:
 test:
     cargo test
 
+# Model-independent corpus vocabulary core and public CLI tests
+test-terms:
+    cargo test terms
+    cargo test --test terms
+
+# Complete-gold schema, loss masks and independent model-only privacy gate
+test-gold:
+    uv run --no-project python scripts/test_gold_ner.py
+    uv run --no-project python scripts/test_train_ner.py
+    uv run --no-project python scripts/test_eval_ner_gold.py
+
 # Run tests with NER feature
 test-ner:
     cargo test --features ner

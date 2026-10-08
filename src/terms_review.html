@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; base-uri 'none'; form-action 'none'">
+<meta name="referrer" content="no-referrer"><title>NYM vocabulary review</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,sans-serif;background:#111;color:#eee;font-size:16px;line-height:1.5}
+*{box-sizing:border-box}body{margin:0}main{max-width:760px;margin:auto;padding:18px 16px 220px}h1{font-size:20px;margin:0 0 12px}h2{font-size:24px;overflow-wrap:anywhere}p{margin:12px 0}.muted{color:#b9b9b9}button,select{font:inherit;color:inherit;background:#272727;border:1px solid #777;border-radius:8px;min-height:48px;padding:10px 14px;cursor:pointer}button:disabled{opacity:.45;cursor:default}button:focus-visible,select:focus-visible{outline:3px solid #9fdbb7;outline-offset:3px}select{width:100%;margin:8px 0}pre{font:inherit;white-space:pre-wrap;overflow-wrap:anywhere;background:#1b1b1b;padding:14px;border-block:1px solid #555;margin:6px 0 18px}.source{font-size:14px;color:#bbb;overflow-wrap:anywhere}footer{position:fixed;bottom:0;left:0;right:0;background:#111;border-top:1px solid #777;padding:10px 12px calc(10px + env(safe-area-inset-bottom));}.controls{max-width:728px;margin:auto;display:grid;grid-template-columns:1fr 1fr;gap:8px}.sensitive{background:#25633e}.download{grid-column:1/-1}.nav{display:flex;gap:8px;align-items:center}.nav select{flex:1}details{margin:16px 0}summary{min-height:48px;cursor:pointer;padding:10px 0}mark{background:#335b44;color:#fff;border-radius:2px} @media(max-width:600px){footer{position:static}main{padding-bottom:16px}}@media(max-height:440px){footer{position:static}main{padding-bottom:16px}}
+</style></head><body><main>
+<h1>NYM vocabulary review</h1><p class="muted" id="progress" aria-live="polite"></p>
+<details><summary>What am I approving?</summary><p>These are recurring literal suggestions, not findings or privacy guarantees. Read the contexts before deciding. “Sensitive throughout corpus” authorizes matching every occurrence in the discovered corpus, including unsampled ones. Choose “Depends on context” for ambiguous terms. Dismissal never creates a global safe-list.</p><p>Review files contain source-bound decisions, not complete entity annotations. They must not be used as model-training gold. Exported literal lists apply wherever you explicitly use them; scope is not automatically enforced by the list format.</p><p>This page is offline: no uploads or network requests. It contains private text. Keep it private. Download your decisions before closing; browser resume storage is best-effort and may be unavailable.</p></details>
+<div class="nav"><button id="back" type="button">Back</button><select id="jump" aria-label="Revisit candidate"></select></div>
+<section id="card"><h2 id="term" aria-live="polite"></h2><p class="muted" id="counts"></p><p id="status"></p><div id="examples"></div></section>
+<p id="message" role="status" aria-live="polite"></p>
+</main><footer><div class="controls">
+<button class="sensitive" data-choice="sensitive" type="button">Sensitive throughout corpus</button><button data-choice="contextual" type="button">Depends on context</button>
+<button data-choice="dismiss" type="button">Dismiss suggestion</button><button data-choice="unsure" type="button">Unsure</button>
+<button id="download" class="download" type="button">Download review JSON</button>
+</div></footer>
+<script type="application/json" id="data">__NYM_DATA__</script>
+<script>
+'use strict';
+const data=JSON.parse(document.getElementById('data').textContent),d=data.discovery,r=data.review;
+const candidates=d.candidates,choices=new Map(r.decisions.map(row=>[row.candidate_id,row.choice]));
+const allowed=new Set(['sensitive','contextual','dismiss','unsure']),key='nym-terms:'+r.discovery_sha256;
+const $=id=>document.getElementById(id);
+let index=0;
+try{const saved=JSON.parse(sessionStorage.getItem(key)||'null');if(saved&&saved.discovery_sha256===r.discovery_sha256&&Array.isArray(saved.decisions)){
+ for(const row of saved.decisions)if(candidates.some(c=>c.id===row.candidate_id)&&allowed.has(row.choice))choices.set(row.candidate_id,row.choice);
+}}catch{}
+function review(){return{schema:r.schema,discovery_sha256:r.discovery_sha256,corpus_sha256:r.corpus_sha256,decisions:candidates.filter(c=>choices.has(c.id)).map(c=>({candidate_id:c.id,choice:choices.get(c.id)}))};}
+function persist(){try{sessionStorage.setItem(key,JSON.stringify(review()));$('message').textContent='Decision kept for this browser tab. Download JSON for a durable copy.';}catch{$('message').textContent='Browser resume is unavailable. Download JSON to preserve your decisions.';}}
+function show(){
+ $('jump').replaceChildren();candidates.forEach((c,i)=>{const o=document.createElement('option');o.value=String(i);o.textContent=`${i+1} · ${choices.get(c.id)||'Pending'}`;o.selected=i===index;$('jump').append(o);});
+ $('progress').textContent=`${choices.size} / ${candidates.length} reviewed · ${d.unit_count} text units`;
+ $('back').disabled=index===0;$('examples').replaceChildren();
+ const c=candidates[index];if(!c){$('term').textContent='No candidates';$('counts').textContent='';$('status').textContent='';document.querySelectorAll('[data-choice]').forEach(b=>b.disabled=true);return;}
+ $('term').textContent=c.term;$('counts').textContent=`${c.occurrences} occurrences · ${c.sources} sources · ${c.distinct_texts} distinct texts`;
+ $('status').textContent=choices.has(c.id)?`Decision: ${choices.get(c.id)}`:'Not reviewed';
+ c.examples.forEach(e=>{const label=document.createElement('p');label.className='source';label.textContent=`${e.source.slice(0,22)} · ${e.path||'(root)'}`;const text=document.createElement('pre');const bytes=new TextEncoder().encode(e.context),decode=new TextDecoder('utf-8',{fatal:true});const start=e.start-e.context_start,end=e.end-e.context_start;const mark=document.createElement('mark');mark.textContent=decode.decode(bytes.slice(start,end));text.append(decode.decode(bytes.slice(0,start)),mark,decode.decode(bytes.slice(end)));$('examples').append(label,text);});
+ window.scrollTo({top:0,behavior:'instant'});
+}
+document.querySelectorAll('[data-choice]').forEach(button=>button.addEventListener('click',()=>{
+ const c=candidates[index];if(!c)return;choices.set(c.id,button.dataset.choice);persist();
+ const next=candidates.findIndex((candidate,i)=>i>index&&!choices.has(candidate.id));if(next>=0)index=next;
+ else {const pending=candidates.findIndex(candidate=>!choices.has(candidate.id));if(pending>=0)index=pending;}
+ show();
+}));
+$('back').addEventListener('click',()=>{index=Math.max(0,index-1);show();});$('jump').addEventListener('change',()=>{index=Number($('jump').value);show();});
+$('download').addEventListener('click',()=>{const url=URL.createObjectURL(new Blob([JSON.stringify(review(),null,2)],{type:'application/json'}));const a=document.createElement('a');a.href=url;a.download='nym-terms-review.json';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000);$('message').textContent='Review download requested. Verify the JSON file was saved; decisions are not uploaded.';});
+const first=candidates.findIndex(c=>!choices.has(c.id));if(first>=0)index=first;show();
+</script></body></html>

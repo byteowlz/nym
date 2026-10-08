@@ -33,6 +33,9 @@ import json
 import sys
 from pathlib import Path
 
+# Also support existing importlib callers outside the scripts directory.
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
 
 def load_jsonl(patterns):
     files = []
@@ -114,35 +117,46 @@ def align(rows, tokenizer, label2id, max_length, mask_o_sources=frozenset()):
     mask_o_sources: `source` values with WEAK labels (e.g. teacher-labeled real
     text, where an undetected entity would otherwise train as a false "O").
     For those records, O tokens become -100 — only positive spans supervise."""
-    def gen():
-        for r in rows:
-            weak = r.get("source") in mask_o_sources
-            enc = tokenizer(r["text"], truncation=True, max_length=max_length,
-                            return_offsets_mapping=True)
-            labels = []
-            ents = sorted(r["entities"], key=lambda e: e["start"])
-            for (a, b) in enc["offset_mapping"]:
-                if a == b:  # special token
-                    labels.append(-100)
-                    continue
-                tag = "O"
-                for e in ents:
-                    if a < e["end"] and b > e["start"]:  # overlap
-                        tag = ("B-" if a <= e["start"] else "I-") + e["label"]
-                        break
-                if tag == "O" and weak:
-                    labels.append(-100)
-                else:
-                    labels.append(label2id.get(tag, label2id["O"]))
-            enc.pop("offset_mapping")
-            enc["labels"] = labels
-            yield enc
-    return list(gen())
+    from gold_ner import align_record
+    validate_labels(rows, label2id)
+    return [align_record(row, tokenizer, label2id, max_length,
+                         weak=row.get("source") in mask_o_sources) for row in rows]
+
+
+def load_training_data(args):
+    """Resolve legacy or complete-gold inputs before downloading any model assets."""
+    bundle = None
+    if args.gold_bundle:
+        if args.val or args.test:
+            raise ValueError("gold bundle already declares selection/holdout")
+        from gold_ner import load_bundle
+        bundle = load_bundle(args.gold_bundle)
+        parts = {s: bundle[s] for s in ("train", "selection", "holdout")}
+    else:
+        parts = {"train": load_jsonl(args.train),
+                 "selection": load_jsonl(args.val) if args.val else None,
+                 "holdout": load_jsonl(args.test) if args.test else None}
+    require_gold = args.require_gold or bundle is not None or any(
+        r.get("schema") == "nym.ner.gold.v1" for rows in parts.values() for r in (rows or []))
+    if require_gold:
+        from gold_ner import validate_partitions
+        validate_partitions(parts)
+        if args.mask_o_sources or args.distill_from:
+            raise ValueError("gold mode forbids weak-negative promotion and unmasked distillation")
+    if args.distill_from and any(r.get("masked_spans") for rows in parts.values() for r in (rows or [])):
+        raise ValueError("distillation cannot supervise unknown annotation regions")
+    if args.allow_head_reset and args.frozen_label_config:
+        raise ValueError("frozen continuation never permits head reset")
+    return parts["train"], parts["selection"], parts["holdout"], bundle, require_gold
 
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("--train", nargs="+", required=True, help="JSONL path(s)/glob(s)")
+    inputs = ap.add_mutually_exclusive_group(required=True)
+    inputs.add_argument("--train", nargs="+", help="JSONL path(s)/glob(s)")
+    inputs.add_argument("--gold-bundle", type=Path, help="validated complete-gold source-split bundle")
+    ap.add_argument("--require-gold", action="store_true", help="reject incomplete or unbound training annotations")
+    ap.add_argument("--allow-head-reset", action="store_true", help="explicitly authorize a new classifier taxonomy in gold mode")
     ap.add_argument("--val", nargs="+", default=None)
     ap.add_argument("--test", nargs="+", default=None)
     ap.add_argument("--base-model", default="jhu-clsp/mmBERT-base")
@@ -180,9 +194,7 @@ def main():
     args = ap.parse_args()
     mask_srcs = frozenset(s.strip() for s in args.mask_o_sources.split(",")) if args.mask_o_sources else frozenset()
 
-    from transformers import AutoTokenizer
-
-    train_rows = load_jsonl(args.train)
+    train_rows, val_rows, test_rows, bundle, require_gold = load_training_data(args)
     if mask_srcs:
         import random as _random
         rng = _random.Random(11)
@@ -201,14 +213,16 @@ def main():
         sys.stderr.write(f"mask-o-sources {sorted(mask_srcs)}: kept {kept_neg} PII-free weak "
                          f"records with O supervision (weak-neg-keep={args.weak_neg_keep}), "
                          f"dropped {n0 - len(train_rows)}; O masked on weak positives\n")
-    labels, label2id = build_labels(train_rows, args.frozen_label_config)
-    val_rows = load_jsonl(args.val) if args.val else None
-    test_rows = load_jsonl(args.test) if args.test else None
-    if args.frozen_label_config:
-        for rows in (val_rows, test_rows):
-            if rows is not None:
-                validate_labels(rows, label2id)
-        from transformers import AutoConfig
+    taxonomy_rows = train_rows
+    if bundle:
+        # Types are operator-declared before splitting, not inferred from holdout examples.
+        taxonomy_rows = train_rows + [{"entities": [{"label": label} for label in bundle["label_types"]]}]
+    labels, label2id = build_labels(taxonomy_rows, args.frozen_label_config)
+    for rows in (val_rows, test_rows):
+        if rows is not None:
+            validate_labels(rows, label2id)
+    from transformers import AutoConfig, AutoTokenizer
+    if args.frozen_label_config or (require_gold and not args.allow_head_reset):
         validate_checkpoint_labels(AutoConfig.from_pretrained(args.base_model), label2id)
     id2label = {i: l for l, i in label2id.items()}
     sys.stderr.write(f"{len(labels)} BIO labels over {(len(labels)-1)//2} entity types\n")
@@ -217,6 +231,11 @@ def main():
 
     if args.dry_run:
         sample = align(train_rows[:200], tokenizer, label2id, args.max_length)
+        if require_gold:
+            from gold_ner import supervised_training
+            supervised = supervised_training(sample, label2id["O"])
+            sys.stderr.write(f"gold alignment: {len(supervised)} supervised units; no private token dump\n")
+            return
         # Show one aligned example.
         ex = next(s for s in sample if any(l not in (-100, label2id["O"]) for l in s["labels"]))
         toks = tokenizer.convert_ids_to_tokens(ex["input_ids"])
@@ -259,6 +278,12 @@ def main():
 
     train_ds = align(train_rows, tokenizer, label2id, args.max_length, mask_o_sources=mask_srcs)
     val_ds = align(val_rows, tokenizer, label2id, args.max_length) if val_rows is not None else None
+    if require_gold:
+        from gold_ner import supervised_training, supervised_selection
+        before = len(train_ds)
+        train_ds = supervised_training(train_ds, label2id["O"])
+        val_ds = supervised_selection(val_ds)
+        sys.stderr.write(f"excluded {before - len(train_ds)} fully masked optimizer units\n")
 
     collator = DataCollatorForTokenClassification(tokenizer)
 

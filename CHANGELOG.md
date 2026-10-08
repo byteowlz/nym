@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Add model-independent `terms discover|review|export` for bounded corpus vocabulary ranking, original-context review, offline phone-sized decisions and explicitly approved private literal lists; dismissal never becomes a benign exemption. See `docs/corpus-vocabulary.md`.
+- Prepare source-disjoint complete NER gold bundles, loss-mask all uncertain overlaps and reject unknown labels/truncated gold; add an isolated model-only full-value selection gate with actual-output reconciliation. Tooling does not train or promote a model automatically. See `docs/ner-gold.md`.
 - Clear inherited fixed tokenizer padding before token NER windowing, so published BERT/DistilBERT exports do not turn short inputs into invalid padding-only source windows. Batched inference retains its explicit padding.
 - Expand token-model password and API-key spans to the whole secret token (stopping at whitespace, quotes, brackets and key/value delimiters), so context-dependent sub-word decoding no longer leaves part of a secret in the output.
 - Detect compact and space-grouped IBANs by country length and mod-97 checksum at high confidence, so default scans redact the whole IBAN instead of a phone/card digit fragment. Accept build-stamped `--version` output in benchmark provenance checks.

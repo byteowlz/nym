@@ -24,6 +24,8 @@ mod config;
 mod engine;
 mod input;
 mod session;
+mod terms;
+mod terms_cli;
 use input::FormatArg;
 #[cfg(feature = "streaming")]
 mod streaming;
@@ -199,6 +201,7 @@ fn try_main() -> Result<()> {
         #[cfg(feature = "decision")]
         Command::Decide(cmd) => handle_decide(&cli.common, &config, &cmd),
         Command::Patterns(cmd) => handle_patterns(&cli.common, cmd),
+        Command::Terms(cmd) => terms_cli::run(&cli.common, &config.terms, cmd),
         Command::Config(cmd) => handle_config(&cli.common, &config, cmd),
         Command::Sessions(cmd) => handle_sessions(&cli.common, cmd),
         #[cfg(feature = "ner")]
@@ -388,6 +391,9 @@ enum Command {
 
     /// List and inspect available PII patterns
     Patterns(PatternsCommand),
+
+    /// Discover, review and export corpus-specific sensitive vocabulary
+    Terms(terms_cli::TermsCommand),
 
     /// Show or manage configuration
     Config(ConfigCommand),

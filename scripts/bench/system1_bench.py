@@ -16,6 +16,11 @@ import statistics
 import subprocess
 import time
 import tempfile
+import sys
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from json_safe import unique_object
+
 from urllib.error import HTTPError
 from urllib.parse import urlsplit
 from urllib.request import HTTPRedirectHandler, ProxyHandler, build_opener, Request
@@ -96,15 +101,6 @@ def request_body(case, backend, model):
 
 def probability(value):
     return type(value) in (float, int) and math.isfinite(value) and 0 <= value <= 1
-
-
-def unique_object(pairs):
-    result = {}
-    for key, value in pairs:
-        if key in result:
-            raise ValueError("duplicate JSON key")
-        result[key] = value
-    return result
 
 
 def parse_response(data, backend):

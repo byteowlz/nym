@@ -34,6 +34,19 @@
       },
       "additionalProperties": false
     },
+    "terms": {
+      "type": "object",
+      "description": "Model-independent corpus vocabulary discovery budgets. Suggestions are not privacy decisions.",
+      "additionalProperties": false,
+      "properties": {
+        "min_count": { "type": "integer", "minimum": 1, "default": 2 },
+        "max_candidates": { "type": "integer", "minimum": 1, "maximum": 5000, "default": 200 },
+        "max_distinct": { "type": "integer", "minimum": 1, "maximum": 1000000, "default": 50000 },
+        "max_examples": { "type": "integer", "minimum": 1, "maximum": 5, "default": 3 },
+        "max_phrase_words": { "type": "integer", "minimum": 1, "maximum": 3, "default": 3 },
+        "max_unit_bytes": { "type": "integer", "minimum": 1, "maximum": 268435456, "default": 16777216 }
+      }
+    },
     "trace_policy": {
       "type": "object",
       "description": "Opt-in contextual trace policy and local literal-list files. Disabled by default; no blanket code/metadata exclusions.",
