@@ -26,6 +26,22 @@ nym --json terms export discovery.json --review revised.json --output sensitive.
 
 IDs appear in the discovery artifact. Decisions are `sensitive`, `contextual`, `dismiss`, or `unsure`. Only `sensitive` exports; pending, dismissed and uncertain terms never become implicit approvals or benign exemptions. CLI summaries contain counts, not corpus values. JSON/YAML summary output and shell completions use the normal NYM flags.
 
+## Pi-session launcher
+
+From the NYM checkout:
+
+```bash
+./scripts/review-pi-terms.sh
+# Or choose a project/session subtree and do not open a browser:
+./scripts/review-pi-terms.sh --sessions /path/to/sessions --no-open
+```
+
+The launcher finds the newest compatible local versioned build (or `nym` on PATH), without installing it. Override with `--binary FILE` or `NYM_BINARY`. It runs native recursive JSONL/NDJSON discovery on `**.text` and `**.thinking`, then creates an offline review page. Defaults: 200 suggestions, 200,000 distinct-literal budget and one-word phrases. `--limit`, `--max-distinct`, `--phrase-words` and `--min-count` override these values.
+
+Each run creates an owner-only timestamped directory under `$XDG_STATE_HOME/nym/pi-terms` (fallback `~/.local/state/nym/pi-terms`) with isolated configuration, discovery JSON and review HTML. `--output-dir DIR` chooses a **new** directory; existing directories are never overwritten. It runs inline in ordinary shells, tmux or herdr, never starts a new session, modifies input logs, trains, uploads, globally configures NYM or automatically approves/exports terms. Browser opening is best-effort; `--no-open` disables it. Preserve downloaded decisions separately and use `terms export` after explicit review.
+
+Keep reserved validation sources out of discovery too: choose an appropriate subtree or repeat `--exclude-file FILE`. The launcher does not know your holdout protocol and does not bypass counting/traversal limits. It is a Bash launcher, tested with macOS system Bash; Windows users can use the native CLI directly.
+
 ## Recursive directories
 
 Pass a directory directly; NYM resolves the file set internally, so shell argument limits do not apply:

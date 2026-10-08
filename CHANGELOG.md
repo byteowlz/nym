@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Add `scripts/review-pi-terms.sh` to discover Pi-session vocabulary with a compatible local build and private durable offline-review artifacts, without installation, session changes or training.
 - Discover corpus terms directly from recursive directory trees (`--recursive`, `--extension`, `--exclude-file`, `--max-files`) with deterministic deduplicated input sets, no symlink following, bounded traversal and failure-safe publication; report skipped-file counts without source values.
 - Add model-independent `terms discover|review|export` for bounded corpus vocabulary ranking, original-context review, offline phone-sized decisions and explicitly approved private literal lists; dismissal never becomes a benign exemption. See `docs/corpus-vocabulary.md`.
 - Prepare source-disjoint complete NER gold bundles, loss-mask all uncertain overlaps and reject unknown labels/truncated gold; add an isolated model-only full-value selection gate with actual-output reconciliation. Tooling does not train or promote a model automatically. See `docs/ner-gold.md`.

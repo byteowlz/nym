@@ -45,6 +45,10 @@ test-terms:
     cargo test terms
     cargo test --test terms --test terms_recursive
 
+# Private Pi-session launcher (fake CLI and synthetic inputs only)
+test-pi-terms:
+    uv run --no-project python scripts/test_review_pi_terms.py
+
 # Complete-gold schema, loss masks and independent model-only privacy gate
 test-gold:
     uv run --no-project python scripts/test_gold_ner.py
