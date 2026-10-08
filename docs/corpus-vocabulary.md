@@ -36,11 +36,27 @@ From the NYM checkout:
 ./scripts/review-pi-terms.sh --sessions /path/to/sessions --no-open
 ```
 
-The launcher finds the newest compatible local versioned build (or `nym` on PATH), without installing it. Override with `--binary FILE` or `NYM_BINARY`. It runs native recursive JSONL/NDJSON discovery on `**.text` and `**.thinking`, then creates an offline review page. Defaults: 200 suggestions, 200,000 distinct-literal budget and one-word phrases. `--limit`, `--max-distinct`, `--phrase-words` and `--min-count` override these values.
+The launcher finds the newest compatible local versioned build (or `nym` on PATH), without installing it. Override with `--binary FILE` or `NYM_BINARY`. It runs native recursive JSONL/NDJSON discovery on `**.text` and `**.thinking`, then creates an offline review page. It uses bounded proposals and exact recount: defaults are 200 suggestions, 200,000 proposal slots and one-word phrases. `--limit`, `--max-distinct`, `--phrase-words` and `--min-count` override these values.
 
 Each run creates an owner-only timestamped directory under `$XDG_STATE_HOME/nym/pi-terms` (fallback `~/.local/state/nym/pi-terms`) with isolated configuration, discovery JSON and review HTML. `--output-dir DIR` chooses a **new** directory; existing directories are never overwritten. It runs inline in ordinary shells, tmux or herdr, never starts a new session, modifies input logs, trains, uploads, globally configures NYM or automatically approves/exports terms. Browser opening is best-effort; `--no-open` disables it. Preserve downloaded decisions separately and use `terms export` after explicit review.
 
 Keep reserved validation sources out of discovery too: choose an appropriate subtree or repeat `--exclude-file FILE`. The launcher does not know your holdout protocol and does not bypass counting/traversal limits. It is a Bash launcher, tested with macOS system Bash; Windows users can use the native CLI directly.
+
+## High-cardinality corpora: bounded proposals
+
+Exact discovery remains the default and fails closed when the distinct-literal budget is exhausted. For large histories, use `--bounded` (enabled by the Pi launcher):
+
+```bash
+nym terms discover /path/to/sessions -r --extension jsonl,ndjson --bounded \
+  --include '**.text' --include '**.thinking' --phrase-words 1 \
+  --max-distinct 200000 --limit 200 --output discovery.json
+```
+
+Pass one uses deterministic Space-Saving occurrence-frequency proposals with at most `--max-distinct` slots. It keeps no example contexts, source-pair sets or global duplicate-text set. Lower-bound estimated frequencies select an oversampled pool of at most 10 times `--limit`. Pass two scans the same resolved file set and computes **exact occurrences, distinct-text counts, source counts, contexts and final spread ranking for that pool only**. Source counts use compact bounded bitsets. Repeated text copies are downweighted exactly in final ranking, but can influence first-pass proposals. Estimated frequencies are discarded; they are never presented as exact review counts.
+
+The artifact records `selection.method`, proposal capacity and pool size; `candidate_count` then means **recounted pool**, not total corpus vocabulary. The CLI and offline review explicitly identify this mode. Omitted terms—including rare sensitive values—remain unmeasured: approximate shortlist selection is not exhaustive privacy detection or training gold. It is not guaranteed equivalent to exact discovery. Bounded mode currently requires named files/directories (not stdin) and does not support background ranking.
+
+The selected-unit/source/path/order checksum must match across passes or no artifact is published. The resolved file set is fixed before scanning; file bytes are not snapshotted, and changes outside selected units are not covered by this checksum. Freeze live session files separately for a reproducible corpus. Malformed/unreadable input and other resource failures still fail closed. Bounded mode supports at most 10 million units; exact mode retains its one-million-unit limit. Exact duplicate accounting still consumes memory proportional to distinct text hashes, bounded by the unit limit; only candidate proposal storage is independent of total vocabulary cardinality. This is not an arbitrary-size or constant-total-memory claim.
 
 ## Recursive directories
 
@@ -58,7 +74,7 @@ Directory files default to extensions `txt,text,log,md,json,jsonl,ndjson` (case-
 
 Symlink entries are never followed and are counted as skipped; explicit symlink inputs are rejected (use the real path). Unsupported extensions are counted as skipped, not evidence of safety. Nonregular entries, inaccessible directories/selected files, malformed selected input, missing roots and trees without selected files fail operationally. Named output/background files are automatically excluded from traversal, including pre-existing output under `--force`; use repeatable `--exclude-file PATH` for other exact artifact paths. Artifacts explicitly supplied as inputs are errors. Keep generated files outside input trees where possible.
 
-Traversal has a `--max-files` budget (default/hard ceiling 10,000 unique selected files), 100,000 inspected directory entries and 64 nested directories. Failed traversal or extraction never publishes a partial deck or overwrites a destination. Successful JSON/YAML and human summaries report selected files and skipped extension/symlink/artifact counts without paths or corpus values. Discovery vocabulary/unit/source-pair limits below remain separate: recursive input does **not** promise arbitrary whole-history scalability.
+Traversal has a `--max-files` budget (default/hard ceiling 10,000 unique selected files), 100,000 inspected directory entries and 64 nested directories. Failed traversal or extraction never publishes a partial deck or overwrites a destination. Successful JSON/YAML and human summaries report selected files and skipped extension/symlink/artifact counts without paths or corpus values; bounded results also report proposal/recount scope. Discovery vocabulary/unit/source-pair limits below remain separate: recursive input does **not** promise arbitrary whole-history scalability.
 
 ## Inputs and statistics
 

@@ -1,6 +1,7 @@
 //! Corpus-specific vocabulary suggestions. Counts are not privacy judgments.
 use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
+use crate::terms_sketch::{Sketch, SourceBits};
 use anyhow::{Result, bail};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
@@ -9,6 +10,7 @@ use sha2::{Digest, Sha256};
 const SCHEMA: &str = "nym.terms.discovery.v1";
 const MAX_IDENTITIES: usize = 1_000_000;
 const MAX_SOURCE_PAIRS: usize = 1_000_000;
+const MAX_BOUNDED_UNITS: u64 = 10_000_000;
 
 pub fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -90,6 +92,29 @@ pub struct Candidate {
 
 #[derive(Clone, Serialize, Deserialize, PartialEq)]
 #[serde(deny_unknown_fields)]
+pub struct Selection {
+    pub method: String,
+    pub capacity: usize,
+    pub recounted: usize,
+}
+
+impl Selection {
+    fn validate(&self, discovery: &Discovery) -> Result<()> {
+        if self.method != "space_saving_occurrences"
+            || self.capacity != discovery.settings.max_distinct
+            || self.recounted > discovery.settings.max_candidates * 10
+            || self.recounted > self.capacity
+            || discovery.candidate_count != self.recounted as u64
+            || discovery.background_sha256.is_some()
+        {
+            bail!("invalid bounded vocabulary selection");
+        }
+        Ok(())
+    }
+}
+
+#[derive(Clone, Serialize, Deserialize, PartialEq)]
+#[serde(deny_unknown_fields)]
 pub struct Discovery {
     pub schema: String,
     pub corpus_sha256: String,
@@ -99,14 +124,17 @@ pub struct Discovery {
     pub source_count: u64,
     pub unit_count: u64,
     pub byte_count: u64,
-    /// All distinct discovered literals, before min-count and display limits.
+    /// Exact mode: all distinct literals. Bounded mode: recounted pool only, not corpus vocabulary.
     pub candidate_count: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection: Option<Selection>,
     pub candidates: Vec<Candidate>,
 }
 
 impl Discovery {
     pub fn validate(&self) -> Result<()> {
         self.settings.validate()?;
+        let max_units = self.validate_selection()?;
         if self.schema != SCHEMA
             || !valid_hash(&self.corpus_sha256)
             || self
@@ -116,7 +144,7 @@ impl Discovery {
             || !matches!(self.ranking.as_str(), "spread" | "background_log_lift")
             || (self.ranking == "background_log_lift") != self.background_sha256.is_some()
             || self.source_count > self.unit_count
-            || self.unit_count > MAX_IDENTITIES as u64
+            || self.unit_count > max_units
             || self.candidate_count > self.settings.max_distinct as u64
             || self.candidates.len() > self.settings.max_candidates
             || self.candidates.len() as u64 > self.candidate_count
@@ -160,6 +188,15 @@ impl Discovery {
         Ok(())
     }
 
+    fn validate_selection(&self) -> Result<u64> {
+        if let Some(selection) = &self.selection {
+            selection.validate(self)?;
+            Ok(MAX_BOUNDED_UNITS)
+        } else {
+            Ok(MAX_IDENTITIES as u64)
+        }
+    }
+
     pub fn fingerprint(&self) -> Result<String> {
         self.validate()?;
         let encoded = serde_json::to_vec(self)
@@ -180,7 +217,7 @@ struct Unit<'a> {
 
 struct Counts {
     occurrences: u64,
-    sources: BTreeSet<u32>,
+    sources: SourceBits,
     distinct_texts: u64,
     examples: Vec<Example>,
 }
@@ -197,6 +234,10 @@ pub struct Builder {
     bytes: u64,
     source_pairs: usize,
     background: Option<BTreeMap<String, u64>>,
+    sketch: Option<Sketch>,
+    selected: Option<HashSet<String>>,
+    selection: Option<Selection>,
+    expected_corpus: Option<String>,
     failed: bool,
 }
 
@@ -232,8 +273,53 @@ impl Builder {
             bytes: 0,
             source_pairs: 0,
             background,
+            sketch: None,
+            selected: None,
+            selection: None,
+            expected_corpus: None,
             failed: false,
         })
+    }
+
+    /// Bounded proposals contain no examples, source-pair sets or exact duplicate accounting.
+    pub fn bounded(settings: Settings) -> Result<Self> {
+        let capacity = settings.max_distinct;
+        let mut builder = Self::new(settings, None)?;
+        builder.sketch = Some(Sketch::new(capacity));
+        Ok(builder)
+    }
+
+    /// Consume approximate estimates; only the exact second pass may produce an artifact.
+    pub fn recount(mut self) -> Result<Self> {
+        if self.failed {
+            bail!("vocabulary discovery is incomplete; start a new scan");
+        }
+        let sketch = self
+            .sketch
+            .take()
+            .ok_or_else(|| anyhow::anyhow!("bounded vocabulary proposal is missing"))?;
+        let terms: HashSet<_> = sketch
+            .shortlist(self.settings.max_candidates * 10)
+            .into_iter()
+            .collect();
+        let selection = Selection {
+            method: "space_saving_occurrences".into(),
+            capacity: self.settings.max_distinct,
+            recounted: terms.len(),
+        };
+        let mut builder = Self::new(self.settings, None)?;
+        builder.expected_corpus = Some(format!("{:x}", self.digest.finalize()));
+        builder.selected = Some(terms);
+        builder.selection = Some(selection);
+        Ok(builder)
+    }
+
+    fn max_units(&self) -> u64 {
+        if self.sketch.is_some() || self.selected.is_some() {
+            MAX_BOUNDED_UNITS
+        } else {
+            MAX_IDENTITIES as u64
+        }
     }
 
     pub fn ingest(&mut self, source: &str, path: &str, text: &str) -> Result<()> {
@@ -245,7 +331,7 @@ impl Builder {
             || source.is_empty()
             || source.len() > 128
             || path.len() > 2048
-            || self.units >= MAX_IDENTITIES as u64
+            || self.units >= self.max_units()
         {
             bail!("vocabulary input unit or identity limit exceeded");
         }
@@ -261,7 +347,7 @@ impl Builder {
             index
         };
         let text_hash: [u8; 32] = Sha256::digest(text.as_bytes()).into();
-        let fresh = self.seen_texts.insert(text_hash);
+        let fresh = self.sketch.is_none() && self.seen_texts.insert(text_hash);
         let unit_sha = sha256(text.as_bytes());
         self.units += 1;
         self.bytes = self
@@ -343,6 +429,16 @@ impl Builder {
         if !valid_term(term) {
             return Ok(());
         }
+        if let Some(sketch) = &mut self.sketch {
+            return sketch.observe(term);
+        }
+        if self
+            .selected
+            .as_ref()
+            .is_some_and(|terms| !terms.contains(term))
+        {
+            return Ok(());
+        }
         if !self.counts.contains_key(term) && self.counts.len() >= self.settings.max_distinct {
             bail!("distinct vocabulary limit exceeded; increase --max-distinct explicitly");
         }
@@ -351,7 +447,7 @@ impl Builder {
             .entry(term.to_owned())
             .or_insert_with(|| Counts {
                 occurrences: 0,
-                sources: BTreeSet::new(),
+                sources: SourceBits::default(),
                 distinct_texts: 0,
                 examples: Vec::new(),
             });
@@ -361,7 +457,7 @@ impl Builder {
             .ok_or_else(|| anyhow::anyhow!("vocabulary count overflow"))?;
         if counts.sources.insert(source_index) {
             self.source_pairs += 1;
-            if self.source_pairs > MAX_SOURCE_PAIRS {
+            if self.selection.is_none() && self.source_pairs > MAX_SOURCE_PAIRS {
                 bail!("vocabulary source-pair limit exceeded");
             }
         }
@@ -423,6 +519,17 @@ impl Builder {
         if self.failed {
             bail!("vocabulary discovery is incomplete; no artifact may be published");
         }
+        if self.sketch.is_some() {
+            bail!("bounded vocabulary proposal requires exact recount");
+        }
+        let corpus_sha256 = format!("{:x}", self.digest.clone().finalize());
+        if self
+            .expected_corpus
+            .as_ref()
+            .is_some_and(|expected| expected != &corpus_sha256)
+        {
+            bail!("vocabulary inputs changed between proposal and recount; destination preserved");
+        }
         let total: u64 = self.counts.values().map(|c| c.distinct_texts).sum();
         let background_total: u64 = self.background.as_ref().map_or(0, |b| b.values().sum());
         let background_sha256 = self
@@ -479,7 +586,7 @@ impl Builder {
             .collect();
         let discovery = Discovery {
             schema: SCHEMA.into(),
-            corpus_sha256: format!("{:x}", self.digest.finalize()),
+            corpus_sha256,
             ranking: if self.background.is_some() {
                 "background_log_lift"
             } else {
@@ -492,6 +599,7 @@ impl Builder {
             unit_count: self.units,
             byte_count: self.bytes,
             candidate_count: self.counts.len() as u64,
+            selection: self.selection,
             candidates,
         };
         discovery.validate()?;

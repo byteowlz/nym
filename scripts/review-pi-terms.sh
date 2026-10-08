@@ -15,13 +15,15 @@ usage() {
         '  --output-dir DIR     New private run directory; must not already exist' \
         '  --no-open            Do not open the review page' \
         '  --limit N            Displayed suggestions (default: 200)' \
-        '  --max-distinct N     Counting budget (default: 200000)' \
+        '  --max-distinct N     Bounded proposal slots (default: 200000)' \
         '  --phrase-words N     Phrase size, 1..3 (default: 1 for lighter discovery)' \
         '  --min-count N        Minimum literal occurrences (default: 2)' \
         '  --exclude-file FILE  Exclude an exact file, repeatable; use for reserved holdouts' \
         '  -h, --help           Show help' \
         '' \
-        'Counting/file/unit limits still apply; failures do not produce partial decks.'
+        'Uses bounded proposals followed by exact recount of up to 10 times the display limit.' \
+        'Proposals may omit rare literals. Omission is not evidence of safety.' \
+        'File/unit limits still apply; failures do not produce partial decks.'
 }
 
 fail() { printf 'error: %s\n' "$1" >&2; exit 1; }
@@ -29,7 +31,7 @@ supports_recursive() {
     local help
     [[ -x "$1" ]] || return 1
     help=$("$1" terms discover --help 2>/dev/null) || return 1
-    [[ "$help" == *'--recursive'* ]]
+    [[ "$help" == *'--recursive'* && "$help" == *'--bounded'* ]]
 }
 
 sessions="${HOME:?HOME is required}/.pi/agent/sessions"
@@ -94,7 +96,7 @@ run_dir=$(cd "$run_dir" && pwd -P)
 printf '[ner]\nenabled = false\n[decision]\nenabled = false\n' > "$run_dir/config.toml"
 
 "$binary" --config "$run_dir/config.toml" terms discover "$sessions" \
-    --recursive --extension jsonl,ndjson \
+    --recursive --bounded --extension jsonl,ndjson \
     --include '**.text' --include '**.thinking' \
     --phrase-words "$phrase_words" --max-distinct "$max_distinct" \
     --min-count "$min_count" --limit "$limit" \

@@ -26,11 +26,8 @@ fn run(dir: &TempDir, args: &[&str]) -> Output {
 fn text(path: &Path) -> &str {
     path.to_str().unwrap()
 }
-fn artifact(path: &Path) -> Value {
-    let value: Value = serde_json::from_reader(fs::File::open(path).unwrap()).unwrap();
-    assert_eq!(value["schema"], json!("nym.terms.discovery.v1"));
-    value
-}
+mod support;
+use support::discovery_value as artifact;
 
 #[test]
 fn recursive_matches_explicit_files_including_hidden_unicode_and_case_extensions() {

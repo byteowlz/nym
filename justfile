@@ -43,7 +43,7 @@ test:
 # Model-independent corpus vocabulary core and public CLI tests
 test-terms:
     cargo test terms
-    cargo test --test terms --test terms_recursive
+    cargo test --test terms --test terms_recursive --test terms_bounded
 
 # Private Pi-session launcher (fake CLI and synthetic inputs only)
 test-pi-terms:

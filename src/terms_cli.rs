@@ -80,6 +80,9 @@ struct DiscoverArgs {
     limit: Option<usize>,
     #[arg(long)]
     max_distinct: Option<usize>,
+    /// Bounded approximate candidate proposals, then exact full-corpus recount (named inputs only)
+    #[arg(long)]
+    bounded: bool,
     #[arg(long)]
     phrase_words: Option<usize>,
     #[arg(long)]
@@ -100,6 +103,8 @@ struct Summary {
     pending: usize,
     #[serde(flatten, skip_serializing_if = "Option::is_none")]
     input_stats: Option<FileStats>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    selection: Option<terms::Selection>,
 }
 
 pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsCommand) -> Result<()> {
@@ -158,6 +163,7 @@ pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsComman
             Summary {
                 action: "review",
                 input_stats: None,
+                selection: discovery.selection.clone(),
                 candidates: discovery.candidates.len(),
                 approved: review.approve_terms(&discovery)?.len(),
                 units: discovery.unit_count,
@@ -187,6 +193,7 @@ pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsComman
             Summary {
                 action: "export",
                 input_stats: None,
+                selection: discovery.selection.clone(),
                 candidates: discovery.candidates.len(),
                 approved: approved.len(),
                 units: discovery.unit_count,
@@ -208,6 +215,12 @@ pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsComman
                 summary.pending,
                 summary.units
             );
+            if let Some(selection) = &summary.selection {
+                println!(
+                    "Bounded candidate proposals; {} literals recounted exactly. Omitted literals are unmeasured, not safe.",
+                    selection.recounted
+                );
+            }
             if let Some(stats) = &summary.input_stats {
                 println!(
                     "{} files; skipped {} extension-filtered, {} symlinks, {} artifacts",
@@ -240,13 +253,18 @@ fn discover(args: DiscoverArgs, defaults: &Settings) -> Result<Summary> {
         ..defaults.clone()
     };
     let limit = settings.max_unit_bytes;
-    let mut builder = Builder::new(settings, background)?;
-    if inputs.paths.is_empty() {
-        collect_input(&mut builder, None, args.format, &selector, limit)?;
+    if args.bounded && (inputs.paths.is_empty() || background.is_some()) {
+        bail!("bounded discovery requires named inputs and does not support background ranking");
+    }
+    let mut builder = if args.bounded {
+        Builder::bounded(settings)?
     } else {
-        for path in &inputs.paths {
-            collect_input(&mut builder, Some(path), args.format, &selector, limit)?;
-        }
+        Builder::new(settings, background)?
+    };
+    collect_corpus(&mut builder, &inputs.paths, args.format, &selector, limit)?;
+    if args.bounded {
+        builder = builder.recount()?;
+        collect_corpus(&mut builder, &inputs.paths, args.format, &selector, limit)?;
     }
     let discovery = builder.finish()?;
     write_json(&args.output, &discovery, args.force)?;
@@ -257,7 +275,24 @@ fn discover(args: DiscoverArgs, defaults: &Settings) -> Result<Summary> {
         units: discovery.unit_count,
         pending: discovery.candidates.len(),
         input_stats: Some(inputs.stats),
+        selection: discovery.selection.clone(),
     })
+}
+
+fn collect_corpus(
+    builder: &mut Builder,
+    paths: &[PathBuf],
+    format: Option<FormatArg>,
+    selector: &PathSelector,
+    limit: usize,
+) -> Result<()> {
+    if paths.is_empty() {
+        collect_input(builder, None, format, selector, limit)?;
+    }
+    for path in paths {
+        collect_input(builder, Some(path), format, selector, limit)?;
+    }
+    Ok(())
 }
 
 fn collect_input(
