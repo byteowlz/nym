@@ -43,7 +43,7 @@ test:
 # Model-independent corpus vocabulary core and public CLI tests
 test-terms:
     cargo test terms
-    cargo test --test terms
+    cargo test --test terms --test terms_recursive
 
 # Complete-gold schema, loss masks and independent model-only privacy gate
 test-gold:

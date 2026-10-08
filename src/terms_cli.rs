@@ -3,6 +3,7 @@ use crate::{
     engine::selector::PathSelector,
     input::{self, FormatArg},
     terms::{self, Builder, Choice, Decision, Discovery, Review, Settings},
+    terms_input::{FileStats, InputArgs},
 };
 use anyhow::{Result, bail};
 use clap::{Args, Subcommand};
@@ -29,33 +30,7 @@ impl std::fmt::Debug for TermsCommand {
 #[derive(Subcommand)]
 enum Action {
     /// Discover recurring literal candidates; never automatically classify privacy
-    Discover {
-        /// Input files; omit to read stdin. Directories and binary documents are not supported
-        inputs: Vec<PathBuf>,
-        #[arg(long, value_enum)]
-        format: Option<FormatArg>,
-        #[arg(short, long)]
-        output: PathBuf,
-        #[arg(long)]
-        include: Vec<String>,
-        #[arg(long)]
-        exclude: Vec<String>,
-        #[arg(long)]
-        min_count: Option<u64>,
-        #[arg(long)]
-        limit: Option<usize>,
-        #[arg(long)]
-        max_distinct: Option<usize>,
-        #[arg(long)]
-        phrase_words: Option<usize>,
-        #[arg(long)]
-        max_unit_bytes: Option<usize>,
-        /// JSON map of public/reference literal frequency counts; ranking only
-        #[arg(long)]
-        background: Option<PathBuf>,
-        #[arg(long)]
-        force: bool,
-    },
+    Discover(DiscoverArgs),
     /// Create or update source-bound decisions, or emit a self-contained browser review
     Review {
         discovery: PathBuf,
@@ -87,6 +62,35 @@ enum Action {
     },
 }
 
+#[derive(Args)]
+struct DiscoverArgs {
+    #[command(flatten)]
+    input: InputArgs,
+    #[arg(long, value_enum)]
+    format: Option<FormatArg>,
+    #[arg(short, long)]
+    output: PathBuf,
+    #[arg(long)]
+    include: Vec<String>,
+    #[arg(long)]
+    exclude: Vec<String>,
+    #[arg(long)]
+    min_count: Option<u64>,
+    #[arg(long)]
+    limit: Option<usize>,
+    #[arg(long)]
+    max_distinct: Option<usize>,
+    #[arg(long)]
+    phrase_words: Option<usize>,
+    #[arg(long)]
+    max_unit_bytes: Option<usize>,
+    /// JSON map of public/reference literal frequency counts; ranking only
+    #[arg(long)]
+    background: Option<PathBuf>,
+    #[arg(long)]
+    force: bool,
+}
+
 #[derive(Serialize)]
 struct Summary {
     action: &'static str,
@@ -94,54 +98,13 @@ struct Summary {
     approved: usize,
     units: u64,
     pending: usize,
+    #[serde(flatten, skip_serializing_if = "Option::is_none")]
+    input_stats: Option<FileStats>,
 }
 
 pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsCommand) -> Result<()> {
     let summary = match command.action {
-        Action::Discover {
-            inputs,
-            format,
-            output,
-            include,
-            exclude,
-            min_count,
-            limit,
-            max_distinct,
-            phrase_words,
-            max_unit_bytes,
-            background,
-            force,
-        } => {
-            let selector = PathSelector::new(&include, &exclude)
-                .map_err(|_| anyhow::anyhow!("invalid discovery selector"))?;
-            let background = background.map(|p| read_json(&p)).transpose()?;
-            let settings = Settings {
-                max_distinct: max_distinct.unwrap_or(defaults.max_distinct),
-                min_count: min_count.unwrap_or(defaults.min_count),
-                max_candidates: limit.unwrap_or(defaults.max_candidates),
-                max_phrase_words: phrase_words.unwrap_or(defaults.max_phrase_words),
-                max_unit_bytes: max_unit_bytes.unwrap_or(defaults.max_unit_bytes),
-                ..defaults.clone()
-            };
-            let max_unit_bytes = settings.max_unit_bytes;
-            let mut builder = Builder::new(settings, background)?;
-            if inputs.is_empty() {
-                collect_input(&mut builder, None, format, &selector, max_unit_bytes)?;
-            } else {
-                for path in &inputs {
-                    collect_input(&mut builder, Some(path), format, &selector, max_unit_bytes)?;
-                }
-            }
-            let discovery = builder.finish()?;
-            write_json(&output, &discovery, force)?;
-            Summary {
-                action: "discover",
-                candidates: discovery.candidates.len(),
-                approved: 0,
-                units: discovery.unit_count,
-                pending: discovery.candidates.len(),
-            }
-        }
+        Action::Discover(args) => discover(args, defaults)?,
         Action::Review {
             discovery,
             output,
@@ -194,6 +157,7 @@ pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsComman
             }
             Summary {
                 action: "review",
+                input_stats: None,
                 candidates: discovery.candidates.len(),
                 approved: review.approve_terms(&discovery)?.len(),
                 units: discovery.unit_count,
@@ -222,6 +186,7 @@ pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsComman
             }
             Summary {
                 action: "export",
+                input_stats: None,
                 candidates: discovery.candidates.len(),
                 approved: approved.len(),
                 units: discovery.unit_count,
@@ -243,9 +208,56 @@ pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsComman
                 summary.pending,
                 summary.units
             );
+            if let Some(stats) = &summary.input_stats {
+                println!(
+                    "{} files; skipped {} extension-filtered, {} symlinks, {} artifacts",
+                    stats.files,
+                    stats.skipped_extensions,
+                    stats.skipped_symlinks,
+                    stats.skipped_artifacts
+                );
+            }
         }
     }
     Ok(())
+}
+
+fn discover(args: DiscoverArgs, defaults: &Settings) -> Result<Summary> {
+    let selector = PathSelector::new(&args.include, &args.exclude)
+        .map_err(|_| anyhow::anyhow!("invalid discovery selector"))?;
+    let mut excluded = vec![args.output.as_path()];
+    if let Some(path) = &args.background {
+        excluded.push(path.as_path());
+    }
+    let inputs = args.input.resolve(&excluded)?;
+    let background = args.background.as_ref().map(|p| read_json(p)).transpose()?;
+    let settings = Settings {
+        max_distinct: args.max_distinct.unwrap_or(defaults.max_distinct),
+        min_count: args.min_count.unwrap_or(defaults.min_count),
+        max_candidates: args.limit.unwrap_or(defaults.max_candidates),
+        max_phrase_words: args.phrase_words.unwrap_or(defaults.max_phrase_words),
+        max_unit_bytes: args.max_unit_bytes.unwrap_or(defaults.max_unit_bytes),
+        ..defaults.clone()
+    };
+    let limit = settings.max_unit_bytes;
+    let mut builder = Builder::new(settings, background)?;
+    if inputs.paths.is_empty() {
+        collect_input(&mut builder, None, args.format, &selector, limit)?;
+    } else {
+        for path in &inputs.paths {
+            collect_input(&mut builder, Some(path), args.format, &selector, limit)?;
+        }
+    }
+    let discovery = builder.finish()?;
+    write_json(&args.output, &discovery, args.force)?;
+    Ok(Summary {
+        action: "discover",
+        candidates: discovery.candidates.len(),
+        approved: 0,
+        units: discovery.unit_count,
+        pending: discovery.candidates.len(),
+        input_stats: Some(inputs.stats),
+    })
 }
 
 fn collect_input(

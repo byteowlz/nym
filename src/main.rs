@@ -26,6 +26,7 @@ mod input;
 mod session;
 mod terms;
 mod terms_cli;
+mod terms_input;
 use input::FormatArg;
 #[cfg(feature = "streaming")]
 mod streaming;

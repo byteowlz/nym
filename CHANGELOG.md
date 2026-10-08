@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Discover corpus terms directly from recursive directory trees (`--recursive`, `--extension`, `--exclude-file`, `--max-files`) with deterministic deduplicated input sets, no symlink following, bounded traversal and failure-safe publication; report skipped-file counts without source values.
 - Add model-independent `terms discover|review|export` for bounded corpus vocabulary ranking, original-context review, offline phone-sized decisions and explicitly approved private literal lists; dismissal never becomes a benign exemption. See `docs/corpus-vocabulary.md`.
 - Prepare source-disjoint complete NER gold bundles, loss-mask all uncertain overlaps and reject unknown labels/truncated gold; add an isolated model-only full-value selection gate with actual-output reconciliation. Tooling does not train or promote a model automatically. See `docs/ner-gold.md`.
 - Clear inherited fixed tokenizer padding before token NER windowing, so published BERT/DistilBERT exports do not turn short inputs into invalid padding-only source windows. Batched inference retains its explicit padding.
