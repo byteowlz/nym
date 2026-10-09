@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Add optional local CPU `terms discover --ner-rank` before the review cutoff, using only cached/local token models at threshold 0.5. Prioritize recognized values by exact duplicate-downweighted repetition; keep unmatched values eligible, preserve ordinary ties, bind scorer file hashes/counts, and fail closed without downloads or privacy auto-decisions. Enable it in the Pi launcher with `--no-ner-rank` and `--ner-rank-model` controls; native model-free discovery remains the default.
+
 - Expose saved vocabulary runs with native `terms runs list/show/register/open/serve`, stable IDs/`latest`, private per-run XDG-state manifests and metadata-only legacy discovery. Register completed launcher runs, verify source/artifact scope before reuse, render trusted desktop snapshots, and embed hash-checked XDG-data hosting assets for checkout-free private serving; no rescan, model or automatic installation.
 
 - Integrate opt-in private tailnet review sharing into the Pi launcher (`--serve`, `--serve-existing`, `--port`): read-only bounded snapshots, fragment capabilities, no directory exposure/request logs/public Funnel, foreground Ctrl-C shutdown and browser-only decisions. Offline/native workflows remain unchanged; serving alone uses uv/Python stdlib.

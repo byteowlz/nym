@@ -8,7 +8,7 @@
 </style></head><body><main>
 <h1>NYM vocabulary review</h1><p class="muted" id="progress" aria-live="polite"></p>
 <details><summary>What am I approving?</summary><p>These are recurring literal suggestions, not findings or privacy guarantees. Read the contexts before deciding. “Sensitive throughout corpus” authorizes matching every occurrence in the discovered corpus, including unsampled ones. Choose “Depends on context” for ambiguous terms. Dismissal never creates a global safe-list.</p><p>Review files contain source-bound decisions, not complete entity annotations. They must not be used as model-training gold. Exported literal lists apply wherever you explicitly use them; scope is not automatically enforced by the list format.</p><p>This page is offline: no uploads or network requests. It contains private text. Keep it private. Download your decisions before closing; browser resume storage is best-effort and may be unavailable.</p></details>
-<p class="muted" id="ranking"></p><p class="muted" id="selection"></p><p class="muted" id="projection"></p>
+<p class="muted" id="ranking"></p><p class="muted" id="selection"></p><p class="muted" id="ner-ranking"></p><p class="muted" id="projection"></p>
 <div class="nav"><button id="back" type="button">Back</button><select id="jump" aria-label="Revisit candidate"></select></div>
 <section id="card"><h2 id="term" aria-live="polite"></h2><p class="muted" id="counts"></p><p id="status"></p><div id="examples"></div></section>
 <p id="message" role="status" aria-live="polite"></p>
@@ -21,7 +21,8 @@
 <script>
 'use strict';
 const data=JSON.parse(document.getElementById('data').textContent),d=data.discovery,r=data.review;
-if(d.ranking==='source_specificity')document.getElementById('ranking').textContent='Source-specific suggestions, not the most common words. Widely shared names or other sensitive values can rank low; specificity is not privacy, and omissions are unmeasured.';
+if(d.ranking==='source_specificity')document.getElementById('ranking').textContent=d.ner_ranking?'Unmatched suggestions use source specificity. Unrecognized widely shared sensitive values can still rank low; omissions are unmeasured.':'Source-specific suggestions, not the most common words. Widely shared names or other sensitive values can rank low; specificity is not privacy, and omissions are unmeasured.';
+if(d.ner_ranking)document.getElementById('ner-ranking').textContent=`Local CPU NER priority (threshold 0.5): ${d.ner_ranking.recognized} of ${d.ner_ranking.scored} eligible candidates recognized before the display cutoff. Recognized values rank by duplicate-downweighted repetition, not source specificity. Matches are prioritized, not approved. Unmatched and omitted terms are unmeasured, not safe.`;
 if(d.selection)document.getElementById('selection').textContent='Bounded candidate proposals; displayed occurrence, source and distinct-text counts were recounted exactly. Rare or other omitted literals are unmeasured, not safe.';
 if(d.projection&&d.projection.records)document.getElementById('projection').textContent=`Unicode projection: ${d.projection.replacements} invalid code units replaced in ${d.projection.records} records. Originals unchanged. Marked contexts, offsets and hashes refer to the decoded review view, not original UTF-16 values; this is not training gold.`;
 const candidates=d.candidates,choices=new Map(r.decisions.map(row=>[row.candidate_id,row.choice]));
@@ -38,7 +39,7 @@ function show(){
  $('progress').textContent=`${choices.size} / ${candidates.length} reviewed · ${d.unit_count} text units`;
  $('back').disabled=index===0;$('examples').replaceChildren();
  const c=candidates[index];if(!c){$('term').textContent='No candidates';$('counts').textContent='';$('status').textContent='';document.querySelectorAll('[data-choice]').forEach(b=>b.disabled=true);return;}
- $('term').textContent=c.term;$('counts').textContent=`${c.occurrences} occurrences · ${c.sources} sources · ${c.distinct_texts} distinct texts`;
+ $('term').textContent=c.term;$('counts').textContent=`${c.occurrences} occurrences · ${c.sources} sources · ${c.distinct_texts} distinct texts${c.ner_match===true?' · NER match—review required':c.ner_match===false?' · No NER match—not a safety judgment':''}`;
  $('status').textContent=choices.has(c.id)?`Decision: ${choices.get(c.id)}`:'Not reviewed';
  c.examples.forEach(e=>{const label=document.createElement('p');label.className='source';label.textContent=`${e.source.slice(0,22)} · ${e.path||'(root)'}${e.projected?' · Projected record; view-relative offsets':''}`;const text=document.createElement('pre');const bytes=new TextEncoder().encode(e.context),decode=new TextDecoder('utf-8',{fatal:true});const start=e.start-e.context_start,end=e.end-e.context_start;const mark=document.createElement('mark');mark.textContent=decode.decode(bytes.slice(start,end));text.append(decode.decode(bytes.slice(0,start)),mark,decode.decode(bytes.slice(end)));$('examples').append(label,text);});
  window.scrollTo({top:0,behavior:'instant'});

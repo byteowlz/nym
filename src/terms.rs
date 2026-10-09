@@ -115,6 +115,9 @@ pub struct Candidate {
     pub sources: u64,
     pub distinct_texts: u64,
     pub score: f64,
+    /// Model recognition priority only; false is not a benign judgment.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ner_match: Option<bool>,
     pub examples: Vec<Example>,
 }
 
@@ -169,6 +172,8 @@ pub struct Discovery {
     pub selection: Option<Selection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub projection: Option<Projection>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub ner_ranking: Option<crate::terms_ner::NerRanking>,
     pub candidates: Vec<Candidate>,
 }
 
@@ -195,6 +200,7 @@ impl Discovery {
         {
             bail!("invalid vocabulary discovery artifact");
         }
+        crate::terms_ner::validate(self)?;
         let mut ids = HashSet::new();
         for candidate in &self.candidates {
             if !valid_term(&candidate.term)
@@ -257,6 +263,38 @@ struct Counts {
     sources: SourceBits,
     distinct_texts: u64,
     examples: Vec<Example>,
+}
+
+type Ranked<'a> = (&'a String, &'a Counts, f64, Option<bool>);
+
+fn prioritize(
+    candidates: &mut [Ranked<'_>],
+    ranker: &mut dyn crate::terms_ner::Prioritizer,
+) -> Result<crate::terms_ner::NerRanking> {
+    let terms: Vec<_> = candidates.iter().map(|c| c.0.as_str()).collect();
+    let (flags, metadata) = ranker.score(&terms)?;
+    metadata.validate(candidates.len() as u64)?;
+    if flags.len() != candidates.len()
+        || metadata.scored != candidates.len()
+        || metadata.recognized != flags.iter().filter(|flag| **flag).count()
+    {
+        bail!("NER priority accounting failed; no artifact may be published");
+    }
+    for (candidate, flag) in candidates.iter_mut().zip(flags) {
+        candidate.3 = Some(flag);
+    }
+    // Recognized values use duplicate-downweighted repetition, not source IDF.
+    // Stable sorting preserves base-rank ties and the entire unmatched lane.
+    candidates.sort_by(|a, b| {
+        b.3.cmp(&a.3).then_with(|| {
+            if a.3 == Some(true) {
+                b.1.distinct_texts.cmp(&a.1.distinct_texts)
+            } else {
+                std::cmp::Ordering::Equal
+            }
+        })
+    });
+    Ok(metadata)
 }
 
 pub struct Builder {
@@ -642,6 +680,13 @@ impl Builder {
     }
 
     pub fn finish(self) -> Result<Discovery> {
+        self.finish_ranked(None)
+    }
+
+    pub fn finish_ranked(
+        self,
+        ranker: Option<&mut dyn crate::terms_ner::Prioritizer>,
+    ) -> Result<Discovery> {
         if self.failed {
             bail!("vocabulary discovery is incomplete; no artifact may be published");
         }
@@ -692,27 +737,32 @@ impl Builder {
                         (foreground / reference).ln() * (1.0 + c.distinct_texts as f64).ln()
                     },
                 );
-                (term, c, score)
+                (term, c, score, None)
             })
             .collect();
-        candidates.sort_by(|(a, ac, score_a), (b, bc, score_b)| {
+        candidates.sort_by(|(a, ac, score_a, _), (b, bc, score_b, _)| {
             score_b
                 .total_cmp(score_a)
                 .then(bc.sources.len().cmp(&ac.sources.len()))
                 .then(bc.occurrences.cmp(&ac.occurrences))
                 .then(a.cmp(b))
         });
+        // Score the complete eligible exact pool BEFORE the displayed shortlist cap.
+        let ner_ranking = ranker
+            .map(|ranker| prioritize(&mut candidates, ranker))
+            .transpose()?;
         // Clone private contexts only for the displayed shortlist, not every term.
         let candidates = candidates
             .into_iter()
             .take(self.settings.max_candidates)
-            .map(|(term, c, score)| Candidate {
+            .map(|(term, c, score, ner_match)| Candidate {
                 id: sha256(term.as_bytes()),
                 term: term.clone(),
                 occurrences: c.occurrences,
                 sources: c.sources.len() as u64,
                 distinct_texts: c.distinct_texts,
                 score,
+                ner_match,
                 examples: c.examples.clone(),
             })
             .collect();
@@ -735,6 +785,7 @@ impl Builder {
             candidate_count: self.counts.len() as u64,
             selection: self.selection,
             projection: self.projection,
+            ner_ranking,
             candidates,
         };
         discovery.validate()?;

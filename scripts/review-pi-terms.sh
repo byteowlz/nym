@@ -8,7 +8,7 @@ usage() {
         'Usage: review-pi-terms.sh [OPTIONS]' \
         '' \
         'Discover Pi-session vocabulary and create a private offline review page.' \
-        'No sessions are changed; no models, training, uploads or automatic approvals.' \
+        'No sessions are changed; no new models, training, uploads or automatic approvals.' \
         '' \
         '  --sessions DIR       Input tree (default: ~/.pi/agent/sessions)' \
         '  --binary FILE        Recursive-capable NYM; otherwise NYM_BINARY or latest local build' \
@@ -20,6 +20,8 @@ usage() {
         '  --no-progress        Disable the stderr progress bar/stage counts' \
         '  --strict-unicode     Reject unpaired UTF-16 instead of explicit discovery projection' \
         '  --frequency-ranking Use raw spread ranking instead of source-specific suggestions' \
+        '  --no-ner-rank        Disable the default local NER-positive review boost' \
+        '  --ner-rank-model DIR Use an existing local/cached token model for the boost'  \
         '  --limit N            Displayed suggestions (default: 200)' \
         '  --max-distinct N     Bounded proposal slots (default: 200000)' \
         '  --phrase-words N     Phrase size, 1..3 (default: 1 for lighter discovery)' \
@@ -28,6 +30,8 @@ usage() {
         '  -h, --help           Show help' \
         '' \
         'Uses bounded proposals and exact recount: 100x display limit (10x with frequency ranking).' \
+        'Local CPU NER at 0.5 boosts recognized candidates before the display cutoff.' \
+        'No match is not benign; model matches still need human context review. Missing models fail.' \
         'Serving uses uv/Python stdlib and Tailscale, only when explicitly requested.' \
         'Completed runs are registered in XDG state; use nym terms runs list/show/open/serve.' \
         'Only a private review snapshot is shared, behind a capability link; no public funnel.' \
@@ -49,7 +53,7 @@ supports_recursive() {
     local help
     [[ -x "$1" ]] || return 1
     help=$("$1" terms discover --help 2>/dev/null) || return 1
-    [[ "$help" == *'--recursive'* && "$help" == *'--bounded'* && "$help" == *'--progress'* && "$help" == *'--repair-unicode'* && "$help" == *'--specific'* ]] || return 1
+    [[ "$help" == *'--recursive'* && "$help" == *'--bounded'* && "$help" == *'--progress'* && "$help" == *'--repair-unicode'* && "$help" == *'--specific'* && "$help" == *'--ner-rank'* ]] || return 1
     help=$("$1" terms runs --help 2>/dev/null) || return 1
     [[ "$help" == *'register'* && "$help" == *'serve'* ]]
 }
@@ -66,6 +70,8 @@ discovery_options=false
 progress_flag=--progress
 unicode_flags=(--repair-unicode)
 ranking_flags=(--specific)
+ner_flags=(--ner-rank)
+ner_model_flags=()
 limit=200
 max_distinct=200000
 phrase_words=1
@@ -83,7 +89,8 @@ while (($#)); do
         --no-progress) progress_flag=--no-progress; discovery_options=true; shift ;;
         --strict-unicode) unicode_flags=(); discovery_options=true; shift ;;
         --frequency-ranking) ranking_flags=(); discovery_options=true; shift ;;
-        --sessions|--binary|--output-dir|--limit|--max-distinct|--phrase-words|--min-count|--exclude-file)
+        --no-ner-rank) ner_flags=(); discovery_options=true; shift ;;
+        --sessions|--binary|--output-dir|--limit|--max-distinct|--phrase-words|--min-count|--exclude-file|--ner-rank-model)
             (($# >= 2)) || fail 'option requires a value'
             if [[ "$1" != --binary ]]; then discovery_options=true; fi
             case "$1" in
@@ -95,11 +102,13 @@ while (($#)); do
                 --phrase-words) phrase_words=$2 ;;
                 --min-count) min_count=$2 ;;
                 --exclude-file) exclusions+=(--exclude-file "$2") ;;
+                --ner-rank-model) ner_model_flags=(--ner-rank-model "$2") ;;
             esac
             shift 2 ;;
         *) fail 'unknown option; use --help' ;;
     esac
 done
+[[ -z "${ner_model_flags[*]-}" || -n "${ner_flags[*]-}" ]] || fail '--ner-rank-model cannot be used with --no-ner-rank'
 [[ "$port" =~ ^[0-9]{1,5}$ ]] && ((10#$port <= 65535)) || fail 'invalid review server port'
 if [[ -n "$existing_review" ]]; then
     [[ "$discovery_options" == false && "$serve_review" == false ]] || fail '--serve-existing cannot also request discovery'
@@ -141,7 +150,7 @@ run_dir=$(cd "$run_dir" && pwd -P)
 printf '[ner]\nenabled = false\n[decision]\nenabled = false\n' > "$run_dir/config.toml"
 
 "$binary" --config "$run_dir/config.toml" terms discover "$sessions" \
-    --recursive --bounded "$progress_flag" ${unicode_flags[@]+"${unicode_flags[@]}"} ${ranking_flags[@]+"${ranking_flags[@]}"} --extension jsonl,ndjson \
+    --recursive --bounded "$progress_flag" ${unicode_flags[@]+"${unicode_flags[@]}"} ${ranking_flags[@]+"${ranking_flags[@]}"} ${ner_flags[@]+"${ner_flags[@]}"} ${ner_model_flags[@]+"${ner_model_flags[@]}"} --extension jsonl,ndjson \
     --include '**.text' --include '**.thinking' \
     --phrase-words "$phrase_words" --max-distinct "$max_distinct" \
     --min-count "$min_count" --limit "$limit" \

@@ -43,7 +43,7 @@ use crate::engine::patterns::{Confidence, PiiCategory};
 /// (e.g. OpenMed-small: validated same-accuracy at ~3x smaller). Architectures
 /// where int8 collapses (e.g. OpenMed base/large — DeBERTa-v2 disentangled
 /// attention) simply don't ship an int8 file, so the resolver falls to fp32.
-const MODEL_CANDIDATES: &[&str] = &[
+pub(crate) const MODEL_CANDIDATES: &[&str] = &[
     "model_int8.onnx",
     "model.onnx",
     "onnx/model.onnx",
@@ -87,7 +87,6 @@ const MIN_TEXT_LENGTH: usize = 3;
 /// window_tokens (480), so [N, seq] tensor is ~N*480*4 bytes; bounding N keeps
 /// the workspace (and the GPU CUDA allocator) from OOMing on big inputs. Larger
 /// inputs are processed in sub-batches of this size.
-#[cfg(feature = "decision")]
 const MAX_BATCH_SIZE: usize = 128;
 
 /// A decoded entity span within a single chunk, in chunk-local byte offsets.
@@ -412,7 +411,6 @@ impl TokenClassDetector {
     /// padding contributes nothing to the output. Rows are decoded with their own
     /// offsets/special mask, so results are identical to N single (`detect`)
     /// calls.
-    #[cfg(feature = "decision")]
     #[expect(
         clippy::cast_possible_wrap,
         clippy::cast_precision_loss,

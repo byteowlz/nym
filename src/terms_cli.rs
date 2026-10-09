@@ -98,6 +98,12 @@ struct DiscoverArgs {
     /// Prefer source-specific repetition over ubiquitous vocabulary; wider bounded recount pool
     #[arg(long, conflicts_with = "background")]
     specific: bool,
+    /// Boost local token NER matches before the display cutoff; unmatched is not benign
+    #[arg(long)]
+    ner_rank: bool,
+    /// Local directory or already cached token model; never downloads (requires --ner-rank)
+    #[arg(long, requires = "ner_rank")]
+    ner_rank_model: Option<String>,
     #[arg(long)]
     phrase_words: Option<usize>,
     #[arg(long)]
@@ -131,7 +137,7 @@ pub fn run(
 ) -> Result<()> {
     let summary = match command.action {
         Action::Runs(command) => return crate::terms_runs::run(common, config, command),
-        Action::Discover(args) => discover(args, &config.terms, common.quiet)?,
+        Action::Discover(args) => discover(args, config, common.quiet)?,
         Action::Review {
             discovery,
             output,
@@ -258,7 +264,19 @@ pub fn run(
     Ok(())
 }
 
-fn discover(args: DiscoverArgs, defaults: &Settings, quiet: bool) -> Result<Summary> {
+fn discover(args: DiscoverArgs, config: &crate::config::Config, quiet: bool) -> Result<Summary> {
+    let defaults = &config.terms;
+    // Resolve and load optional local assets before touching any selected source.
+    let enabled = !args.no_progress && !quiet && (args.progress || std::io::stderr().is_terminal());
+    let mut ranker = if args.ner_rank {
+        Some(crate::terms_ner::load(
+            args.ner_rank_model.as_deref(),
+            &config.ner,
+            enabled,
+        )?)
+    } else {
+        None
+    };
     let selector = PathSelector::new(&args.include, &args.exclude)
         .map_err(|_| anyhow::anyhow!("invalid discovery selector"))?;
     let mut excluded = vec![args.output.as_path()];
@@ -284,7 +302,12 @@ fn discover(args: DiscoverArgs, defaults: &Settings, quiet: bool) -> Result<Summ
     } else {
         Builder::new(settings, background)?
     };
-    let discovery = args.collect(builder, &inputs.paths, &selector, limit, quiet)?;
+    let builder = args.collect(builder, &inputs.paths, &selector, limit, quiet)?;
+    let discovery = if let Some(ranker) = &mut ranker {
+        builder.finish_ranked(Some(ranker.as_mut()))?
+    } else {
+        builder.finish()?
+    };
     write_json(&args.output, &discovery, args.force)?;
     Ok(Summary {
         action: "discover",
@@ -306,7 +329,7 @@ impl DiscoverArgs {
         selector: &PathSelector,
         limit: usize,
         quiet: bool,
-    ) -> Result<Discovery> {
+    ) -> Result<Builder> {
         if self.repair_unicode {
             builder.enable_unicode_projection();
         }
@@ -337,7 +360,7 @@ impl DiscoverArgs {
                 limit,
             )?;
         }
-        builder.finish()
+        Ok(builder)
     }
 }
 

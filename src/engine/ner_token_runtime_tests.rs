@@ -30,7 +30,6 @@ fn provider_config_is_explicit_and_validated() -> Result<(), Box<dyn std::error:
     Ok(())
 }
 
-#[cfg(feature = "decision")]
 #[test]
 #[ignore = "requires NYM_TEST_CACHED_NER_MODEL; CPU only, never downloads"]
 fn cached_batch_preserves_original_byte_offsets()

@@ -29,6 +29,9 @@ mod terms;
 mod terms_bounded_tests;
 mod terms_cli;
 mod terms_input;
+mod terms_ner;
+#[cfg(test)]
+mod terms_ner_tests;
 mod terms_progress;
 mod terms_runs;
 mod terms_sketch;

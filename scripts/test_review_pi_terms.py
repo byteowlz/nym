@@ -9,7 +9,7 @@ import unittest
 SCRIPT = Path(__file__).with_name("review-pi-terms.sh")
 FAKE = r'''#!/usr/bin/env bash
 set -eu
-if [[ "$*" == *"--help"* ]]; then printf '%s\n' '--recursive --bounded --progress --repair-unicode --specific register serve'; exit 0; fi
+if [[ "$*" == *"--help"* ]]; then printf '%s\n' '--recursive --bounded --progress --repair-unicode --specific --ner-rank register serve'; exit 0; fi
 printf '%s\0' "$0" "$@" >> "$FAKE_LOG"
 printf '\n' >> "$FAKE_LOG"
 if [[ "$*" == *" discover "* && "${FAKE_FAIL:-0}" != 0 ]]; then exit "$FAKE_FAIL"; fi
@@ -56,7 +56,7 @@ class LauncherTests(unittest.TestCase):
             self.assertEqual(run.stat().st_mode & 0o777, 0o700)
             self.assertTrue(all(p.stat().st_mode & 0o777 == 0o600 for p in run.iterdir()))
         argv = self.log.read_bytes().split(b'\0')
-        for value in [str(self.sessions), "--recursive", "--bounded", "--progress", "--repair-unicode", "--specific", "jsonl,ndjson", "**.text", "**.thinking",
+        for value in [str(self.sessions), "--recursive", "--bounded", "--progress", "--repair-unicode", "--specific", "--ner-rank", "jsonl,ndjson", "**.text", "**.thinking",
                       "--limit", "30", "--max-distinct", "1000", "--exclude-file"]:
             self.assertIn(value.encode(), argv)
         self.assertFalse((self.root / ".config/nym").exists())
@@ -96,6 +96,18 @@ class LauncherTests(unittest.TestCase):
     def test_invalid_share_options_do_not_scan(self):
         for args in [('--port','0'),('--serve','--port','65536'),('--serve','--port','invalid'),('--serve-existing',str(self.root / 'missing'))]:
             result=self.invoke(*args);self.assertEqual(result.returncode,1);self.assertFalse(self.log.exists())
+
+    def test_ner_priority_can_be_explicitly_disabled_or_use_local_assets(self):
+        result = self.invoke("--no-ner-rank", shell="/bin/bash")
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        self.assertNotIn(b'--ner-rank', self.log.read_bytes().split(b'\0'))
+        self.log.unlink()
+        result = self.invoke("--ner-rank-model", "local assets", shell="/bin/bash")
+        self.assertEqual(result.returncode, 0, result.stderr.decode())
+        args = self.log.read_bytes().split(b'\0')
+        self.assertIn(b'--ner-rank', args)
+        self.assertIn(b'--ner-rank-model', args)
+        self.assertIn(b'local assets', args)
 
     def test_frequency_ranking_disables_specific_suggestions(self):
         result = self.invoke("--frequency-ranking", shell="/bin/bash")
