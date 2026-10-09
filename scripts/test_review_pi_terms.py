@@ -60,6 +60,35 @@ class LauncherTests(unittest.TestCase):
             self.assertIn(value.encode(), argv)
         self.assertFalse((self.root / ".config/nym").exists())
 
+    def fake_uv(self, fail=0):
+        tools=self.root / 'tools';tools.mkdir()
+        stub=tools / 'uv';stub.write_text('#!/usr/bin/env bash\nset -eu\nprintf "%s\\0" "$@" > "$FAKE_UV_LOG"\nexit '+str(fail)+'\n');stub.chmod(0o700)
+        return {**self.env,'PATH':str(tools)+os.pathsep+self.env['PATH'],'FAKE_UV_LOG':str(self.root / 'uv.log')}
+
+    def test_serve_forwards_only_chosen_html_and_tailnet_after_discovery(self):
+        run=self.root / 'served';result=self.invoke('--serve','--port','8527','--output-dir',str(run),env=self.fake_uv(),shell='/bin/bash')
+        self.assertEqual(result.returncode,0,result.stderr.decode())
+        args=(self.root / 'uv.log').read_bytes().split(b'\0')
+        for value in ['--no-project','python',str((run / 'review.html').resolve()),'--tailnet','--port','8527']:
+            self.assertIn(value.encode(),args)
+        self.assertNotIn(b'--open',args)
+        self.assertTrue((run / 'discovery.json').is_file())
+
+    def test_serve_existing_never_runs_discovery_or_changes_artifacts(self):
+        run=self.root / 'existing served';run.mkdir();page=run / 'review.html';page.write_text('synthetic page');original=page.read_bytes()
+        result=subprocess.run(['/bin/bash',str(SCRIPT),'--serve-existing',str(run),'--port','0','--no-open'],capture_output=True,env=self.fake_uv())
+        self.assertEqual(result.returncode,0,result.stderr.decode());self.assertFalse(self.log.exists())
+        self.assertEqual(page.read_bytes(),original);self.assertEqual(sorted(p.name for p in run.iterdir()),['review.html'])
+        self.assertIn(str(page.resolve()).encode(),(self.root / 'uv.log').read_bytes().split(b'\0'))
+
+    def test_sharing_failure_propagates_but_keeps_offline_deck(self):
+        run=self.root / 'not hosted';result=self.invoke('--serve','--output-dir',str(run),env=self.fake_uv(fail=1))
+        self.assertEqual(result.returncode,1);self.assertTrue((run / 'review.html').is_file())
+
+    def test_invalid_share_options_do_not_scan(self):
+        for args in [('--port','0'),('--serve','--port','65536'),('--serve','--port','invalid'),('--serve-existing',str(self.root / 'missing'))]:
+            result=self.invoke(*args);self.assertEqual(result.returncode,1);self.assertFalse(self.log.exists())
+
     def test_frequency_ranking_disables_specific_suggestions(self):
         result = self.invoke("--frequency-ranking", shell="/bin/bash")
         self.assertEqual(result.returncode, 0, result.stderr.decode())

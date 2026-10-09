@@ -14,7 +14,7 @@ nym terms export discovery.json --review nym-terms-review.json --output sensitiv
 nym anon notes.txt --sensitive-terms-file sensitive.txt --key-file keys.json --output clean.txt
 ```
 
-The HTML is self-contained and phone-sized, with no uploads or external assets. It is not a hosted/authenticated service. If sharing it across devices, use private authenticated hosting or file transfer; the HTML contains private text. Browser resume is best-effort: download decisions before closing. Reopen with `--resume nym-terms-review.json` to embed saved decisions. Actual iOS browser/download behavior must be checked on the target device.
+The HTML is self-contained and phone-sized, with no uploads or external assets. By default it is an offline file, not a service. For phone access, use the opt-in capability-gated tailnet launcher below or private file transfer; the HTML contains private text. Browser resume is best-effort: download decisions before closing. Reopen with `--resume nym-terms-review.json` to embed saved decisions. Actual iOS browser/download behavior must be checked on the target device.
 
 Machine review also works without HTML:
 
@@ -41,6 +41,23 @@ The launcher finds the newest compatible local versioned build (or `nym` on PATH
 Each run creates an owner-only timestamped directory under `$XDG_STATE_HOME/nym/pi-terms` (fallback `~/.local/state/nym/pi-terms`) with isolated configuration, discovery JSON and review HTML. `--output-dir DIR` chooses a **new** directory; existing directories are never overwritten. It runs inline in ordinary shells, tmux or herdr, never starts a new session, modifies input logs, trains, uploads, globally configures NYM or automatically approves/exports terms. Browser opening is best-effort; `--no-open` disables it. The launcher enables count-only stderr progress for both proposal and exact recount; `--no-progress` disables it. Preserve downloaded decisions separately and use `terms export` after explicit review.
 
 Keep reserved validation sources out of discovery too: choose an appropriate subtree or repeat `--exclude-file FILE`. The launcher does not know your holdout protocol and does not bypass counting/traversal limits. It is a Bash launcher, tested with macOS system Bash; Windows users can use the native CLI directly.
+
+## Private phone sharing
+
+```bash
+# Discover, then share the new review; print a private phone link:
+./scripts/review-pi-terms.sh --serve
+# Reuse an existing run without rescanning or modifying its files:
+./scripts/review-pi-terms.sh --serve-existing "$RUN" --no-open
+```
+
+Serving alone requires `uv` and a running Tailscale client; offline discovery does not. `--port N` overrides 8521. The process stays in the current terminal/tmux/herdr pane; **Ctrl-C stops sharing**, preserving review artifacts. `--no-open` suppresses opening the desktop browser. No staging directory, public Funnel, global Tailscale configuration or model is used. Startup failure never falls back to a public listener.
+
+Only the selected regular `review.html` is read, once. The helper extracts its NYM data and rerenders the trusted repository UI, discarding supplied HTML/scripts; it never serves the directory, discovery JSON, configuration or unrelated files. It bounds page reads to 128 MiB, active connections to eight and request headers to 8 KiB/two seconds. This is a read-only snapshot, not a server-side annotation store or accuracy validation.
+
+The printed URL is a **private capability**: anyone with both tailnet reachability and the link can view its embedded contexts. Its random token is in the fragment, removed before authenticated fetching—not in request paths, queries or access logs. Responses are no-store, no-referrer, frame-denied and restricted by CSP; no request logs are emitted. HTTP is carried over the encrypted tailnet, not public HTTPS. Do not publish the link. Decisions stay in the browser tab; download review JSON for durability and export explicitly. Restarting creates a new capability. Real iOS Safari ergonomics remain to be checked.
+
+For non-Pi reviews, the same optional helper supports `uv run --no-project python scripts/serve_terms_review.py review.html --tailnet`; it defaults to loopback without `--tailnet`. Native `nym terms` remains server-free.
 
 ## High-cardinality corpora: bounded proposals
 

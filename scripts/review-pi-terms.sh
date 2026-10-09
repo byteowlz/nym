@@ -14,6 +14,9 @@ usage() {
         '  --binary FILE        Recursive-capable NYM; otherwise NYM_BINARY or latest local build' \
         '  --output-dir DIR     New private run directory; must not already exist' \
         '  --no-open            Do not open the review page' \
+        '  --serve              Share the new review on tailnet; foreground, Ctrl-C stops' \
+        '  --serve-existing DIR Share DIR/review.html without rescanning or rewriting it' \
+        '  --port N             Review server port (default: 8521; requires serving)' \
         '  --no-progress        Disable the stderr progress bar/stage counts' \
         '  --strict-unicode     Reject unpaired UTF-16 instead of explicit discovery projection' \
         '  --frequency-ranking Use raw spread ranking instead of source-specific suggestions' \
@@ -24,12 +27,23 @@ usage() {
         '  --exclude-file FILE  Exclude an exact file, repeatable; use for reserved holdouts' \
         '  -h, --help           Show help' \
         '' \
-        'Uses bounded proposals followed by exact recount of up to 10 times the display limit.' \
+        'Uses bounded proposals and exact recount: 100x display limit (10x with frequency ranking).' \
+        'Serving uses uv/Python stdlib and Tailscale, only when explicitly requested.' \
+        'Only a private review snapshot is shared, behind a capability link; no public funnel.' \
         'Proposals may omit rare literals. Omission is not evidence of safety.' \
         'File/unit limits still apply; failures do not produce partial decks.'
 }
 
 fail() { printf 'error: %s\n' "$1" >&2; exit 1; }
+serve_page() {
+    command -v uv >/dev/null 2>&1 || fail 'serving requires uv; offline review files remain available'
+    local script_dir open_flags=()
+    script_dir=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)
+    if [[ "$open_review" == true ]]; then open_flags=(--open); fi
+    exec uv run --no-project python "$script_dir/serve_terms_review.py" "$1/review.html" \
+        --tailnet --port "$port" ${open_flags[@]+"${open_flags[@]}"}
+}
+
 supports_recursive() {
     local help
     [[ -x "$1" ]] || return 1
@@ -41,6 +55,11 @@ sessions="${HOME:?HOME is required}/.pi/agent/sessions"
 binary="${NYM_BINARY:-}"
 run_dir=""
 open_review=true
+serve_review=false
+existing_review=""
+port=8521
+port_explicit=false
+discovery_options=false
 progress_flag=--progress
 unicode_flags=(--repair-unicode)
 ranking_flags=(--specific)
@@ -53,11 +72,17 @@ while (($#)); do
     case "$1" in
         -h|--help) usage; exit 0 ;;
         --no-open) open_review=false; shift ;;
-        --no-progress) progress_flag=--no-progress; shift ;;
-        --strict-unicode) unicode_flags=(); shift ;;
-        --frequency-ranking) ranking_flags=(); shift ;;
+        --serve) serve_review=true; shift ;;
+        --serve-existing|--port)
+            (($# >= 2)) || fail 'option requires a value'
+            if [[ "$1" == --port ]]; then port=$2; port_explicit=true; else existing_review=$2; fi
+            shift 2 ;;
+        --no-progress) progress_flag=--no-progress; discovery_options=true; shift ;;
+        --strict-unicode) unicode_flags=(); discovery_options=true; shift ;;
+        --frequency-ranking) ranking_flags=(); discovery_options=true; shift ;;
         --sessions|--binary|--output-dir|--limit|--max-distinct|--phrase-words|--min-count|--exclude-file)
             (($# >= 2)) || fail 'option requires a value'
+            if [[ "$1" != --binary ]]; then discovery_options=true; fi
             case "$1" in
                 --sessions) sessions=$2 ;;
                 --binary) binary=$2 ;;
@@ -72,6 +97,14 @@ while (($#)); do
         *) fail 'unknown option; use --help' ;;
     esac
 done
+[[ "$port" =~ ^[0-9]{1,5}$ ]] && ((10#$port <= 65535)) || fail 'invalid review server port'
+if [[ -n "$existing_review" ]]; then
+    [[ "$discovery_options" == false && "$serve_review" == false ]] || fail '--serve-existing cannot also request discovery'
+    [[ -d "$existing_review" && ! -L "$existing_review" && -f "$existing_review/review.html" && ! -L "$existing_review/review.html" ]] || fail 'existing review must be a real directory with review.html'
+    serve_page "$(cd "$existing_review" && pwd -P)"
+fi
+[[ "$port_explicit" == false || "$serve_review" == true ]] || fail '--port requires --serve or --serve-existing'
+if [[ "$serve_review" == true ]]; then command -v uv >/dev/null 2>&1 || fail 'serving requires uv'; fi
 [[ -d "$sessions" && ! -L "$sessions" ]] || fail 'sessions must be an existing real directory'
 
 if [[ -n "$binary" ]]; then
@@ -114,6 +147,7 @@ printf '[ner]\nenabled = false\n[decision]\nenabled = false\n' > "$run_dir/confi
     --html --output "$run_dir/review.html"
 printf '\nReview: %s\nDiscovery: %s\n' "$run_dir/review.html" "$run_dir/discovery.json"
 printf 'Read contexts, then download the review JSON. No terms are approved or installed automatically.\n'
+if [[ "$serve_review" == true ]]; then serve_page "$run_dir"; fi
 if [[ "$open_review" == true ]]; then
     if command -v open >/dev/null 2>&1; then
         open "$run_dir/review.html" || printf 'Could not open a browser; open the review file manually.\n' >&2
