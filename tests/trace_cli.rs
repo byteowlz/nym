@@ -114,14 +114,11 @@ fn run(dir: &Path, config: &str, args: &[&str], input: &str) -> std::process::Ou
         .unwrap();
     child.wait_with_output().unwrap()
 }
+#[path = "support/summary.rs"]
+mod cli_summary;
+
 fn summary(output: std::process::Output, status: i32) -> serde_json::Value {
-    assert_eq!(
-        output.status.code(),
-        Some(status),
-        "{}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    serde_json::from_slice(&output.stdout).unwrap()
+    cli_summary::summary(output, status)
 }
 #[test]
 fn default_is_disabled_and_explicit_profile_has_counts_only() {

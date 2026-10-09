@@ -2,6 +2,7 @@
 """Read-only capability-gated review sharing. Run through uv; never serves a directory."""
 import argparse
 import hmac
+import hashlib
 from http.server import BaseHTTPRequestHandler, HTTPServer
 import ipaddress
 import json
@@ -33,7 +34,7 @@ catch{document.getElementById('status').textContent='Review unavailable. Reopen 
 </script>'''
 
 
-def snapshot(path):
+def snapshot(path, expected_sha256=None):
     """Extract data, discard supplied scripts, and rerender the trusted repository template."""
     if path.suffix.lower() != '.html' or path.is_symlink() or not stat.S_ISREG(path.lstat().st_mode):
         raise ValueError('review must be a regular HTML file')
@@ -45,6 +46,8 @@ def snapshot(path):
         raw = source.read(MAX_PAGE + 1)
     if len(raw) > MAX_PAGE:
         raise ValueError('review file limit exceeded')
+    if expected_sha256 is not None and not hmac.compare_digest(hashlib.sha256(raw).hexdigest(), expected_sha256):
+        raise ValueError('review changed before snapshot; no server started')
     blocks = re.findall(r'<script type="application/json" id="data">(.*?)</script>', raw.decode('utf-8'), re.S)
     if len(blocks) != 1:
         raise ValueError('expected a NYM review data block')
@@ -200,17 +203,21 @@ def main(argv=None):
     parser.add_argument('--port', type=int, default=8521)
     parser.add_argument('--open', action='store_true')
     parser.add_argument('--json', action='store_true', help='Print a private ready URL as JSON (contains capability)')
+    parser.add_argument('--yaml', action='store_true', help='Print private ready URL as YAML (contains capability)')
+    parser.add_argument('--expected-sha256', help=argparse.SUPPRESS)
     args = parser.parse_args(argv)
     try:
         if not 0 <= args.port <= 65535:
             raise ValueError('invalid port')
         address = tailnet_address() if args.tailnet else allowed_bind(args.bind or '127.0.0.1')
-        page = snapshot(args.html)
+        page = snapshot(args.html, args.expected_sha256)
         token = secrets.token_urlsafe(32)
         with Server((address, args.port), page, token) as server:
             host = '[' + address + ']' if ':' in address else address
             url = f'http://{host}:{server.server_address[1]}/#token={token}'
-            if args.json:
+            if args.yaml:
+                print('status: serving\nurl: ' + json.dumps(url) + '\nread_only: true', flush=True)
+            elif args.json:
                 print(json.dumps({'status': 'serving', 'url': url, 'read_only': True}), flush=True)
             else:
                 print('Private review URL (capability; share only with trusted devices):\n' + url + '\nRead-only snapshot. Ctrl-C stops sharing; existing artifacts remain unchanged.', flush=True)

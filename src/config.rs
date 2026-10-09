@@ -908,10 +908,6 @@ pub fn global_config_path() -> Option<PathBuf> {
 }
 
 /// Get the data directory path.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Public API - used by consumers")
-)]
 pub fn data_dir() -> PathBuf {
     // Try XDG_DATA_HOME first
     if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
@@ -931,10 +927,6 @@ pub fn data_dir() -> PathBuf {
 }
 
 /// Get the state directory path.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Public API - used by consumers")
-)]
 pub fn state_dir() -> PathBuf {
     // Try XDG_STATE_HOME first
     if let Ok(xdg_state) = std::env::var("XDG_STATE_HOME") {
@@ -954,10 +946,6 @@ pub fn state_dir() -> PathBuf {
 }
 
 /// Expand environment variables and ~ in a path string.
-#[cfg_attr(
-    not(test),
-    expect(dead_code, reason = "Public API - used by consumers")
-)]
 pub fn expand_path(path: &str) -> PathBuf {
     let expanded = shellexpand::full(path).unwrap_or_else(|_| path.into());
     PathBuf::from(expanded.as_ref())

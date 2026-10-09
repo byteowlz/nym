@@ -29,6 +29,7 @@ usage() {
         '' \
         'Uses bounded proposals and exact recount: 100x display limit (10x with frequency ranking).' \
         'Serving uses uv/Python stdlib and Tailscale, only when explicitly requested.' \
+        'Completed runs are registered in XDG state; use nym terms runs list/show/open/serve.' \
         'Only a private review snapshot is shared, behind a capability link; no public funnel.' \
         'Proposals may omit rare literals. Omission is not evidence of safety.' \
         'File/unit limits still apply; failures do not produce partial decks.'
@@ -48,7 +49,9 @@ supports_recursive() {
     local help
     [[ -x "$1" ]] || return 1
     help=$("$1" terms discover --help 2>/dev/null) || return 1
-    [[ "$help" == *'--recursive'* && "$help" == *'--bounded'* && "$help" == *'--progress'* && "$help" == *'--repair-unicode'* && "$help" == *'--specific'* ]]
+    [[ "$help" == *'--recursive'* && "$help" == *'--bounded'* && "$help" == *'--progress'* && "$help" == *'--repair-unicode'* && "$help" == *'--specific'* ]] || return 1
+    help=$("$1" terms runs --help 2>/dev/null) || return 1
+    [[ "$help" == *'register'* && "$help" == *'serve'* ]]
 }
 
 sessions="${HOME:?HOME is required}/.pi/agent/sessions"
@@ -145,6 +148,7 @@ printf '[ner]\nenabled = false\n[decision]\nenabled = false\n' > "$run_dir/confi
     ${exclusions[@]+"${exclusions[@]}"} --output "$run_dir/discovery.json"
 "$binary" --config "$run_dir/config.toml" terms review "$run_dir/discovery.json" \
     --html --output "$run_dir/review.html"
+"$binary" --config "$run_dir/config.toml" terms runs register "$run_dir"
 printf '\nReview: %s\nDiscovery: %s\n' "$run_dir/review.html" "$run_dir/discovery.json"
 printf 'Read contexts, then download the review JSON. No terms are approved or installed automatically.\n'
 if [[ "$serve_review" == true ]]; then serve_page "$run_dir"; fi

@@ -9,10 +9,11 @@ import unittest
 SCRIPT = Path(__file__).with_name("review-pi-terms.sh")
 FAKE = r'''#!/usr/bin/env bash
 set -eu
-if [[ "$*" == *"--help"* ]]; then printf '%s\n' '--recursive --bounded --progress --repair-unicode --specific'; exit 0; fi
+if [[ "$*" == *"--help"* ]]; then printf '%s\n' '--recursive --bounded --progress --repair-unicode --specific register serve'; exit 0; fi
 printf '%s\0' "$0" "$@" >> "$FAKE_LOG"
 printf '\n' >> "$FAKE_LOG"
 if [[ "$*" == *" discover "* && "${FAKE_FAIL:-0}" != 0 ]]; then exit "$FAKE_FAIL"; fi
+if [[ "$*" == *" runs register "* ]]; then exit "${FAKE_REGISTER_FAIL:-0}"; fi
 output=''
 while (($#)); do if [[ "$1" == '--output' ]]; then output=$2; break; fi; shift; done
 [[ -n "$output" ]]
@@ -81,9 +82,16 @@ class LauncherTests(unittest.TestCase):
         self.assertEqual(page.read_bytes(),original);self.assertEqual(sorted(p.name for p in run.iterdir()),['review.html'])
         self.assertIn(str(page.resolve()).encode(),(self.root / 'uv.log').read_bytes().split(b'\0'))
 
-    def test_sharing_failure_propagates_but_keeps_offline_deck(self):
-        run=self.root / 'not hosted';result=self.invoke('--serve','--output-dir',str(run),env=self.fake_uv(fail=1))
-        self.assertEqual(result.returncode,1);self.assertTrue((run / 'review.html').is_file())
+    def test_post_discovery_failures_keep_offline_deck_but_never_claim_sharing(self):
+        env=self.fake_uv(fail=1)
+        for registration_failure in [False,True]:
+            with self.subTest(registration_failure=registration_failure):
+                log=self.root / 'uv.log'
+                if log.exists(): log.unlink()
+                run=self.root / ('unregistered' if registration_failure else 'not hosted')
+                result=self.invoke('--serve','--output-dir',str(run),env={**env,'FAKE_REGISTER_FAIL':'1' if registration_failure else '0'})
+                self.assertEqual(result.returncode,1);self.assertTrue((run / 'review.html').is_file())
+                self.assertEqual(log.exists(),not registration_failure)
 
     def test_invalid_share_options_do_not_scan(self):
         for args in [('--port','0'),('--serve','--port','65536'),('--serve','--port','invalid'),('--serve-existing',str(self.root / 'missing'))]:

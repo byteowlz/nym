@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Expose saved vocabulary runs with native `terms runs list/show/register/open/serve`, stable IDs/`latest`, private per-run XDG-state manifests and metadata-only legacy discovery. Register completed launcher runs, verify source/artifact scope before reuse, render trusted desktop snapshots, and embed hash-checked XDG-data hosting assets for checkout-free private serving; no rescan, model or automatic installation.
+
 - Integrate opt-in private tailnet review sharing into the Pi launcher (`--serve`, `--serve-existing`, `--port`): read-only bounded snapshots, fragment capabilities, no directory exposure/request logs/public Funnel, foreground Ctrl-C shutdown and browser-only decisions. Offline/native workflows remain unchanged; serving alone uses uv/Python stdlib.
 
 - Add opt-in `terms discover --specific` source-IDF ranking and a wider bounded recount pool; use it in the Pi launcher to reduce ubiquitous-word dominance, with `--frequency-ranking` restoring old behavior. Suggestions still require human privacy decisions and omissions remain unmeasured.

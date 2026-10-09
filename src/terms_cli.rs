@@ -30,6 +30,8 @@ impl std::fmt::Debug for TermsCommand {
 
 #[derive(Subcommand)]
 enum Action {
+    /// List, inspect, open, register or privately serve saved review runs
+    Runs(crate::terms_runs::RunsCommand),
     /// Discover recurring literal candidates; never automatically classify privacy
     Discover(DiscoverArgs),
     /// Create or update source-bound decisions, or emit a self-contained browser review
@@ -122,9 +124,14 @@ struct Summary {
     projection: Option<crate::terms_unicode::Projection>,
 }
 
-pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsCommand) -> Result<()> {
+pub fn run(
+    common: &crate::CommonOpts,
+    config: &crate::config::Config,
+    command: TermsCommand,
+) -> Result<()> {
     let summary = match command.action {
-        Action::Discover(args) => discover(args, defaults, common.quiet)?,
+        Action::Runs(command) => return crate::terms_runs::run(common, config, command),
+        Action::Discover(args) => discover(args, &config.terms, common.quiet)?,
         Action::Review {
             discovery,
             output,
@@ -163,14 +170,7 @@ pub fn run(common: &crate::CommonOpts, defaults: &Settings, command: TermsComman
             }
             review.validate(&discovery)?;
             if html {
-                let data = serde_json::to_string(
-                    &serde_json::json!({"discovery":discovery,"review":review}),
-                )
-                .map_err(|_| anyhow::anyhow!("review serialization failed"))?
-                .replace('&', "\\u0026")
-                .replace('<', "\\u003c")
-                .replace('>', "\\u003e");
-                let document = include_str!("terms_review.html").replace("__NYM_DATA__", &data);
+                let document = render_html(&discovery, &review)?;
                 private_write(&output, document.as_bytes(), force)?;
             } else {
                 write_json(&output, &review, force)?;
@@ -522,13 +522,22 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
     serde_json::from_slice(&bytes).map_err(|_| anyhow::anyhow!("invalid vocabulary artifact JSON"))
 }
 
+pub(crate) fn render_html(discovery: &Discovery, review: &Review) -> Result<String> {
+    let data = serde_json::to_string(&serde_json::json!({"discovery":discovery,"review":review}))
+        .map_err(|_| anyhow::anyhow!("review serialization failed"))?
+        .replace('&', "\\u0026")
+        .replace('<', "\\u003c")
+        .replace('>', "\\u003e");
+    Ok(include_str!("terms_review.html").replace("__NYM_DATA__", &data))
+}
+
 fn write_json<T: Serialize>(path: &Path, value: &T, force: bool) -> Result<()> {
     let bytes = serde_json::to_vec_pretty(value)
         .map_err(|_| anyhow::anyhow!("vocabulary serialization failed"))?;
     private_write(path, &bytes, force)
 }
 
-fn private_write(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
+pub(crate) fn private_write(path: &Path, bytes: &[u8], force: bool) -> Result<()> {
     let parent = path
         .parent()
         .filter(|p| !p.as_os_str().is_empty())

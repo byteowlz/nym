@@ -1,20 +1,12 @@
 //! Synthetic-only tests of the public corpus vocabulary workflow.
 use serde_json::{Value, json};
-use std::{
-    fs,
-    process::{Command, Output},
-};
+use std::{fs, process::Command};
 use tempfile::TempDir;
 
-fn run(dir: &TempDir, args: &[&str]) -> Output {
-    let config = dir.path().join("config.toml");
-    fs::write(&config, "").unwrap();
-    Command::new(env!("CARGO_BIN_EXE_nym"))
-        .args(["--config", config.to_str().unwrap()])
-        .args(args)
-        .output()
-        .unwrap()
-}
+#[path = "support/command.rs"]
+mod cli_command;
+
+use cli_command::run;
 fn path(dir: &TempDir, name: &str) -> String {
     dir.path().join(name).to_str().unwrap().to_owned()
 }

@@ -42,6 +42,27 @@ Each run creates an owner-only timestamped directory under `$XDG_STATE_HOME/nym/
 
 Keep reserved validation sources out of discovery too: choose an appropriate subtree or repeat `--exclude-file FILE`. The launcher does not know your holdout protocol and does not bypass counting/traversal limits. It is a Bash launcher, tested with macOS system Bash; Windows users can use the native CLI directly.
 
+## Saved runs in the native CLI
+
+```bash
+nym terms runs list
+nym --json terms runs list
+nym terms runs show latest
+nym terms runs open latest
+nym terms runs serve latest --tailnet --open
+# Or use a unique ID prefix shown by list:
+nym terms runs serve RUN_ID --tailnet --port 8521
+nym terms runs register /private/completed-run
+```
+
+Mutable inventory manifests live at `$XDG_STATE_HOME/nym/terms/runs` (fallback `~/.local/state/nym/terms/runs`). Each completed run gets its own private, atomically published manifest, containing a canonical-directory-derived ID, creation time, counts and artifact fingerprints—not contexts or server tokens. Registration is idempotent; changed content requires explicit `--force`. Custom output directories can be registered too. The Pi launcher registers only after both discovery and HTML publication succeed; registration failure stops automatic opening/sharing.
+
+Existing `$XDG_STATE_HOME/nym/pi-terms` directories appear automatically as legacy entries without moving files or reading contexts. Listing is metadata-only; `ready` means both regular artifact files exist, **not** integrity or privacy certification. Incomplete/missing runs remain visible. `latest` chooses the newest available pair, while explicit IDs accept unambiguous hexadecimal prefixes of at least four characters. Corrupt manifests, ambiguous IDs and inventory budgets (10,000 entries, 64 KiB per manifest) fail without partial machine output.
+
+Opening/serving validates the entire bounded discovery and source-bound review, and rejects changed registered artifacts rather than silently choosing an older run. Desktop opening creates a private trusted-UI snapshot in `nym/terms/views`, discarding supplied scripts. Serving installs hash-verified, compiled-in public helper/UI assets under `$XDG_DATA_HOME/nym/terms/review-host` (OS user-data fallback when unset, `~/.local/share` on Linux); no checkout is required. A checksum is rechecked before the host snapshots HTML, so a verification/read race cannot publish changed content. `[paths].state_dir`/`data_dir` override defaults and expand `~` and environment variables. Runtime/OS data-directory fallbacks apply when XDG variables are absent.
+
+Native serving defaults to loopback; `--tailnet` is explicit. It still requires `uv` only when serving, does not rescan source sessions, enables no model, preserves browser-only downloaded decisions and never installs itself or changes Tailscale/Funnel. `--json`, `--yaml` and `--quiet` work for inventory; serving JSON/YAML includes a **private capability URL**, not public metadata. Keep its terminal running; Ctrl-C stops the foreground host.
+
 ## Private phone sharing
 
 ```bash

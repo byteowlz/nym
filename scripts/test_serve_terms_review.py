@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Synthetic protocol/auth/snapshot proofs. Never reads real reviews or sessions."""
 import http.client
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -90,6 +91,12 @@ class ReviewServerTests(unittest.TestCase):
         self.html.write_text('changed after snapshot')
         self.assertIn(self.marker.encode(), self.request('/review', self.token)[2])
         self.assertNotIn(b'window.untrusted', self.server.page)
+
+    def test_native_expected_hash_refuses_verification_snapshot_races(self):
+        expected=hashlib.sha256(self.original).hexdigest()
+        self.assertEqual(serve.snapshot(self.html,expected),self.server.page)
+        self.html.write_bytes(self.original+b'\n ')
+        with self.assertRaises(ValueError): serve.snapshot(self.html,expected)
 
     def test_source_directory_symlink_bad_data_and_size_fail(self):
         for path in [self.root, self.root / 'missing.html']:

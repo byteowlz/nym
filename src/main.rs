@@ -30,6 +30,7 @@ mod terms_bounded_tests;
 mod terms_cli;
 mod terms_input;
 mod terms_progress;
+mod terms_runs;
 mod terms_sketch;
 mod terms_unicode;
 use input::FormatArg;
@@ -207,7 +208,7 @@ fn try_main() -> Result<()> {
         #[cfg(feature = "decision")]
         Command::Decide(cmd) => handle_decide(&cli.common, &config, &cmd),
         Command::Patterns(cmd) => handle_patterns(&cli.common, cmd),
-        Command::Terms(cmd) => terms_cli::run(&cli.common, &config.terms, cmd),
+        Command::Terms(cmd) => terms_cli::run(&cli.common, &config, cmd),
         Command::Config(cmd) => handle_config(&cli.common, &config, cmd),
         Command::Sessions(cmd) => handle_sessions(&cli.common, cmd),
         #[cfg(feature = "ner")]
