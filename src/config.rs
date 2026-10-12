@@ -895,54 +895,44 @@ impl Config {
     }
 }
 
+/// XDG base directory from a variable's value, per the Base Directory
+/// Specification: an unset, empty or relative value is ignored and the default
+/// below `$HOME` is used instead. Applies identically on every platform.
+fn xdg_base(
+    value: Option<std::ffi::OsString>,
+    home: Option<PathBuf>,
+    default: &str,
+) -> Option<PathBuf> {
+    value
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+        .or_else(|| home.map(|home| home.join(default)))
+}
+
+fn xdg_home(variable: &str, default: &str) -> Option<PathBuf> {
+    xdg_base(std::env::var_os(variable), dirs::home_dir(), default)
+}
+
+/// `$XDG_CONFIG_HOME/nym` (default `~/.config/nym`).
+pub fn config_dir() -> Option<PathBuf> {
+    xdg_home("XDG_CONFIG_HOME", ".config").map(|base| base.join("nym"))
+}
+
 /// Get the global config file path.
 pub fn global_config_path() -> Option<PathBuf> {
-    // Try XDG_CONFIG_HOME first
-    if let Ok(xdg_config) = std::env::var("XDG_CONFIG_HOME") {
-        let path = PathBuf::from(xdg_config).join("nym").join("config.toml");
-        return Some(path);
-    }
-
-    // Fall back to dirs crate
-    dirs::config_dir().map(|p| p.join("nym").join("config.toml"))
+    config_dir().map(|dir| dir.join("config.toml"))
 }
 
-/// Get the data directory path.
+/// `$XDG_DATA_HOME/nym` (default `~/.local/share/nym`).
 pub fn data_dir() -> PathBuf {
-    // Try XDG_DATA_HOME first
-    if let Ok(xdg_data) = std::env::var("XDG_DATA_HOME") {
-        return PathBuf::from(xdg_data).join("nym");
-    }
-
-    // Fall back to dirs crate or default
-    dirs::data_dir().map_or_else(
-        || {
-            dirs::home_dir().map_or_else(
-                || PathBuf::from(".nym"),
-                |h| h.join(".local").join("share").join("nym"),
-            )
-        },
-        |p| p.join("nym"),
-    )
+    xdg_home("XDG_DATA_HOME", ".local/share")
+        .map_or_else(|| PathBuf::from(".nym"), |base| base.join("nym"))
 }
 
-/// Get the state directory path.
+/// `$XDG_STATE_HOME/nym` (default `~/.local/state/nym`).
 pub fn state_dir() -> PathBuf {
-    // Try XDG_STATE_HOME first
-    if let Ok(xdg_state) = std::env::var("XDG_STATE_HOME") {
-        return PathBuf::from(xdg_state).join("nym");
-    }
-
-    // Fall back to dirs crate or default
-    dirs::state_dir().map_or_else(
-        || {
-            dirs::home_dir().map_or_else(
-                || PathBuf::from(".nym"),
-                |h| h.join(".local").join("state").join("nym"),
-            )
-        },
-        |p| p.join("nym"),
-    )
+    xdg_home("XDG_STATE_HOME", ".local/state")
+        .map_or_else(|| PathBuf::from(".nym"), |base| base.join("nym"))
 }
 
 /// Expand environment variables and ~ in a path string.
@@ -1237,6 +1227,31 @@ mod tests {
     fn test_expand_path_tilde() {
         let expanded = expand_path("~/test");
         assert!(!expanded.to_string_lossy().contains('~'));
+    }
+
+    #[test]
+    fn xdg_values_must_be_absolute_and_nonempty() {
+        let home = Some(PathBuf::from("/home/ada"));
+        let resolve =
+            |value: Option<&str>| xdg_base(value.map(Into::into), home.clone(), ".config");
+        assert_eq!(
+            [
+                resolve(Some("/custom/config")),
+                resolve(None),
+                resolve(Some("")),
+                resolve(Some("relative/config")),
+                resolve(Some("~/config")),
+                xdg_base(None, None, ".config"),
+            ],
+            [
+                Some(PathBuf::from("/custom/config")),
+                Some(PathBuf::from("/home/ada/.config")),
+                Some(PathBuf::from("/home/ada/.config")),
+                Some(PathBuf::from("/home/ada/.config")),
+                Some(PathBuf::from("/home/ada/.config")),
+                None,
+            ]
+        );
     }
 
     #[test]

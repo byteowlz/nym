@@ -402,14 +402,15 @@ class Helpers(unittest.TestCase):
         self.assertEqual(builder.resolved_features({"default": ["with_under"], "with_under": []}, "default"),
                          ["default", "with-under"])
 
-    def test_xdg_and_windows_store_fallbacks(self):
-        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "/fixture/data"}, clear=True):
-            self.assertEqual(builder.default_store(), Path("/fixture/data/nym/builds"))
-        native_path = type(Path("/"))
-        with mock.patch.dict(os.environ, {"LOCALAPPDATA": "/fixture/local"}, clear=True), \
-                mock.patch.object(builder.os, "name", "nt"), \
-                mock.patch.object(builder, "Path", native_path):
-            self.assertEqual(builder.default_store(), native_path("/fixture/local/nym/builds"))
+    def test_xdg_store_ignores_empty_and_relative_values(self):
+        default = Path.home() / ".local" / "share" / "nym" / "builds"
+        cases = {"/fixture/data": Path("/fixture/data/nym/builds"), "": default,
+                 "relative/data": default, "~/data": default}
+        for value, expected in cases.items():
+            with self.subTest(value=value), mock.patch.dict(os.environ, {"XDG_DATA_HOME": value}, clear=True):
+                self.assertEqual(builder.default_store(), expected)
+        with mock.patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(builder.default_store(), default)
 
     def test_version_subprocess_has_only_version_argument_and_safe_config_environment(self):
         with tempfile.TemporaryDirectory() as directory:

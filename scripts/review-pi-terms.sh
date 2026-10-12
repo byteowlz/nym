@@ -40,6 +40,8 @@ usage() {
 }
 
 fail() { printf 'error: %s\n' "$1" >&2; exit 1; }
+# XDG base directory: the variable when absolute, else the spec default (empty/relative ignored).
+xdg_dir() { if [[ "${!1:-}" == /* ]]; then printf '%s' "${!1}"; else printf '%s' "$HOME/$2"; fi; }
 serve_page() {
     command -v uv >/dev/null 2>&1 || fail 'serving requires uv; offline review files remain available'
     local script_dir open_flags=()
@@ -122,7 +124,7 @@ if [[ "$serve_review" == true ]]; then command -v uv >/dev/null 2>&1 || fail 'se
 if [[ -n "$binary" ]]; then
     supports_recursive "$binary" || fail 'selected NYM binary does not support recursive discovery'
 else
-    build_root="${XDG_DATA_HOME:-$HOME/.local/share}/nym/builds"
+    build_root="$(xdg_dir XDG_DATA_HOME .local/share)/nym/builds"
     for candidate in "$build_root"/*/nym; do
         [[ -x "$candidate" ]] || continue
         if [[ -z "$binary" || "$candidate" -nt "$binary" ]]; then
@@ -141,7 +143,7 @@ if [[ "$binary" != /* ]]; then
 fi
 
 if [[ -z "$run_dir" ]]; then
-    run_dir="${XDG_STATE_HOME:-$HOME/.local/state}/nym/pi-terms/$(date -u +%Y%m%dT%H%M%SZ)-$$"
+    run_dir="$(xdg_dir XDG_STATE_HOME .local/state)/nym/pi-terms/$(date -u +%Y%m%dT%H%M%SZ)-$$"
 fi
 [[ ! -e "$run_dir" && ! -L "$run_dir" ]] || fail 'output run directory already exists; choose a new directory'
 mkdir -p "$(dirname "$run_dir")"

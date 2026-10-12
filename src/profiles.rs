@@ -41,8 +41,8 @@ pub struct Lists {
 }
 
 pub fn root() -> Result<PathBuf> {
-    crate::config::global_config_path()
-        .and_then(|p| p.parent().map(|d| d.join("profiles")))
+    crate::config::config_dir()
+        .map(|dir| dir.join("profiles"))
         .context("no configuration directory for redaction profiles")
 }
 

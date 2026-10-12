@@ -95,9 +95,8 @@ pub fn baked() -> Vec<CatalogModel> {
 
 /// The user's refreshed catalog cache path (`~/.config/nym/models.json`).
 pub fn cache_path() -> PathBuf {
-    dirs::config_dir()
+    crate::config::config_dir()
         .unwrap_or_else(|| PathBuf::from("."))
-        .join("nym")
         .join("models.json")
 }
 

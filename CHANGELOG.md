@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Resolve XDG base directories per the Base Directory Specification on every platform: unset, empty or relative `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME` values fall back to `~/.config`, `~/.local/share` and `~/.local/state` (previously macOS/Windows fell back to platform application-support directories and invalid values were used as-is). The model catalog cache, build store and Pi launcher follow the same rule.
+
 - Add redaction profiles (`nym profiles list/show/add/remove/import/path`): private `sensitive.txt`/`allow.txt` lists per named profile under the config directory, `default` always applied, others stacked with `--redaction-profile` in `anon`, `detect` and `traces anon`. Replaces the single `trace-allow.txt` file.
 
 - `nym traces anon`: keep images by default (`--strip-images` opts in); trim delimiters NER attaches to entity edges so one value keeps one pseudonym (`USER=wismut ;`); never replace system accounts; add trace precision rules and a built-in plus user allowlist (`--allow-terms-file`, `trace-allow.txt`) that cannot veto credentials, identity or sensitive terms. On the 30-session benchmark distinct replaced values fell from 1,673 to 1,036 with 660/660 inserted values still removed.

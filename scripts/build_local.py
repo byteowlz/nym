@@ -349,11 +349,10 @@ def activate(directory: Path, destination: Path) -> None:
 
 
 def default_store() -> Path:
-    if os.environ.get("XDG_DATA_HOME"):
-        return Path(os.path.expandvars(os.environ["XDG_DATA_HOME"])).expanduser() / "nym" / "builds"
-    if os.name == "nt" and os.environ.get("LOCALAPPDATA"):
-        return Path(os.environ["LOCALAPPDATA"]) / "nym" / "builds"
-    return Path.home() / ".local" / "share" / "nym" / "builds"
+    """XDG data home per the Base Directory Specification; same rule as nym itself."""
+    value = Path(os.environ.get("XDG_DATA_HOME", ""))
+    base = value if value.is_absolute() else Path.home() / ".local" / "share"
+    return base / "nym" / "builds"
 
 
 def outside_source(path: Path, repo: Path) -> None:
