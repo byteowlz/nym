@@ -70,9 +70,10 @@ struct AnonArgs {
     /// Which strings NER runs on
     #[arg(long, value_enum, default_value = "auto")]
     ner_scope: NerScope,
-    /// Keep embedded base64 images (they may show private content NYM cannot inspect)
+    /// Remove embedded base64 images (screenshots may show private content NYM
+    /// cannot inspect). Images are kept unchanged by default.
     #[arg(long)]
-    keep_images: bool,
+    strip_images: bool,
     /// Do not add the local account/git/host identity to the sensitive literals
     #[arg(long)]
     no_local_identity: bool,
@@ -934,7 +935,7 @@ fn process(
         match leaf.kind {
             Kind::Skip => continue,
             Kind::Image => {
-                if !args.keep_images && !s.is_empty() {
+                if args.strip_images && !s.is_empty() {
                     stats.images_removed += 1;
                     edits.push((leaf.record, leaf.pointer.clone(), Some(String::new())));
                 }

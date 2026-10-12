@@ -233,10 +233,11 @@ nym traces anon ~/.pi/agent/sessions -o ~/private/anon-sessions --keys ~/private
 nym traces anon session.jsonl -o out --no-ner        # regex + identity only, fastest
 ```
 
-- Opaque fields (thinking signatures, IDs, timestamps) are not scanned; embedded base64 images are removed unless `--keep-images`.
+- Opaque fields (thinking signatures, IDs, timestamps) are not scanned; embedded base64 images are kept unchanged (never scanned) unless `--strip-images` removes them.
 - Regex and your local identity (account name, full name, git identity, host name; `--no-local-identity` disables) run on every other string; `--sensitive-terms-file` adds literals.
 - NER (`--ner-scope auto`, default) runs on prose and on tool-output lines with name/address/account signals; `prose`, `lines` (faster, may miss names at sentence starts) and `all` (slowest) are alternatives.
 - Every value found anywhere in a session is replaced at all its occurrences in that session. Home paths keep `/Users/` and change only the account name.
+- Review the result side by side: `uv run --no-project python scripts/review_trace_anon.py --original IN --anonymized OUT --keys KEYS [--tailnet]` serves a read-only, capability-gated page of changed fields (loopback unless `--tailnet`).
 - Outputs mirror the input tree, are written atomically with owner-only permissions, and never replace existing files without `--force`. A session that cannot be parsed fails without output; the exit code is 1.
 
 ### `nym patterns [ACTION]`

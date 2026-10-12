@@ -61,6 +61,7 @@ fn per_session_consistent_pseudonyms_with_structure_preserved() {
             out.to_str().unwrap(),
             "--no-ner",
             "--no-progress",
+            "--strip-images",
         ],
     );
     assert!(
@@ -307,4 +308,39 @@ fn vendor_secrets_are_detected_at_default_confidence() {
             &key[..6]
         );
     }
+}
+
+#[test]
+fn images_are_kept_unless_stripping_is_requested() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let input = root.join("in");
+    fs::create_dir_all(&input).unwrap();
+    fs::write(input.join("s.jsonl"), session(SESSION)).unwrap();
+    let out = root.join("out");
+    let result = nym(
+        root,
+        &[
+            "--json",
+            "traces",
+            "anon",
+            input.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--no-ner",
+            "--no-progress",
+        ],
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let summary: Value = serde_json::from_slice(&result.stdout).unwrap();
+    assert_eq!(summary["images_removed"], 0);
+    let r = records(&out.join("s.jsonl"));
+    assert_eq!(
+        r[3]["message"]["content"][1]["data"],
+        "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
+    );
 }
