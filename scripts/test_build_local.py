@@ -411,6 +411,10 @@ class Helpers(unittest.TestCase):
                 self.assertEqual(builder.default_store(), expected)
         with mock.patch.dict(os.environ, {}, clear=True):
             self.assertEqual(builder.default_store(), default)
+        native_path = type(Path("/"))
+        with mock.patch.dict(os.environ, {"XDG_DATA_HOME": "relative", "APPDATA": "/fixture/appdata"}, clear=True), \
+                mock.patch.object(builder.os, "name", "nt"), mock.patch.object(builder, "Path", native_path):
+            self.assertEqual(builder.default_store(), native_path("/fixture/appdata/nym/builds"))
 
     def test_version_subprocess_has_only_version_argument_and_safe_config_environment(self):
         with tempfile.TemporaryDirectory() as directory:

@@ -895,27 +895,40 @@ impl Config {
     }
 }
 
-/// XDG base directory from a variable's value, per the Base Directory
-/// Specification: an unset, empty or relative value is ignored and the default
-/// below `$HOME` is used instead. Applies identically on every platform.
+/// XDG base directory per the Base Directory Specification, matching the
+/// rust-cli template: the variable is used only when absolute (unset, empty and
+/// relative values are ignored), else `$HOME/<default>` (also on macOS), or the
+/// Windows known folder.
 fn xdg_base(
     value: Option<std::ffi::OsString>,
     home: Option<PathBuf>,
+    windows_dir: Option<PathBuf>,
+    is_windows: bool,
     default: &str,
 ) -> Option<PathBuf> {
-    value
-        .map(PathBuf::from)
-        .filter(|path| path.is_absolute())
-        .or_else(|| home.map(|home| home.join(default)))
+    if let Some(path) = value.map(PathBuf::from).filter(|path| path.is_absolute()) {
+        return Some(path);
+    }
+    if is_windows {
+        windows_dir
+    } else {
+        home.map(|home| home.join(default))
+    }
 }
 
-fn xdg_home(variable: &str, default: &str) -> Option<PathBuf> {
-    xdg_base(std::env::var_os(variable), dirs::home_dir(), default)
+fn xdg_home(variable: &str, default: &str, windows_variable: &str) -> Option<PathBuf> {
+    xdg_base(
+        std::env::var_os(variable),
+        dirs::home_dir(),
+        std::env::var_os(windows_variable).map(PathBuf::from),
+        cfg!(windows),
+        default,
+    )
 }
 
 /// `$XDG_CONFIG_HOME/nym` (default `~/.config/nym`).
 pub fn config_dir() -> Option<PathBuf> {
-    xdg_home("XDG_CONFIG_HOME", ".config").map(|base| base.join("nym"))
+    xdg_home("XDG_CONFIG_HOME", ".config", "APPDATA").map(|base| base.join("nym"))
 }
 
 /// Get the global config file path.
@@ -925,13 +938,13 @@ pub fn global_config_path() -> Option<PathBuf> {
 
 /// `$XDG_DATA_HOME/nym` (default `~/.local/share/nym`).
 pub fn data_dir() -> PathBuf {
-    xdg_home("XDG_DATA_HOME", ".local/share")
+    xdg_home("XDG_DATA_HOME", ".local/share", "APPDATA")
         .map_or_else(|| PathBuf::from(".nym"), |base| base.join("nym"))
 }
 
 /// `$XDG_STATE_HOME/nym` (default `~/.local/state/nym`).
 pub fn state_dir() -> PathBuf {
-    xdg_home("XDG_STATE_HOME", ".local/state")
+    xdg_home("XDG_STATE_HOME", ".local/state", "LOCALAPPDATA")
         .map_or_else(|| PathBuf::from(".nym"), |base| base.join("nym"))
 }
 
@@ -1232,8 +1245,10 @@ mod tests {
     #[test]
     fn xdg_values_must_be_absolute_and_nonempty() {
         let home = Some(PathBuf::from("/home/ada"));
-        let resolve =
-            |value: Option<&str>| xdg_base(value.map(Into::into), home.clone(), ".config");
+        let resolve = |value: Option<&str>| {
+            xdg_base(value.map(Into::into), home.clone(), None, false, ".config")
+        };
+        let config = Some(PathBuf::from("/home/ada/.config"));
         assert_eq!(
             [
                 resolve(Some("/custom/config")),
@@ -1241,15 +1256,23 @@ mod tests {
                 resolve(Some("")),
                 resolve(Some("relative/config")),
                 resolve(Some("~/config")),
-                xdg_base(None, None, ".config"),
+                xdg_base(None, None, None, false, ".config"),
+                xdg_base(
+                    Some("relative".into()),
+                    home.clone(),
+                    Some("/appdata".into()),
+                    true,
+                    ".config"
+                ),
             ],
             [
                 Some(PathBuf::from("/custom/config")),
-                Some(PathBuf::from("/home/ada/.config")),
-                Some(PathBuf::from("/home/ada/.config")),
-                Some(PathBuf::from("/home/ada/.config")),
-                Some(PathBuf::from("/home/ada/.config")),
+                config.clone(),
+                config.clone(),
+                config.clone(),
+                config,
                 None,
+                Some(PathBuf::from("/appdata")),
             ]
         );
     }
