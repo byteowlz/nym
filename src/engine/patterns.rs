@@ -163,6 +163,51 @@ static API_KEY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     regex(r"\b(?:sk|pk|api|key|token)[-_]?(?:live|test|prod)?[-_]?[a-zA-Z0-9]{32,}\b")
 });
 
+// Vendor-prefixed credentials. The prefixes are distinctive, so these are
+// high confidence, unlike the generic `api_key` shape. Internal hyphens and
+// underscores (sk-ant-api03-..., sk-proj-..., github_pat_...) are part of the
+// token and must be redacted with it.
+static VENDOR_SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(
+        r"(?x)
+        \b(?:
+          sk-ant-[a-z]+\d{2}-[A-Za-z0-9_-]{20,}
+        | sk-(?:proj|svcacct|admin|or-v1)-[A-Za-z0-9_-]{20,}
+        | sk-[A-Za-z0-9]{32,}
+        | gh[pousr]_[A-Za-z0-9]{36,}
+        | github_pat_[A-Za-z0-9_]{40,}
+        | glpat-[A-Za-z0-9_-]{20,}
+        | xox[abposr]-[A-Za-z0-9-]{10,}
+        | AIza[0-9A-Za-z_-]{35}
+        | hf_[A-Za-z0-9]{30,}
+        | npm_[A-Za-z0-9]{36}
+        | pypi-[A-Za-z0-9_-]{50,}
+        | (?:sk|rk|pk)_(?:live|test)_[A-Za-z0-9]{20,}
+        | whsec_[A-Za-z0-9+/=]{20,}
+        | SG\.[A-Za-z0-9_-]{16,}\.[A-Za-z0-9_-]{16,}
+        | dop_v1_[a-f0-9]{64}
+        | shp(?:at|ss|ca)_[a-fA-F0-9]{32}
+        | tskey-[A-Za-z0-9-]{20,}
+        | lin_api_[A-Za-z0-9]{30,}
+        | gsk_[A-Za-z0-9]{40,}
+        )",
+    )
+});
+
+// Environment-style secret assignments (.env files, shell exports). Upper-case
+// variable names keep this to configuration, not ordinary code identifiers;
+// shell expansions (`$VAR`) are references, not values.
+static SECRET_ASSIGNMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(
+        r#"\b[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*=\s*["']?(?P<pii>[^\s"'`$][^\s"'`]{7,})"#,
+    )
+});
+
+// PEM private-key blocks, including the armor lines.
+static PRIVATE_KEY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----")
+});
+
 // IBAN candidates, compact or in space-separated groups of four. Only spans that
 // pass `iban_span` (country length and ISO 13616 mod-97) become findings.
 static IBAN_REGEX: LazyLock<Regex> = LazyLock::new(|| {
@@ -558,6 +603,33 @@ pub static BUILTIN_PATTERNS: &[PiiPattern] = &[
         category: PiiCategory::Authentication,
         example: "sk_live_abcdefghijklmnopqrstuvwxyz123456",
         replacement_template: "<API_KEY>",
+    },
+    PiiPattern {
+        name: "vendor_secret",
+        description: "Vendor-prefixed API token (Anthropic, OpenAI, GitHub, Slack, ...)",
+        regex: &VENDOR_SECRET_REGEX,
+        confidence: Confidence::High,
+        category: PiiCategory::Authentication,
+        example: "ghp_abcdefghijklmnopqrstuvwxyz0123456789",
+        replacement_template: "<API_KEY>",
+    },
+    PiiPattern {
+        name: "secret_assignment",
+        description: "Secret value in an environment-style assignment",
+        regex: &SECRET_ASSIGNMENT_REGEX,
+        confidence: Confidence::High,
+        category: PiiCategory::Authentication,
+        example: "DB_PASSWORD=correct-horse-battery",
+        replacement_template: "<SECRET>",
+    },
+    PiiPattern {
+        name: "private_key",
+        description: "PEM private-key block",
+        regex: &PRIVATE_KEY_REGEX,
+        confidence: Confidence::High,
+        category: PiiCategory::Authentication,
+        example: "-----BEGIN PRIVATE KEY-----...-----END PRIVATE KEY-----",
+        replacement_template: "<PRIVATE_KEY>",
     },
     PiiPattern {
         name: "iban",

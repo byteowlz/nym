@@ -36,11 +36,14 @@ fn cached_batch_preserves_original_byte_offsets()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let model = std::env::var("NYM_TEST_CACHED_NER_MODEL")?;
     let detector = TokenClassDetector::from_dir(model, Some(0.5), NerProvider::Cpu)?;
+    let long =
+        "Patient John Doe lives at 12 Baker Street; his password is hunter2-Secret! ".repeat(90);
     let texts = [
         " \t\u{2003}Alice Smith.\r\n",
         "\nJörg Beispiel\t",
         "No private entities here.",
         "\u{2003}\t",
+        long.as_str(),
     ];
     let singles = texts
         .iter()

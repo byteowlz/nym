@@ -224,6 +224,21 @@ Restore original data from anonymized text using a key file.
 nym deanon anonymized.txt -k keys.jsonl -o restored.txt
 ```
 
+### `nym traces anon [OPTIONS] <INPUTS>... -o <DIR>`
+
+Anonymize agent session JSONL files (for example `~/.pi/agent/sessions`) in parallel. Each session gets its own pseudonym map: a value is replaced the same way everywhere in one session, and differently in other sessions (unless `--seed` is given).
+
+```bash
+nym traces anon ~/.pi/agent/sessions -o ~/private/anon-sessions --keys ~/private/anon-keys
+nym traces anon session.jsonl -o out --no-ner        # regex + identity only, fastest
+```
+
+- Opaque fields (thinking signatures, IDs, timestamps) are not scanned; embedded base64 images are removed unless `--keep-images`.
+- Regex and your local identity (account name, full name, git identity, host name; `--no-local-identity` disables) run on every other string; `--sensitive-terms-file` adds literals.
+- NER (`--ner-scope auto`, default) runs on prose and on tool-output lines with name/address/account signals; `prose`, `lines` (faster, may miss names at sentence starts) and `all` (slowest) are alternatives.
+- Every value found anywhere in a session is replaced at all its occurrences in that session. Home paths keep `/Users/` and change only the account name.
+- Outputs mirror the input tree, are written atomically with owner-only permissions, and never replace existing files without `--force`. A session that cannot be parsed fails without output; the exit code is 1.
+
 ### `nym patterns [ACTION]`
 
 List and inspect available PII patterns.

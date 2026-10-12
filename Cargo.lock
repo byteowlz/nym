@@ -1718,6 +1718,7 @@ checksum = "830b246a0e5f20af87141b25c173cd1b609bd7779a4617d6ec582abaf90870f3"
 name = "nym"
 version = "0.3.0"
 dependencies = [
+ "aho-corasick",
  "anyhow",
  "async-stream",
  "async-tqsm",
@@ -1741,6 +1742,7 @@ dependencies = [
  "orp",
  "ort",
  "quick-xml",
+ "rayon",
  "regex",
  "serde",
  "serde_json",
@@ -2333,6 +2335,7 @@ version = "1.0.145"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "402a6f66d8c709116cf22f558eab210f5a50187f702eb4d7e5ef38d9a7f1c79c"
 dependencies = [
+ "indexmap",
  "itoa",
  "memchr",
  "ryu",

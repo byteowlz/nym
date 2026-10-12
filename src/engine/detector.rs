@@ -70,11 +70,10 @@ pub enum DetectionError {
 /// The external inference boundary. Production and injected runtimes follow
 /// the same merging/error path; no test-only bypass of detection is needed.
 #[cfg(feature = "ner")]
-pub(crate) trait NerRuntime {
+pub(crate) trait NerRuntime: Send + Sync {
     fn detect(&self, text: &str)
     -> Result<Vec<PiiMatch>, Box<dyn std::error::Error + Send + Sync>>;
 
-    #[cfg(any(feature = "decision", test))]
     fn detect_batch(
         &self,
         texts: &[&str],
@@ -102,7 +101,6 @@ impl NerRuntime for TokenClassDetector {
         TokenClassDetector::detect(self, text)
     }
 
-    #[cfg(feature = "decision")]
     fn detect_batch(
         &self,
         texts: &[&str],
@@ -668,14 +666,12 @@ impl Detector {
     /// Detect across records. Tokens use a padded forward pass; GLiNER scans
     /// each record. Every requested runtime must succeed before any result is
     /// returned, including when regex has already found PII.
-    #[cfg(any(feature = "decision", test))]
     pub fn detect_batch(&self, texts: &[&str]) -> Result<Vec<Vec<PiiMatch>>, DetectionError> {
         self.detect_batch_with_stats(texts)
             .map(|results| results.into_iter().map(|result| result.matches).collect())
     }
 
     /// Batch counterpart of `detect_with_stats`; all engines must succeed.
-    #[cfg(any(feature = "decision", test))]
     pub fn detect_batch_with_stats(
         &self,
         texts: &[&str],

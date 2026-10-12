@@ -313,7 +313,9 @@ impl Replacer {
             "mac" => "<MAC>".to_string(),
             "uuid" => "<UUID>".to_string(),
             "jwt" => "<JWT>".to_string(),
-            "aws_key" | "api_key" => "<API_KEY>".to_string(),
+            "aws_key" | "api_key" | "vendor_secret" => "<API_KEY>".to_string(),
+            "secret_assignment" | "password" => "<SECRET>".to_string(),
+            "private_key" => "<PRIVATE_KEY>".to_string(),
             "iban" => "<IBAN>".to_string(),
             "passport_us" => "<PASSPORT>".to_string(),
             "social_handle" | "twitter_handle" | "instagram_handle" => "<HANDLE>".to_string(),
@@ -598,6 +600,32 @@ impl Replacer {
                 let sig: [u8; 32] = self.rng.random();
                 let signature = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(sig);
                 format!("{header}.{payload}.{signature}")
+            }
+            "secret_assignment" | "password" => {
+                // Opaque fake secret; never derived from the original value.
+                let key: [u8; 12] = self.rng.random();
+                base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key)
+            }
+            "private_key" => {
+                "-----BEGIN PRIVATE KEY-----\nREDACTED\n-----END PRIVATE KEY-----".to_string()
+            }
+            "vendor_secret" => {
+                // Keep only the public vendor prefix so traces stay readable.
+                let original = &pii_match.matched_text;
+                let prefix_len = original
+                    .char_indices()
+                    .filter(|(_, c)| *c == '-' || *c == '_')
+                    .map(|(i, _)| i + 1)
+                    .take_while(|i| *i <= 14)
+                    .last()
+                    .unwrap_or(0);
+                let key: [u8; 24] = self.rng.random();
+                let body = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(key);
+                format!(
+                    "{}{}",
+                    &original[..prefix_len],
+                    body.replace(['-', '_'], "x")
+                )
             }
             "aws_key" | "api_key" => {
                 // Generate fake API key

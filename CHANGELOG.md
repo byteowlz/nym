@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Add `nym traces anon` for agent session JSONL: parallel per-session processing with session-consistent, cross-session-independent pseudonyms, optional per-session key files, local-identity literals, session-wide propagation of every detected value, structure-preserving home paths, opaque/image field handling, NER limited to prose and name-signal lines by default, and numeric shape checks against timestamp/ID false positives. On 30 real Pi sessions with inserted test values: 660/660 removed and 0 of 3,367 owner-identity occurrences left; 15x faster than per-file `nym anon --ner` on a shared subset.
+- Detect vendor-prefixed tokens (Anthropic, OpenAI, GitHub, GitLab, Slack, Google, Hugging Face, Stripe, ...), environment-style secret assignments and PEM private keys at high confidence.
+- Window batched token NER like single-text detection, fixing unbounded padded tensors (100+ GB RSS) on long inputs and applying secret-token expansion in batches too. Map the model's `USERNAME` label to `username`.
+- Preserve JSON object key order in anonymized JSON/JSONL output.
+
 - Add optional local CPU `terms discover --ner-rank` before the review cutoff, using only cached/local token models at threshold 0.5. Prioritize recognized values by exact duplicate-downweighted repetition; keep unmatched values eligible, preserve ordinary ties, bind scorer file hashes/counts, and fail closed without downloads or privacy auto-decisions. Enable it in the Pi launcher with `--no-ner-rank` and `--ner-rank-model` controls; native model-free discovery remains the default.
 
 - Expose saved vocabulary runs with native `terms runs list/show/register/open/serve`, stable IDs/`latest`, private per-run XDG-state manifests and metadata-only legacy discovery. Register completed launcher runs, verify source/artifact scope before reuse, render trusted desktop snapshots, and embed hash-checked XDG-data hosting assets for checkout-free private serving; no rescan, model or automatic installation.

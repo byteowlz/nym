@@ -36,6 +36,7 @@ mod terms_progress;
 mod terms_runs;
 mod terms_sketch;
 mod terms_unicode;
+mod traces;
 use input::FormatArg;
 #[cfg(feature = "streaming")]
 mod streaming;
@@ -212,6 +213,7 @@ fn try_main() -> Result<()> {
         Command::Decide(cmd) => handle_decide(&cli.common, &config, &cmd),
         Command::Patterns(cmd) => handle_patterns(&cli.common, cmd),
         Command::Terms(cmd) => terms_cli::run(&cli.common, &config, cmd),
+        Command::Traces(cmd) => traces::run(&cli.common, &config, cmd),
         Command::Config(cmd) => handle_config(&cli.common, &config, cmd),
         Command::Sessions(cmd) => handle_sessions(&cli.common, cmd),
         #[cfg(feature = "ner")]
@@ -404,6 +406,9 @@ enum Command {
 
     /// Discover, review and export corpus-specific sensitive vocabulary
     Terms(terms_cli::TermsCommand),
+
+    /// Anonymize agent session traces with per-session consistent pseudonyms
+    Traces(traces::TracesCommand),
 
     /// Show or manage configuration
     Config(ConfigCommand),

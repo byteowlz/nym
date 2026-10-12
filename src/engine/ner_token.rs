@@ -89,6 +89,9 @@ const MIN_TEXT_LENGTH: usize = 3;
 /// inputs are processed in sub-batches of this size.
 const MAX_BATCH_SIZE: usize = 128;
 
+/// Cap on padded tokens per forward pass (rows x padded length).
+const MAX_BATCH_TOKENS: usize = 16 * 1024;
+
 /// A decoded entity span within a single chunk, in chunk-local byte offsets.
 struct DecodedSpan {
     base_label: String,
@@ -411,187 +414,100 @@ impl TokenClassDetector {
     /// padding contributes nothing to the output. Rows are decoded with their own
     /// offsets/special mask, so results are identical to N single (`detect`)
     /// calls.
-    #[expect(
-        clippy::cast_possible_wrap,
-        clippy::cast_precision_loss,
-        reason = "n/seq and token counts are small positive dimensions; the i64/f32 casts for tensor shape and probability averaging cannot lose meaningful precision here"
-    )]
     pub fn detect_batch(
         &self,
         texts: &[&str],
     ) -> Result<Vec<Vec<PiiMatch>>, Box<dyn std::error::Error + Send + Sync>> {
-        let n = texts.len();
-        let mut out = vec![Vec::new(); n];
-        if n == 0 {
-            return Ok(out);
-        }
-        if n == 1 {
-            return Ok(vec![self.detect(texts[0])?]);
-        }
-
-        // Cap the batch size so we don't build one huge padded [N, seq] tensor
-        // that OOMs on long inputs / low-VRAM GPUs. `seq` can be up to
-        // window_tokens (480) so N must be bounded; process in sub-batches and
-        // concatenate.
-        if n > MAX_BATCH_SIZE {
-            let mut all = Vec::with_capacity(n);
-            for chunk in texts.chunks(MAX_BATCH_SIZE) {
-                let part = self.detect_batch(chunk)?;
-                all.extend(part);
-            }
-            return Ok(all);
-        }
-
-        // Encode every text, keeping its tokenizer encoding for decoding.
-        let mut encodings = Vec::with_capacity(n);
-        let mut max_seq = 1;
-        for &text in texts {
-            let trimmed = text.trim();
-            if trimmed.len() < MIN_TEXT_LENGTH || trimmed.is_empty() {
-                encodings.push(None);
+        // Window every text exactly like `detect`, then batch windows of similar
+        // token length. Long inputs therefore never become one huge padded
+        // tensor, and results match per-text `detect`.
+        let mut windows = Vec::new();
+        let mut multi = vec![false; texts.len()];
+        for (index, &text) in texts.iter().enumerate() {
+            if text.trim().len() < MIN_TEXT_LENGTH {
                 continue;
             }
-            // Preserve the caller's text: trimming shifts UTF-8 byte offsets.
-            let encoding = self.tokenizer.encode(text, true)?;
-            let ids = encoding.get_ids();
-            if ids.is_empty() {
-                encodings.push(None);
-                continue;
+            let mut chunks = self.split_into_chunks(text)?;
+            if chunks.is_empty() {
+                chunks.push((text.to_string(), 0));
             }
-            max_seq = max_seq.max(ids.len());
-            encodings.push(Some((encoding, text)));
-        }
-
-        // If nothing encoded, return empties.
-        if encodings.iter().all(std::option::Option::is_none) {
-            return Ok(out);
-        }
-
-        // Bucket by exact seq length would avoid wasted pad compute, but padding
-        // to the batch max is simpler and already amortizes the call overhead.
-        let seq = max_seq;
-        let num_labels = self.id2label.len();
-        let total = seq * n;
-        let mut input_ids = vec![0i64; total];
-        let mut attention_mask = vec![0i64; total];
-        // token_type_ids is only needed if the model requires it (BERT-family).
-        let type_ids = vec![0i64; total];
-        let mut row_seq = vec![0usize; n];
-        for (i, entry) in encodings.iter().enumerate() {
-            let Some((encoding, _)) = entry else { continue };
-            let ids = encoding.get_ids();
-            let mask = encoding.get_attention_mask();
-            let slen = ids.len().min(seq);
-            row_seq[i] = slen;
-            for t in 0..slen {
-                input_ids[i * seq + t] = i64::from(ids[t]);
-                attention_mask[i * seq + t] = i64::from(mask[t]);
-            }
-        }
-
-        let shape = vec![n as i64, seq as i64];
-        let ids_tensor = Tensor::from_array((shape.clone(), input_ids))?;
-        let mask_tensor = Tensor::from_array((shape.clone(), attention_mask))?;
-        let outputs = if self.needs_token_type_ids {
-            let t_tensor = Tensor::from_array((shape.clone(), type_ids))?;
-            self.session.run(ort::inputs![
-                "input_ids" => ids_tensor,
-                "attention_mask" => mask_tensor,
-                "token_type_ids" => t_tensor,
-            ]?)?
-        } else {
-            self.session.run(ort::inputs![
-                "input_ids" => ids_tensor,
-                "attention_mask" => mask_tensor,
-            ]?)?
-        };
-
-        let (_, logits) = outputs["logits"].try_extract_raw_tensor::<f32>()?;
-        let expected = seq * n * num_labels;
-        if logits.len() != expected {
-            return Err(format!(
-                "unexpected batched logits length: got {}, expected {}",
-                logits.len(),
-                expected
-            )
-            .into());
-        }
-
-        // Decode each row with its own offsets/special mask; skip empty rows.
-        for (i, entry) in encodings.iter().enumerate() {
-            let Some((encoding, text)) = entry else {
-                continue;
-            };
-            let offsets = encoding.get_offsets();
-            let special_mask = encoding.get_special_tokens_mask();
-            let row_logits = &logits[i * seq * num_labels..(i + 1) * seq * num_labels];
-            let spans = self.decode_bio(row_logits, num_labels, offsets, special_mask);
-            let spans = merge_fragments(spans, text);
-            let mut matches = Vec::new();
-            for span in spans {
-                let (start, end) = trim_span(text, span.start, span.end);
-                if start >= end {
-                    continue;
+            multi[index] = chunks.len() > 1;
+            for (chunk, offset) in chunks {
+                let encoding = self.tokenizer.encode(chunk.as_str(), true)?;
+                if !encoding.get_ids().is_empty() {
+                    windows.push((index, chunk, offset, encoding));
                 }
-                let matched_text = &text[start..end];
-                let avg_prob = if span.token_count > 0 {
-                    span.prob_sum / span.token_count as f32
-                } else {
-                    0.0
-                };
-                let (pattern_name, category) = label_to_pattern(&span.base_label);
-                if !is_valid_entity(&span.base_label, matched_text) {
-                    continue;
-                }
-                matches.push(PiiMatch {
-                    pattern_name: pattern_name.to_string(),
-                    matched_text: matched_text.to_string(),
-                    start,
-                    end,
-                    confidence: probability_to_confidence(avg_prob),
-                    category,
-                });
             }
-            out[i] = matches;
+        }
+        windows.sort_by_key(|w| w.3.get_ids().len());
+        let mut out = vec![Vec::new(); texts.len()];
+        let mut start = 0;
+        while start < windows.len() {
+            let mut end = start + 1;
+            while end < windows.len()
+                && end - start < MAX_BATCH_SIZE
+                && (end - start + 1) * windows[end].3.get_ids().len() <= MAX_BATCH_TOKENS
+            {
+                end += 1;
+            }
+            let batch = &windows[start..end];
+            let encodings: Vec<_> = batch.iter().map(|w| &w.3).collect();
+            let (logits, seq) = self.run_logits(&encodings)?;
+            let row = seq * self.id2label.len();
+            for (i, (index, chunk, offset, encoding)) in batch.iter().enumerate() {
+                out[*index].extend(self.decode_chunk(
+                    chunk,
+                    *offset,
+                    encoding,
+                    &logits[i * row..(i + 1) * row],
+                ));
+            }
+            start = end;
+        }
+        for (matches, multi) in out.iter_mut().zip(multi) {
+            if multi {
+                Self::deduplicate_matches(matches);
+                matches.sort_by_key(|m| (m.start, std::cmp::Reverse(m.end - m.start)));
+            }
         }
         Ok(out)
     }
 
-    /// Run inference on a single chunk and decode entities at `offset`.
+    /// One padded forward pass; returns row-major logits and the padded length.
     #[expect(
         clippy::cast_possible_wrap,
-        clippy::cast_precision_loss,
-        reason = "seq_len and token counts are small positive dimensions; the f32/f64 casts for tensor shape and probability averaging cannot lose meaningful precision here"
+        reason = "batch rows and token counts are small positive tensor dimensions"
     )]
-    fn detect_chunk(
+    fn run_logits(
         &self,
-        text: &str,
-        offset: usize,
-    ) -> Result<Vec<PiiMatch>, Box<dyn std::error::Error + Send + Sync>> {
-        let encoding = self.tokenizer.encode(text, true)?;
-        let ids = encoding.get_ids();
-        if ids.is_empty() {
-            return Ok(Vec::new());
-        }
-
-        let seq_len = ids.len();
-        let num_labels = self.id2label.len();
-
-        let input_ids: Vec<i64> = ids.iter().map(|&id| i64::from(id)).collect();
-        let attention_mask: Vec<i64> = encoding
-            .get_attention_mask()
+        encodings: &[&tokenizers::Encoding],
+    ) -> Result<(Vec<f32>, usize), Box<dyn std::error::Error + Send + Sync>> {
+        let n = encodings.len();
+        let seq = encodings
             .iter()
-            .map(|&m| i64::from(m))
-            .collect();
-
-        let shape = vec![1_i64, seq_len as i64];
+            .map(|e| e.get_ids().len())
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let num_labels = self.id2label.len();
+        let mut input_ids = vec![0i64; n * seq];
+        let mut attention_mask = vec![0i64; n * seq];
+        for (i, encoding) in encodings.iter().enumerate() {
+            for (t, (&id, &mask)) in encoding
+                .get_ids()
+                .iter()
+                .zip(encoding.get_attention_mask())
+                .enumerate()
+            {
+                input_ids[i * seq + t] = i64::from(id);
+                attention_mask[i * seq + t] = i64::from(mask);
+            }
+        }
+        let shape = vec![n as i64, seq as i64];
         let ids_tensor = Tensor::from_array((shape.clone(), input_ids))?;
         let mask_tensor = Tensor::from_array((shape.clone(), attention_mask))?;
-
-        // BERT-family models require token_type_ids (all zeros for single
-        // sequences); DeBERTa-v2 exports usually don't accept it.
         let outputs = if self.needs_token_type_ids {
-            let type_ids = Tensor::from_array((shape, vec![0_i64; seq_len]))?;
+            let type_ids = Tensor::from_array((shape, vec![0i64; n * seq]))?;
             self.session.run(ort::inputs![
                 "input_ids" => ids_tensor,
                 "attention_mask" => mask_tensor,
@@ -603,22 +519,52 @@ impl TokenClassDetector {
                 "attention_mask" => mask_tensor,
             ]?)?
         };
-
         let (_, logits) = outputs["logits"].try_extract_raw_tensor::<f32>()?;
-        if logits.len() != seq_len * num_labels {
+        if logits.len() != n * seq * num_labels {
             return Err(format!(
                 "unexpected logits length: got {}, expected {}",
                 logits.len(),
-                seq_len * num_labels
+                n * seq * num_labels
             )
             .into());
         }
+        Ok((logits.to_vec(), seq))
+    }
 
-        let offsets = encoding.get_offsets();
-        let special_mask = encoding.get_special_tokens_mask();
-        let spans = self.decode_bio(logits, num_labels, offsets, special_mask);
+    /// Run inference on a single chunk and decode entities at `offset`.
+    fn detect_chunk(
+        &self,
+        text: &str,
+        offset: usize,
+    ) -> Result<Vec<PiiMatch>, Box<dyn std::error::Error + Send + Sync>> {
+        let encoding = self.tokenizer.encode(text, true)?;
+        if encoding.get_ids().is_empty() {
+            return Ok(Vec::new());
+        }
+        let (logits, _) = self.run_logits(&[&encoding])?;
+        Ok(self.decode_chunk(text, offset, &encoding, &logits))
+    }
+
+    /// Decode one window's logits row into matches at `offset`.
+    #[expect(
+        clippy::cast_precision_loss,
+        reason = "token counts are small; the f32 average cannot lose meaningful precision"
+    )]
+    fn decode_chunk(
+        &self,
+        text: &str,
+        offset: usize,
+        encoding: &tokenizers::Encoding,
+        logits: &[f32],
+    ) -> Vec<PiiMatch> {
+        let num_labels = self.id2label.len();
+        let spans = self.decode_bio(
+            logits,
+            num_labels,
+            encoding.get_offsets(),
+            encoding.get_special_tokens_mask(),
+        );
         let spans = merge_fragments(spans, text);
-
         let mut matches = Vec::new();
         for span in spans {
             // Trim leading/trailing whitespace that sub-word offsets often include.
@@ -650,7 +596,7 @@ impl TokenClassDetector {
                 category,
             });
         }
-        Ok(matches)
+        matches
     }
 
     /// BIO-decode per-token predictions into contiguous entity spans.
@@ -1012,7 +958,7 @@ fn label_to_pattern(base: &str) -> (&'static str, PiiCategory) {
         // Names / identity
         "first_name" | "given_name" => ("first_name", PiiCategory::Identity),
         "last_name" | "surname" => ("last_name", PiiCategory::Identity),
-        "user_name" => ("username", PiiCategory::Social),
+        "user_name" | "username" => ("username", PiiCategory::Social),
         "age" => ("age", PiiCategory::Identity),
         "gender" => ("gender", PiiCategory::Identity),
         "date_of_birth" => ("date_of_birth", PiiCategory::Identity),
