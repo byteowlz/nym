@@ -186,7 +186,7 @@ const TRACE_EXCLUDED: &[&str] = &["unix_path", "uuid", "date", "time"];
 /// places), postcode + capitalized word (addresses) and account labels.
 static CANDIDATE_LINE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(
-        r"\b\p{Lu}[\p{Ll}\p{M}]+[ \t]+\p{Lu}[\p{Ll}\p{M}]+|\b\d{4,5}[ \t]+\p{Lu}[\p{Ll}\p{M}]+|(?i)\b(?:user(?:name)?|login|handle|account|author|owner|contact|name)\s*[:=]",
+        r"\b\p{Lu}[\p{Ll}\p{M}]+[ \t]+\p{Lu}[\p{Ll}\p{M}]+|\b\d{4,5}[ \t]+\p{Lu}[\p{Ll}\p{M}]+|(?i)\b(?:user(?:name)?|login|handle|account|author|owner|contact)\s*[:=]",
     )
     .expect("candidate line pattern is valid")
 });
@@ -750,6 +750,7 @@ fn plausible(m: &PiiMatch, leaf: &str, prose: bool, allow: &HashSet<String>) -> 
             prose && !CODE_HANDLES.contains(&lower.trim_start_matches('@'))
         }
         "ipv4" => !(text.starts_with("127.") || text == "0.0.0.0" || text == "255.255.255.255"),
+        "first_name" | "last_name" | "person" | "name" if !person_like(m, leaf) => false,
         "first_name" | "last_name" | "person" | "name" | "username" => {
             !text
                 .split(|c: char| !c.is_alphanumeric())
@@ -811,6 +812,20 @@ fn plausible(m: &PiiMatch, leaf: &str, prose: bool, allow: &HashSet<String>) -> 
         }
         _ => !numeric || digits >= 6,
     }
+}
+
+/// Names are capitalized and not code: `greet`, `Type.Object`, `x.Type` and
+/// `Type(` are identifiers, not people.
+fn person_like(m: &PiiMatch, leaf: &str) -> bool {
+    let text = m.matched_text.as_str();
+    if !text.chars().any(char::is_uppercase) {
+        return false;
+    }
+    let before = leaf.get(..m.start).and_then(|s| s.chars().next_back());
+    let mut after = leaf.get(m.end..).map(str::chars).into_iter().flatten();
+    let next = after.next();
+    let member = next == Some('.') && after.next().is_some_and(char::is_alphanumeric);
+    !(member || next == Some('(') || before == Some('.'))
 }
 
 /// Hosts whose URLs are public references, not personal data. Identities,
@@ -1529,6 +1544,18 @@ mod tests {
                 "{value}"
             );
         }
+        // Code identifiers are not people; capitalized names in prose are.
+        let id = |leaf: &str, value: &str| {
+            let start = leaf.find(value).unwrap();
+            let mut m = found(value, start, "first_name", PiiCategory::Identity);
+            m.end = start + value.len();
+            plausible(&m, leaf, true, &allow)
+        };
+        assert!(!id(r#"name: "greet","#, "greet"));
+        assert!(!id("parameters: Type.Object({", "Type"));
+        assert!(!id("x.Type", "Type"));
+        assert!(!id("Type(x)", "Type"));
+        assert!(id("I talked to Jolanta yesterday.", "Jolanta"));
         // User allowlists never veto credentials.
         let mut custom = allow.clone();
         custom.insert("hunter22".into());

@@ -7,6 +7,8 @@ read-only capability-gated snapshot (loopback by default, `--tailnet` opt-in);
 never serves a directory. Run through uv: no third-party dependencies.
 """
 import argparse
+import difflib
+import re
 import json
 import secrets
 import sys
@@ -50,6 +52,30 @@ def excerpt(original, anonymized):
     return rows
 
 
+# Whole values (emails, paths, keys) diff as one unit; code delimiters split.
+TOKEN = re.compile(r'\s+|[^\s"\'`(),;:=\[\]{}<>|]+|.')
+
+
+def segments(original, anonymized):
+    """Word-level diff: [[text, changed], ...] for each side, merged runs."""
+    a, b = TOKEN.findall(original), TOKEN.findall(anonymized)
+    left, right = [], []
+
+    def push(side, text, changed):
+        if not text:
+            return
+        if side and side[-1][1] == changed:
+            side[-1][0] += text
+        else:
+            side.append([text, changed])
+
+    for op, i1, i2, j1, j2 in difflib.SequenceMatcher(None, a, b, autojunk=False).get_opcodes():
+        changed = op != 'equal'
+        push(left, ''.join(a[i1:i2]), changed)
+        push(right, ''.join(b[j1:j2]), changed)
+    return left, right
+
+
 def load_keys(path):
     mapping = []
     if path and path.exists():
@@ -82,7 +108,8 @@ def build(original_dir, anonymized_dir, keys_dir):
                 if path.endswith('.data') and value == '':
                     images += 1
                     continue
-                changes.append({'line': number, 'path': path, 'rows': excerpt(before, value)})
+                rows = [None if row is None else list(segments(*row)) for row in excerpt(before, value)]
+                changes.append({'line': number, 'path': path, 'rows': rows})
         counts = {}
         for _, _, kind in keys:
             counts[kind] = counts.get(kind, 0) + 1
@@ -115,27 +142,23 @@ mark{border-radius:3px;padding:0 1px;cursor:pointer}mark.o{background:#5a2a2a;co
 <script>
 const sessions=JSON.parse(document.getElementById('data').textContent);const $=id=>document.getElementById(id);
 sessions.forEach((s,i)=>{const o=document.createElement('option');o.value=i;o.textContent=`${s.name} · ${s.changes.length} fields`;$('session').append(o)});
-function esc(s){return s.replace(/[.*+?^${}()|[\\]\\\\]/g,'\\\\$&')}
-function matcher(list){if(!list.length)return null;const sorted=[...list].sort((a,b)=>b.length-a.length);return new RegExp(sorted.map(esc).join('|'),'g')}
-function paint(text,re,map,cls,wanted){const frag=document.createDocumentFragment();if(!re){frag.append(text);return frag}let last=0;re.lastIndex=0;let m;
- while((m=re.exec(text))){if(m[0]==='')break;const info=map.get(m[0]);if(wanted&&info&&info[2]!==wanted){continue}
-  frag.append(text.slice(last,m.index));const mk=document.createElement('mark');mk.className=cls;mk.textContent=m[0];mk.dataset.k=m[0];mk.dataset.side=cls;frag.append(mk);last=m.index+m[0].length}
- frag.append(text.slice(last));return frag}
+function paint(segs,cls){const frag=document.createDocumentFragment();for(const [text,changed] of segs){if(!changed){frag.append(text);continue}
+ const mk=document.createElement('mark');mk.className=cls;mk.textContent=text;mk.dataset.k=text.trim();mk.dataset.side=cls;frag.append(mk)}return frag}
+const joined=segs=>segs.map(x=>x[0]).join('');
 function render(){const s=sessions[+$('session').value||0];const wanted=$('cls').value;const q=$('q').value.toLowerCase();
  const byOrig=new Map(s.keys.map(k=>[k[0],k])),byRep=new Map(s.keys.map(k=>[k[1],k]));
- const reO=matcher(s.keys.filter(k=>k[0].length>1).map(k=>k[0])),reR=matcher(s.keys.filter(k=>k[1].length>1).map(k=>k[1]));
  $('classes').replaceChildren(...Object.entries(s.classes).sort((a,b)=>b[1]-a[1]).map(([k,v])=>{const c=document.createElement('span');c.className='chip';c.textContent=`${k} ${v}`;return c}));
  const cur=$('cls').value;$('cls').replaceChildren(Object.assign(document.createElement('option'),{value:'',textContent:'All classes'}),...Object.keys(s.classes).sort().map(k=>Object.assign(document.createElement('option'),{value:k,textContent:k})));$('cls').value=s.classes[cur]?cur:'';
  const list=$('list');list.replaceChildren();let shown=0;
- for(const c of s.changes){const text=c.rows.filter(Boolean).map(r=>r[0]+'\\n'+r[1]).join('\\n').toLowerCase();if(q&&!text.includes(q))continue;
-  if(wanted&&!s.keys.some(k=>k[2]===wanted&&c.rows.some(r=>r&&(r[0].includes(k[0])||r[1].includes(k[1])))))continue;shown++;
+ for(const c of s.changes){const text=c.rows.filter(Boolean).map(r=>joined(r[0])+'\\n'+joined(r[1])).join('\\n').toLowerCase();if(q&&!text.includes(q))continue;
+  if(wanted&&!c.rows.some(r=>r&&r[1].some(([t,ch])=>ch&&s.keys.some(k=>k[2]===wanted&&t.includes(k[1])))))continue;shown++;
   const box=document.createElement('div');box.className='change';const meta=document.createElement('div');meta.className='meta';meta.textContent=`record ${c.line} · ${c.path}`;box.append(meta);
   const grid=document.createElement('div');grid.className='grid';const h1=document.createElement('div');h1.className='hdr a';h1.textContent='Original';const h2=document.createElement('div');h2.className='hdr b';h2.textContent='Anonymized';grid.append(h1,h2);
   for(const r of c.rows){if(!r){const g=document.createElement('div');g.className='gap';g.textContent='⋯';grid.append(g);continue}
-   const a=document.createElement('div');a.className='a';a.append(paint(r[0],reO,byOrig,'o',wanted));const b=document.createElement('div');b.className='b';b.append(paint(r[1],reR,byRep,'r',wanted));grid.append(a,b)}
+   const a=document.createElement('div');a.className='a';a.append(paint(r[0],'o'));const b=document.createElement('div');b.className='b';b.append(paint(r[1],'r'));grid.append(a,b)}
   box.append(grid);list.append(box)}
  $('summary').textContent=`${shown}/${s.changes.length} changed fields · ${s.keys.length} mappings · ${s.images_removed} images removed`;
- list.onclick=e=>{const m=e.target.closest('mark');if(!m){$('tip').style.display='none';return}const k=(m.dataset.side==='o'?byOrig:byRep).get(m.dataset.k);if(!k)return;
+ list.onclick=e=>{const m=e.target.closest('mark');if(!m){$('tip').style.display='none';return}const lookup=m.dataset.side==='o'?byOrig:byRep;const k=lookup.get(m.dataset.k)||[...lookup.entries()].find(([v])=>v&&m.dataset.k.includes(v))?.[1];if(!k){$('tiptext').textContent='Changed text (no single mapping)';$('allow').dataset.term='';$('tip').style.display='block';return}
   $('tiptext').textContent=`${k[2]}:  ${k[0]}  →  ${k[1]}`;$('allow').dataset.term=k[0];$('allow').textContent=allowed.has(k[0])?'In allowlist':'Never replace';$('tip').style.display='block'}}
 let saved=[];try{saved=JSON.parse(sessionStorage.getItem('nym-trace-allow')||'[]')}catch{}const allowed=new Set(saved);
 function syncAllow(){$('allowdl').textContent=`Allowlist (${allowed.size}) ⤓`;$('allowdl').disabled=!allowed.size;try{sessionStorage.setItem('nym-trace-allow',JSON.stringify([...allowed]))}catch{}}

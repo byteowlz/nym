@@ -25,7 +25,10 @@ class ReviewTraceAnonTests(unittest.TestCase):
             self.assertEqual(sessions, [{
                 'name': 's.jsonl',
                 'changes': [{'line': 1, 'path': 'text', 'rows': [
-                    ['b', 'b'], ['mail ada@example.org', 'mail x@example.com'], ['c', 'c']]}],
+                    [[['b', False]], [['b', False]]],
+                    [[['mail ', False], ['ada@example.org', True]],
+                     [['mail ', False], ['x@example.com', True]]],
+                    [[['c', False]], [['c', False]]]]}],
                 'keys': [['ada@example.org', 'x@example.com', 'email']],
                 'images_removed': 0,
                 'classes': {'email': 1},
