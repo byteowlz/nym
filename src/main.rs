@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 mod config;
 mod engine;
 mod input;
+mod profiles;
 mod session;
 mod terms;
 #[cfg(test)]
@@ -214,6 +215,7 @@ fn try_main() -> Result<()> {
         Command::Patterns(cmd) => handle_patterns(&cli.common, cmd),
         Command::Terms(cmd) => terms_cli::run(&cli.common, &config, cmd),
         Command::Traces(cmd) => traces::run(&cli.common, &config, cmd),
+        Command::Profiles(cmd) => profiles::run(&cli.common, cmd),
         Command::Config(cmd) => handle_config(&cli.common, &config, cmd),
         Command::Sessions(cmd) => handle_sessions(&cli.common, cmd),
         #[cfg(feature = "ner")]
@@ -410,6 +412,9 @@ enum Command {
     /// Anonymize agent session traces with per-session consistent pseudonyms
     Traces(traces::TracesCommand),
 
+    /// Manage redaction profiles: named sensitive and allow term lists
+    Profiles(profiles::ProfilesCommand),
+
     /// Show or manage configuration
     Config(ConfigCommand),
 
@@ -509,6 +514,9 @@ struct TraceOpts {
     /// Literal matching case sensitivity (true or false)
     #[arg(long, action = clap::ArgAction::Set)]
     term_case_sensitive: Option<bool>,
+    /// Add a redaction profile's lists (repeatable); `default` always applies when present
+    #[arg(long = "redaction-profile", value_name = "NAME")]
+    redaction_profiles: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -529,6 +537,15 @@ fn configure_trace(
     opts: &TraceOpts,
 ) -> Result<DetectorConfig> {
     let settings = &config.trace_policy;
+    let profile_lists = profiles::load(&opts.redaction_profiles)?;
+    let merge = |mut terms: Vec<String>, extra: &[String]| {
+        for term in extra {
+            if !terms.contains(term) {
+                terms.push(term.clone());
+            }
+        }
+        terms
+    };
     let files = |cli: &[String], configured: &[String]| {
         config::load_term_files(if cli.is_empty() { configured } else { cli })
     };
@@ -543,8 +560,14 @@ fn configure_trace(
         } else {
             opts.public_hosts.clone()
         },
-        sensitive_terms: files(&opts.sensitive_terms_files, &settings.sensitive_terms_files)?,
-        benign_terms: files(&opts.benign_terms_files, &settings.benign_terms_files)?,
+        sensitive_terms: merge(
+            files(&opts.sensitive_terms_files, &settings.sensitive_terms_files)?,
+            &profile_lists.sensitive,
+        ),
+        benign_terms: merge(
+            files(&opts.benign_terms_files, &settings.benign_terms_files)?,
+            &profile_lists.allow,
+        ),
         case_sensitive: opts.term_case_sensitive.unwrap_or(settings.case_sensitive),
         term_boundary: match opts.term_boundary {
             Some(BoundaryArg::Word) => engine::TermBoundary::Word,

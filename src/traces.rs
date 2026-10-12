@@ -80,11 +80,14 @@ struct AnonArgs {
     /// UTF-8 file of additional sensitive literals, one per line (repeatable)
     #[arg(long)]
     sensitive_terms_file: Vec<PathBuf>,
-    /// UTF-8 file of literals never to replace, one per line (repeatable; default:
-    /// `trace-allow.txt` next to the global config, when present). Never vetoes
-    /// credentials, local identity or sensitive terms.
+    /// UTF-8 file of literals never to replace, one per line (repeatable). Never
+    /// vetoes credentials, local identity or sensitive terms.
     #[arg(long)]
     allow_terms_file: Vec<PathBuf>,
+    /// Add a redaction profile's sensitive and allow lists (repeatable); the
+    /// `default` profile always applies when present. See `nym profiles`.
+    #[arg(long = "redaction-profile", value_name = "NAME")]
+    redaction_profiles: Vec<String>,
     /// Base seed for reproducible pseudonyms (each session derives its own seed)
     #[arg(long)]
     seed: Option<u64>,
@@ -271,12 +274,18 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
                 .filter(|l| l.chars().count() >= 3 && !l.starts_with('#'))
                 .map(|l| Literal {
                     text: l.to_string(),
-                    class: "username".into(),
+                    class: sensitive_class(l).into(),
                 }),
         );
     }
+    let profile_lists = crate::profiles::load(&args.redaction_profiles)?;
+    literals.extend(profile_lists.sensitive.iter().map(|term| Literal {
+        text: term.clone(),
+        class: sensitive_class(term).into(),
+    }));
     let identity = Identity::new(&literals)?;
-    let allow = allowlist(&args.allow_terms_file)?;
+    let mut allow = allowlist(&args.allow_terms_file)?;
+    allow.extend(profile_lists.allow.iter().map(|t| t.to_lowercase()));
     let regex = detector(config, false)?;
     let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let jobs = args
@@ -1086,17 +1095,20 @@ const BUILTIN_ALLOW: &[&str] = &[
     "jupyter",
 ];
 
+/// Pseudonym class for a user-listed sensitive literal.
+fn sensitive_class(term: &str) -> &'static str {
+    if term.contains('@') {
+        "email"
+    } else if term.contains(char::is_whitespace) {
+        "organization"
+    } else {
+        "username"
+    }
+}
+
 fn allowlist(files: &[PathBuf]) -> Result<HashSet<String>> {
     let mut allow: HashSet<String> = BUILTIN_ALLOW.iter().map(|s| (*s).to_string()).collect();
-    let default = crate::config::global_config_path()
-        .and_then(|p| p.parent().map(|d| d.join("trace-allow.txt")))
-        .filter(|p| p.is_file());
-    let paths: Vec<PathBuf> = if files.is_empty() {
-        default.into_iter().collect()
-    } else {
-        files.to_vec()
-    };
-    for path in paths {
+    for path in files {
         let text = fs::read_to_string(&path).context("failed to read allow terms file")?;
         allow.extend(
             text.lines()

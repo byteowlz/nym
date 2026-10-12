@@ -344,3 +344,112 @@ fn images_are_kept_unless_stripping_is_requested() {
         "iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"
     );
 }
+
+#[test]
+fn redaction_profiles_are_shared_and_stack_on_default() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let ok = |args: &[&str]| {
+        let out = nym(root, args);
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    };
+    ok(&[
+        "profiles",
+        "add",
+        "default",
+        "--list",
+        "allow",
+        "support@example.org",
+    ]);
+    ok(&[
+        "profiles",
+        "add",
+        "work",
+        "--list",
+        "sensitive",
+        "Acme Corp",
+    ]);
+    let downloaded = root.join("trace-allow.txt");
+    fs::write(&downloaded, "# from the review page\nkeep@example.org\n").unwrap();
+    ok(&[
+        "profiles",
+        "import",
+        "work",
+        "--list",
+        "allow",
+        downloaded.to_str().unwrap(),
+    ]);
+    let listed: Value =
+        serde_json::from_slice(&ok(&["--json", "profiles", "list"]).stdout).unwrap();
+    assert_eq!(
+        listed,
+        serde_json::json!([
+            {"name": "default", "path": root.join("xdg/nym/profiles/default"), "sensitive": 0, "allow": 1},
+            {"name": "work", "path": root.join("xdg/nym/profiles/work"), "sensitive": 1, "allow": 1}
+        ])
+    );
+
+    let input = root.join("in");
+    fs::create_dir_all(&input).unwrap();
+    let text = "Acme Corp: mail support@example.org, keep@example.org or ada.quill@example.org";
+    fs::write(
+        input.join("s.jsonl"),
+        format!(r#"{{"message":{{"role":"user","content":[{{"type":"text","text":"{text}"}}]}}}}"#)
+            + "\n",
+    )
+    .unwrap();
+    let run = |name: &str, extra: &[&str]| {
+        let out = root.join(name);
+        let mut args = vec![
+            "traces",
+            "anon",
+            input.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--no-ner",
+            "--no-progress",
+        ];
+        args.extend_from_slice(extra);
+        ok(&args);
+        fs::read_to_string(out.join("s.jsonl")).unwrap()
+    };
+    let base = run("base", &[]);
+    assert!(base.contains("support@example.org") && base.contains("Acme Corp"));
+    assert!(base.contains("keep@example.org") == false && !base.contains("ada.quill"));
+    let work = run("work", &["--redaction-profile", "work"]);
+    assert!(work.contains("support@example.org") && work.contains("keep@example.org"));
+    assert!(!work.contains("Acme Corp") && !work.contains("ada.quill"));
+    // A missing named profile is an error, not a silent no-op.
+    let missing = nym(
+        root,
+        &[
+            "traces",
+            "anon",
+            input.to_str().unwrap(),
+            "-o",
+            root.join("x").to_str().unwrap(),
+            "--no-ner",
+            "--redaction-profile",
+            "nope",
+        ],
+    );
+    assert_eq!(missing.status.code(), Some(1));
+    // `nym anon` shares the same profiles.
+    let plain = root.join("plain.txt");
+    fs::write(&plain, format!("{text}\n")).unwrap();
+    let anon = ok(&[
+        "anon",
+        plain.to_str().unwrap(),
+        "--redaction-profile",
+        "work",
+        "--strategy",
+        "placeholder",
+    ]);
+    let anon = String::from_utf8(anon.stdout).unwrap();
+    assert!(!anon.contains("Acme Corp") && !anon.contains("ada.quill"));
+}

@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Add redaction profiles (`nym profiles list/show/add/remove/import/path`): private `sensitive.txt`/`allow.txt` lists per named profile under the config directory, `default` always applied, others stacked with `--redaction-profile` in `anon`, `detect` and `traces anon`. Replaces the single `trace-allow.txt` file.
+
 - `nym traces anon`: keep images by default (`--strip-images` opts in); trim delimiters NER attaches to entity edges so one value keeps one pseudonym (`USER=wismut ;`); never replace system accounts; add trace precision rules and a built-in plus user allowlist (`--allow-terms-file`, `trace-allow.txt`) that cannot veto credentials, identity or sensitive terms. On the 30-session benchmark distinct replaced values fell from 1,673 to 1,036 with 660/660 inserted values still removed.
 
 - Add `nym traces anon` for agent session JSONL: parallel per-session processing with session-consistent, cross-session-independent pseudonyms, optional per-session key files, a private side-by-side review page (`scripts/review_trace_anon.py`), local-identity literals, session-wide propagation of every detected value, structure-preserving home paths, unscanned opaque/image fields with opt-in `--strip-images`, NER limited to prose and name-signal lines by default, and numeric shape checks against timestamp/ID false positives. On 30 real Pi sessions with inserted test values: 660/660 removed and 0 of 3,367 owner-identity occurrences left; 15x faster than per-file `nym anon --ner` on a shared subset.
