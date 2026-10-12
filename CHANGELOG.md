@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- `nym traces anon`: keep images by default (`--strip-images` opts in); trim delimiters NER attaches to entity edges so one value keeps one pseudonym (`USER=wismut ;`); never replace system accounts; add trace precision rules and a built-in plus user allowlist (`--allow-terms-file`, `trace-allow.txt`) that cannot veto credentials, identity or sensitive terms. On the 30-session benchmark distinct replaced values fell from 1,673 to 1,036 with 660/660 inserted values still removed.
+
 - Add `nym traces anon` for agent session JSONL: parallel per-session processing with session-consistent, cross-session-independent pseudonyms, optional per-session key files, a private side-by-side review page (`scripts/review_trace_anon.py`), local-identity literals, session-wide propagation of every detected value, structure-preserving home paths, unscanned opaque/image fields with opt-in `--strip-images`, NER limited to prose and name-signal lines by default, and numeric shape checks against timestamp/ID false positives. On 30 real Pi sessions with inserted test values: 660/660 removed and 0 of 3,367 owner-identity occurrences left; 15x faster than per-file `nym anon --ner` on a shared subset.
 - Detect vendor-prefixed tokens (Anthropic, OpenAI, GitHub, GitLab, Slack, Google, Hugging Face, Stripe, ...), environment-style secret assignments and PEM private keys at high confidence.
 - Window batched token NER like single-text detection, fixing unbounded padded tensors (100+ GB RSS) on long inputs and applying secret-token expansion in batches too. Map the model's `USERNAME` label to `username`.

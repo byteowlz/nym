@@ -80,6 +80,11 @@ struct AnonArgs {
     /// UTF-8 file of additional sensitive literals, one per line (repeatable)
     #[arg(long)]
     sensitive_terms_file: Vec<PathBuf>,
+    /// UTF-8 file of literals never to replace, one per line (repeatable; default:
+    /// `trace-allow.txt` next to the global config, when present). Never vetoes
+    /// credentials, local identity or sensitive terms.
+    #[arg(long)]
+    allow_terms_file: Vec<PathBuf>,
     /// Base seed for reproducible pseudonyms (each session derives its own seed)
     #[arg(long)]
     seed: Option<u64>,
@@ -140,7 +145,12 @@ const PROSE: &[&str] = &["text", "thinking", "summary", "message"];
 const GENERIC_ACCOUNTS: &[&str] = &[
     "root",
     "admin",
+    "administrator",
     "user",
+    "guest",
+    "nobody",
+    "daemon",
+    "www-data",
     "ubuntu",
     "debian",
     "ec2-user",
@@ -150,8 +160,13 @@ const GENERIC_ACCOUNTS: &[&str] = &[
     "app",
     "codespace",
     "jovyan",
+    "postgres",
+    "mysql",
+    "git",
     "localhost",
     "raspberrypi",
+    "sudo",
+    "system",
 ];
 /// Finding classes that are not identities; never spread to other occurrences.
 const NO_PROPAGATE: &[&str] = &[
@@ -261,6 +276,7 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
         );
     }
     let identity = Identity::new(&literals)?;
+    let allow = allowlist(&args.allow_terms_file)?;
     let regex = detector(config, false)?;
     let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let jobs = args
@@ -290,7 +306,7 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
         files
             .par_iter()
             .map(|(path, rel)| {
-                let result = process(path, rel, &args, &regex, ner.as_ref(), &identity);
+                let result = process(path, rel, &args, &regex, ner.as_ref(), &identity, &allow);
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                 if progress {
                     eprint!(
@@ -683,18 +699,107 @@ fn resolve_overlaps(text: &str, mut matches: Vec<PiiMatch>) -> Vec<PiiMatch> {
     out
 }
 
+/// Same value, same pseudonym: strip delimiters a detector attached to a
+/// non-credential span (credentials keep their exact token).
+fn trim_edges(m: &mut PiiMatch) {
+    if m.category == crate::engine::patterns::PiiCategory::Authentication {
+        return;
+    }
+    let edge = |c: char| c.is_whitespace() || ";,:!?.\"'`|()[]{}<>=".contains(c);
+    let start = m.matched_text.len() - m.matched_text.trim_start_matches(edge).len();
+    let end = m.matched_text.trim_end_matches(edge).len().max(start);
+    m.start += start;
+    m.end = m.start + (end - start);
+    m.matched_text = m.matched_text[start..end].to_string();
+}
+
 /// Shape checks for numeric classes: agent traces are full of timestamps,
 /// ports, line numbers and IDs that regex/NER mislabel as phones or cards.
 /// PIN, CVV and birth dates are kept regardless (privacy-critical, rare).
-fn plausible(m: &PiiMatch) -> bool {
+fn plausible(m: &PiiMatch, leaf: &str, prose: bool, allow: &HashSet<String>) -> bool {
     let text = m.matched_text.as_str();
+    let lower = text.to_lowercase();
+    if m.category != crate::engine::patterns::PiiCategory::Authentication && allow.contains(&lower)
+    {
+        return false;
+    }
+    // Shared system accounts (`root`, `www-data`) identify no person.
+    if GENERIC_ACCOUNTS.contains(&lower.as_str()) {
+        return false;
+    }
     let digits = text.chars().filter(char::is_ascii_digit).count();
     let numeric = text
         .chars()
         .all(|c| c.is_ascii_digit() || c.is_whitespace() || "+-.:/()".contains(c));
+    let labelled = |keywords: &[&str]| {
+        let mut from = m.start.saturating_sub(48);
+        while !leaf.is_char_boundary(from) {
+            from -= 1;
+        }
+        let before = leaf[from..m.start.min(leaf.len())].to_lowercase();
+        keywords.iter().any(|k| before.contains(k))
+    };
     match m.pattern_name.as_str() {
         "date" | "time" => false,
-        "pin" | "cvv" | "date_of_birth" | "age" | "postcode" => true,
+        // Vendors, products and languages dominate; list employers and clients
+        // explicitly with --sensitive-terms-file instead.
+        "organization" | "company" => false,
+        "url" | "social_url" => url_like(&lower) && !public_url(&lower),
+        // Decorators, npm scopes and doc tags in code; mentions only in prose.
+        "twitter_handle" | "social_handle" | "instagram_handle" => {
+            prose && !CODE_HANDLES.contains(&lower.trim_start_matches('@'))
+        }
+        "ipv4" => !(text.starts_with("127.") || text == "0.0.0.0" || text == "255.255.255.255"),
+        "first_name" | "last_name" | "person" | "name" | "username" => {
+            !text
+                .split(|c: char| !c.is_alphanumeric())
+                .filter(|w| !w.is_empty())
+                .all(|w| allow.contains(&w.to_lowercase()))
+                && (m.pattern_name != "username" || text.chars().count() >= 4)
+                && !text.contains('&')
+        }
+        "date_of_birth" => {
+            // Recent dates are log timestamps, not birthdays.
+            let year = text
+                .split(|c: char| !c.is_ascii_digit())
+                .find(|p| p.len() == 4)
+                .and_then(|y| y.parse::<u32>().ok());
+            digits >= 6 && year.is_none_or(|y| y < 2015)
+        }
+        "pin" | "cvv" => labelled(&[
+            "pin",
+            "cvv",
+            "cvc",
+            "passcode",
+            "security code",
+            "geheimzahl",
+        ]),
+        "account_number" | "bank_routing_number" => labelled(&[
+            "account",
+            "konto",
+            "acct",
+            "routing",
+            "aba",
+            "blz",
+            "sort code",
+            "bank",
+        ]),
+        "certificate_license_number" | "government_id" | "tax_id" | "passport_us" => labelled(&[
+            "licen",
+            "lizenz",
+            "führerschein",
+            "passport",
+            "pass",
+            "tax",
+            "steuer",
+            "id",
+            "ausweis",
+            "nummer",
+            "number",
+            "no.",
+        ]),
+        "ner_entity" => prose && !numeric,
+        "age" | "postcode" => true,
         "phone_us" | "phone_intl" | "phone_ner" => {
             digits >= 7 && (text.contains('+') || text.chars().any(|c| " -.()".contains(c)))
         }
@@ -706,6 +811,286 @@ fn plausible(m: &PiiMatch) -> bool {
         }
         _ => !numeric || digits >= 6,
     }
+}
+
+/// Hosts whose URLs are public references, not personal data. Identities,
+/// emails and tokens inside such URLs are still caught by other detectors.
+const PUBLIC_HOSTS: &[&str] = &[
+    "github.com",
+    "raw.githubusercontent.com",
+    "gist.github.com",
+    "gitlab.com",
+    "docs.rs",
+    "crates.io",
+    "npmjs.com",
+    "www.npmjs.com",
+    "pypi.org",
+    "huggingface.co",
+    "stackoverflow.com",
+    "en.wikipedia.org",
+    "de.wikipedia.org",
+    "developer.mozilla.org",
+    "doc.rust-lang.org",
+    "rust-lang.org",
+    "www.rust-lang.org",
+    "python.org",
+    "docs.python.org",
+    "go.dev",
+    "pkg.go.dev",
+    "developer.apple.com",
+    "learn.microsoft.com",
+    "docs.anthropic.com",
+    "docs.claude.com",
+    "platform.openai.com",
+    "openai.com",
+    "anthropic.com",
+    "arxiv.org",
+    "youtube.com",
+    "www.youtube.com",
+    "google.com",
+    "www.google.com",
+    "localhost",
+    "127.0.0.1",
+    "example.com",
+    "schemas.openxmlformats.org",
+    "www.w3.org",
+    "json-schema.org",
+    "registry.npmjs.org",
+];
+
+/// NER labels file names (`README.md`), permission strings and word fragments
+/// as URLs. Require a scheme or a dotted host that does not end in a file type.
+fn url_like(lower: &str) -> bool {
+    if lower.contains("://") || lower.starts_with("www.") {
+        return true;
+    }
+    let host = lower.split(['/', '?', '#', ':']).next().unwrap_or_default();
+    let labels: Vec<_> = host.split('.').collect();
+    let tld = labels.last().copied().unwrap_or_default();
+    labels.len() >= 2
+        && labels
+            .iter()
+            .all(|l| !l.is_empty() && l.chars().all(|c| c.is_ascii_alphanumeric() || c == '-'))
+        && tld.len() >= 2
+        && tld.chars().all(|c| c.is_ascii_alphabetic())
+        && !FILE_TYPES.contains(&tld)
+}
+
+const FILE_TYPES: &[&str] = &[
+    "md", "rs", "toml", "json", "jsonl", "yaml", "yml", "sh", "py", "js", "ts", "tsx", "jsx",
+    "lock", "txt", "log", "html", "css", "go", "c", "h", "cpp", "hpp", "swift", "kt", "java", "rb",
+    "sql", "csv", "pdf", "png", "jpg", "jpeg", "svg", "gif", "zip", "tar", "gz", "env", "ini",
+    "cfg", "conf", "xml", "mjs", "cjs", "pyi", "ipynb", "wasm", "so", "dylib", "dll", "exe", "bin",
+    "onnx", "pt",
+];
+
+fn public_url(lower: &str) -> bool {
+    let rest = lower.split_once("://").map_or(lower, |(_, r)| r);
+    let host = rest
+        .split(['/', '?', '#'])
+        .next()
+        .unwrap_or_default()
+        .rsplit('@')
+        .next()
+        .unwrap_or_default();
+    let host = host.split(':').next().unwrap_or_default();
+    PUBLIC_HOSTS.contains(&host)
+}
+
+/// Code decorators, npm scopes and doc-comment tags that look like handles.
+const CODE_HANDLES: &[&str] = &[
+    "types",
+    "param",
+    "returns",
+    "return",
+    "dataclass",
+    "property",
+    "staticmethod",
+    "classmethod",
+    "schema",
+    "file",
+    "path",
+    "mention",
+    "radix",
+    "just",
+    "angular",
+    "babel",
+    "vue",
+    "tanstack",
+    "testing",
+    "override",
+    "deprecated",
+    "example",
+    "see",
+    "throws",
+    "author",
+    "since",
+    "type",
+    "typedef",
+    "import",
+    "media",
+    "keyframes",
+    "apply",
+    "tailwind",
+    "layer",
+    "ts",
+    "app",
+    "vercel",
+];
+
+/// Built-in allowlist: models, products, tools and type names that detectors
+/// often label as people, organizations or accounts. Matched case-insensitively
+/// against whole values (and, for names, against every word of the value).
+const BUILTIN_ALLOW: &[&str] = &[
+    "claude",
+    "code",
+    "claude code",
+    "sonnet",
+    "opus",
+    "haiku",
+    "gemini",
+    "gpt",
+    "chatgpt",
+    "codex",
+    "copilot",
+    "cursor",
+    "llama",
+    "mistral",
+    "qwen",
+    "kimi",
+    "grok",
+    "deepseek",
+    "ollama",
+    "openai",
+    "anthropic",
+    "huggingface",
+    "hugging face",
+    "string",
+    "main",
+    "json",
+    "yaml",
+    "toml",
+    "true",
+    "false",
+    "null",
+    "none",
+    "self",
+    "master",
+    "test",
+    "rust",
+    "python",
+    "node",
+    "nodejs",
+    "deno",
+    "bun",
+    "docker",
+    "podman",
+    "kubernetes",
+    "k8s",
+    "linux",
+    "macos",
+    "ios",
+    "android",
+    "windows",
+    "ubuntu",
+    "debian",
+    "arch",
+    "archlinux",
+    "homebrew",
+    "apple",
+    "apple silicon",
+    "silicon",
+    "nvidia",
+    "amd",
+    "intel",
+    "cuda",
+    "metal",
+    "coreml",
+    "onnx",
+    "pytorch",
+    "torch",
+    "tensorflow",
+    "pi",
+    "github",
+    "gitlab",
+    "bitbucket",
+    "git",
+    "npm",
+    "pnpm",
+    "yarn",
+    "cargo",
+    "uv",
+    "pip",
+    "react",
+    "vue",
+    "svelte",
+    "tailwind",
+    "typescript",
+    "javascript",
+    "golang",
+    "go",
+    "swift",
+    "kotlin",
+    "java",
+    "postgres",
+    "postgresql",
+    "sqlite",
+    "redis",
+    "nginx",
+    "caddy",
+    "chrome",
+    "chromium",
+    "safari",
+    "firefox",
+    "vscode",
+    "neovim",
+    "vim",
+    "emacs",
+    "zed",
+    "tmux",
+    "ghostty",
+    "iterm",
+    "warp",
+    "slack",
+    "discord",
+    "telegram",
+    "notion",
+    "obsidian",
+    "google",
+    "microsoft",
+    "amazon",
+    "aws",
+    "azure",
+    "gcp",
+    "cloudflare",
+    "vercel",
+    "netlify",
+    "tailscale",
+    "comfyui",
+    "playwright",
+    "jupyter",
+];
+
+fn allowlist(files: &[PathBuf]) -> Result<HashSet<String>> {
+    let mut allow: HashSet<String> = BUILTIN_ALLOW.iter().map(|s| (*s).to_string()).collect();
+    let default = crate::config::global_config_path()
+        .and_then(|p| p.parent().map(|d| d.join("trace-allow.txt")))
+        .filter(|p| p.is_file());
+    let paths: Vec<PathBuf> = if files.is_empty() {
+        default.into_iter().collect()
+    } else {
+        files.to_vec()
+    };
+    for path in paths {
+        let text = fs::read_to_string(&path).context("failed to read allow terms file")?;
+        allow.extend(
+            text.lines()
+                .map(str::trim)
+                .filter(|l| !l.is_empty() && !l.starts_with('#'))
+                .map(str::to_lowercase),
+        );
+    }
+    Ok(allow)
 }
 
 fn luhn(text: &str) -> bool {
@@ -755,6 +1140,7 @@ fn process(
     regex: &Detector,
     ner: Option<&Detector>,
     identity: &Identity,
+    allow: &HashSet<String>,
 ) -> Result<SessionStats> {
     let failure = |what: &str| anyhow!("{what} for session #{}", short_id(rel));
     let raw = fs::read(path).map_err(|_| failure("read failed"))?;
@@ -880,8 +1266,10 @@ fn process(
         }
     }
 
-    for matches in found.values_mut() {
-        matches.retain(plausible);
+    for (leaf, matches) in &mut found {
+        let prose = prose_texts.contains(leaf);
+        matches.iter_mut().for_each(trim_edges);
+        matches.retain(|m| m.start < m.end && plausible(m, leaf, prose, allow));
     }
 
     // Session-wide propagation set: identity literals plus every identity-like finding.
@@ -1072,4 +1460,85 @@ fn publish(target: &Path, bytes: &[u8]) -> Result<()> {
     tmp.as_file().sync_all()?;
     tmp.persist(target).map_err(|e| e.error)?;
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{plausible, trim_edges};
+    use crate::engine::{
+        PiiMatch,
+        patterns::{Confidence, PiiCategory},
+    };
+
+    fn found(text: &str, start: usize, class: &str, category: PiiCategory) -> PiiMatch {
+        PiiMatch {
+            pattern_name: class.into(),
+            matched_text: text.into(),
+            start,
+            end: start + text.len(),
+            confidence: Confidence::High,
+            category,
+        }
+    }
+
+    #[test]
+    fn edge_delimiters_are_trimmed_except_for_credentials() {
+        let mut user = found("wismut ;", 10, "username", PiiCategory::Social);
+        trim_edges(&mut user);
+        assert_eq!(
+            (user.matched_text.as_str(), user.start, user.end),
+            ("wismut", 10, 16)
+        );
+        let mut secret = found("hunter2;", 3, "password", PiiCategory::Authentication);
+        trim_edges(&mut secret);
+        assert_eq!(
+            (secret.matched_text.as_str(), secret.start, secret.end),
+            ("hunter2;", 3, 11)
+        );
+    }
+
+    #[test]
+    fn allowlist_and_system_accounts_are_not_replaced() {
+        let allow = super::allowlist(&[]).unwrap();
+        let ok = |value: &str, class: &str, category, allow: &std::collections::HashSet<String>| {
+            plausible(&found(value, 0, class, category), value, true, allow)
+        };
+        for account in ["root", "Root", "www-data", "nobody"] {
+            assert!(!ok(account, "username", PiiCategory::Social, &allow));
+        }
+        assert!(ok("wismut", "username", PiiCategory::Social, &allow));
+        // Built-in whole-value and per-word name allowlisting.
+        for (value, class) in [
+            ("Docker", "organization"),
+            ("Claude Code", "person"),
+            ("docker", "username"),
+        ] {
+            assert!(!ok(value, class, PiiCategory::Identity, &allow));
+        }
+        for (value, expected) in [
+            ("README.md", false),
+            ("rw-r--r", false),
+            ("gingface", false),
+            ("hs.byteowlz.com", true),
+            ("https://hs.byteowlz.com/x", true),
+            ("https://github.com/rust-lang/", false),
+        ] {
+            assert_eq!(
+                ok(value, "url", PiiCategory::Network, &allow),
+                expected,
+                "{value}"
+            );
+        }
+        // User allowlists never veto credentials.
+        let mut custom = allow.clone();
+        custom.insert("hunter22".into());
+        custom.insert("byteowlz".into());
+        assert!(ok(
+            "hunter22",
+            "password",
+            PiiCategory::Authentication,
+            &custom
+        ));
+        assert!(!ok("byteowlz", "username", PiiCategory::Social, &custom));
+    }
 }

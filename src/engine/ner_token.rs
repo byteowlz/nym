@@ -576,8 +576,11 @@ impl TokenClassDetector {
             let (start, end) = if category == PiiCategory::Authentication {
                 expand_secret_token(text, start, end)
             } else {
-                (start, end)
+                trim_edge_punctuation(text, start, end)
             };
+            if start >= end {
+                continue;
+            }
             let matched_text = &text[start..end];
             let avg_prob = if span.token_count > 0 {
                 span.prob_sum / span.token_count as f32
@@ -887,6 +890,43 @@ fn trim_span(text: &str, mut start: usize, mut end: usize) -> (usize, usize) {
     (start, end)
 }
 
+/// Drop delimiters that sub-word decoding attaches to non-credential entities
+/// (`USER=wismut ;` must yield `wismut`, not `wismut ;`). Inconsistent edges
+/// would otherwise give one value several pseudonyms.
+fn trim_edge_punctuation(text: &str, mut start: usize, mut end: usize) -> (usize, usize) {
+    let edge = |c: char| {
+        c.is_whitespace()
+            || matches!(
+                c,
+                ';' | ','
+                    | ':'
+                    | '!'
+                    | '?'
+                    | '.'
+                    | '"'
+                    | '\''
+                    | '`'
+                    | '|'
+                    | '('
+                    | ')'
+                    | '['
+                    | ']'
+                    | '{'
+                    | '}'
+                    | '<'
+                    | '>'
+                    | '='
+            )
+    };
+    while let Some(c) = text[start..end].chars().next().filter(|c| edge(*c)) {
+        start += c.len_utf8();
+    }
+    while let Some(c) = text[start..end].chars().next_back().filter(|c| edge(*c)) {
+        end -= c.len_utf8();
+    }
+    (start, end)
+}
+
 /// Grow a credential span to the whole surrounding secret token.
 ///
 /// A partially redacted password or key still leaks, and sub-word decoding can
@@ -1171,6 +1211,20 @@ mod tests {
         assert_eq!(expand("pw=Zoë-geheim; next", "geheim"), "Zoë-geheim");
         assert_eq!(expand("pass Secret ok", "Secret"), "Secret");
         assert_eq!(expand("{'token': 'abcDEF123'}", "DEF"), "abcDEF123");
+    }
+
+    #[test]
+    fn test_trim_edge_punctuation() {
+        for (text, expected) in [
+            ("wismut ;", "wismut"),
+            ("(Jolanta Wierzbicki),", "Jolanta Wierzbicki"),
+            ("\"Jörg\".", "Jörg"),
+            ("ada@example.org.", "ada@example.org"),
+            (" ; ", ""),
+        ] {
+            let (start, end) = trim_edge_punctuation(text, 0, text.len());
+            assert_eq!(&text[start..end], expected);
+        }
     }
 
     #[test]

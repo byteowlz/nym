@@ -96,7 +96,7 @@ PAGE = '''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <style>
 *{box-sizing:border-box}body{margin:0;font:14px/1.45 -apple-system,system-ui,sans-serif;background:#111;color:#e6e6e6}
 header{position:sticky;top:0;background:#181818;border-bottom:1px solid #333;padding:8px 12px;display:flex;gap:8px;flex-wrap:wrap;align-items:center;z-index:2}
-header h1{font-size:15px;margin:0 8px 0 0}select,input{font:inherit;background:#222;color:inherit;border:1px solid #555;border-radius:6px;padding:6px 8px;min-height:36px}
+header h1{font-size:15px;margin:0 8px 0 0}button{font:inherit;background:#2b3a2f;color:inherit;border:1px solid #5a7a62;border-radius:6px;padding:6px 10px;min-height:36px;cursor:pointer}button:disabled{opacity:.5;cursor:default}select,input{font:inherit;background:#222;color:inherit;border:1px solid #555;border-radius:6px;padding:6px 8px;min-height:36px}
 #summary{color:#aaa;font-size:13px}main{padding:10px 12px 60px;max-width:1500px;margin:auto}
 .change{border:1px solid #333;border-radius:8px;margin:10px 0;overflow:hidden}.meta{background:#1d1d1d;padding:5px 10px;color:#aaa;font-size:12px;overflow-wrap:anywhere}
 .grid{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr)}.change{min-width:0}.grid>div{padding:4px 10px;white-space:pre-wrap;overflow-wrap:anywhere;font:12.5px/1.45 ui-monospace,Menlo,monospace;border-top:1px solid #262626}
@@ -109,8 +109,8 @@ mark{border-radius:3px;padding:0 1px;cursor:pointer}mark.o{background:#5a2a2a;co
 </style></head><body>
 <header><h1>NYM trace review</h1><select id="session" aria-label="Session"></select>
 <select id="cls" aria-label="Class"><option value="">All classes</option></select>
-<input id="q" placeholder="Filter text" aria-label="Filter"><span id="summary"></span></header>
-<main><div class="classes" id="classes"></div><div id="list"></div></main><div id="tip" role="status"></div>
+<input id="q" placeholder="Filter text" aria-label="Filter"><button id="allowdl" type="button" disabled>Allowlist (0) ⤓</button><span id="summary"></span></header>
+<main><div class="classes" id="classes"></div><div id="list"></div></main><div id="tip" role="status"><span id="tiptext"></span> <button id="allow" type="button">Never replace</button></div>
 <script type="application/json" id="data">__DATA__</script>
 <script>
 const sessions=JSON.parse(document.getElementById('data').textContent);const $=id=>document.getElementById(id);
@@ -136,8 +136,13 @@ function render(){const s=sessions[+$('session').value||0];const wanted=$('cls')
   box.append(grid);list.append(box)}
  $('summary').textContent=`${shown}/${s.changes.length} changed fields · ${s.keys.length} mappings · ${s.images_removed} images removed`;
  list.onclick=e=>{const m=e.target.closest('mark');if(!m){$('tip').style.display='none';return}const k=(m.dataset.side==='o'?byOrig:byRep).get(m.dataset.k);if(!k)return;
-  $('tip').textContent=`${k[2]}:  ${k[0]}  →  ${k[1]}`;$('tip').style.display='block'}}
-$('session').onchange=render;$('cls').onchange=render;$('q').oninput=render;$('tip').onclick=()=>$('tip').style.display='none';render();
+  $('tiptext').textContent=`${k[2]}:  ${k[0]}  →  ${k[1]}`;$('allow').dataset.term=k[0];$('allow').textContent=allowed.has(k[0])?'In allowlist':'Never replace';$('tip').style.display='block'}}
+let saved=[];try{saved=JSON.parse(sessionStorage.getItem('nym-trace-allow')||'[]')}catch{}const allowed=new Set(saved);
+function syncAllow(){$('allowdl').textContent=`Allowlist (${allowed.size}) ⤓`;$('allowdl').disabled=!allowed.size;try{sessionStorage.setItem('nym-trace-allow',JSON.stringify([...allowed]))}catch{}}
+$('allow').onclick=e=>{e.stopPropagation();allowed.add($('allow').dataset.term);$('allow').textContent='In allowlist';syncAllow()};
+$('allowdl').onclick=()=>{const url=URL.createObjectURL(new Blob([[...allowed].sort().join('\\n')+'\\n'],{type:'text/plain'}));const a=document.createElement('a');a.href=url;a.download='trace-allow.txt';a.click();setTimeout(()=>URL.revokeObjectURL(url),1000)};
+syncAllow();
+$('session').onchange=render;$('cls').onchange=render;$('q').oninput=render;$('tiptext').onclick=()=>$('tip').style.display='none';render();
 </script></body></html>'''
 
 
