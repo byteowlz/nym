@@ -188,6 +188,11 @@
           "description": "Token backend only (tokens, or token portion of both): auto uses compiled accelerators with CPU fallback; cpu bypasses accelerators. Does not control GLiNER.",
           "default": "auto"
         },
+        "threads": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Token intra-op threads (tokens/both); omit for automatic selection capped at 8, using macOS performance cores or available CPUs elsewhere. Explicit positive values may exceed the cap. NYM_NER_THREADS overrides layered config; an explicit --config file wins. GLiNER is unaffected."
+        },
         "model": {
           "type": "string",
           "minLength": 1,

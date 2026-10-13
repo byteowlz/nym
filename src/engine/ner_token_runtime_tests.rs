@@ -35,7 +35,7 @@ fn provider_config_is_explicit_and_validated() -> Result<(), Box<dyn std::error:
 fn cached_batch_preserves_original_byte_offsets()
 -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let model = std::env::var("NYM_TEST_CACHED_NER_MODEL")?;
-    let detector = TokenClassDetector::from_dir(model, Some(0.5), NerProvider::Cpu)?;
+    let detector = TokenClassDetector::from_dir(model, Some(0.5), NerProvider::Cpu, None)?;
     let long =
         "Patient John Doe lives at 12 Baker Street; his password is hunter2-Secret! ".repeat(90);
     let texts = [
@@ -70,7 +70,7 @@ fn cached_batch_preserves_original_byte_offsets()
 #[ignore = "requires NYM_TEST_CACHED_NER_MODEL; CPU only, never downloads"]
 fn cached_runtime_owns_tokenizer_padding() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let model = std::env::var("NYM_TEST_CACHED_NER_MODEL")?;
-    let detector = TokenClassDetector::from_dir(model, Some(0.5), NerProvider::Cpu)?;
+    let detector = TokenClassDetector::from_dir(model, Some(0.5), NerProvider::Cpu, None)?;
     let text = " \t\u{2003}Patient John Doe was born on 1987-04-19.\r\n";
     let matches = detector.detect(text)?;
     assert!(!matches.is_empty(), "the cached NER must actually run");
@@ -87,6 +87,38 @@ fn cached_runtime_owns_tokenizer_padding() -> Result<(), Box<dyn std::error::Err
             long_text.get(found.start..found.end),
             Some(found.matched_text.as_str())
         );
+    }
+    Ok(())
+}
+
+#[test]
+#[ignore = "requires NYM_TEST_CACHED_NER_MODEL; CPU only, never downloads"]
+fn cached_thread_counts_preserve_findings() -> Result<(), Box<dyn std::error::Error + Send + Sync>>
+{
+    let model = std::env::var("NYM_TEST_CACHED_NER_MODEL")?;
+    let long =
+        "Patient Alice Smith lives in Berlin. API key: sk-synthetic-Example12345. ".repeat(90);
+    let texts = [
+        "Contact Alice Smith at alice.smith@example.org.",
+        "\u{2003}Jörg Beispiel, born on 1987-04-19.\r\n",
+        "const buffer_size = 4096; // synthetic code",
+        long.as_str(),
+    ];
+    let mut baseline = None;
+    for threads in [1, 8, 24] {
+        let detector = TokenClassDetector::from_dir(
+            &model,
+            Some(0.5),
+            NerProvider::Cpu,
+            std::num::NonZeroUsize::new(threads),
+        )?;
+        let matches = detector.detect_batch(&texts)?;
+        assert!(!matches[0].is_empty(), "must exercise real inference");
+        if let Some(expected) = &baseline {
+            assert_eq!(&matches, expected);
+        } else {
+            baseline = Some(matches);
+        }
     }
     Ok(())
 }
@@ -128,7 +160,7 @@ fn invalid_model_returns_error() -> Result<(), Box<dyn std::error::Error + Send 
         "cpu" => NerProvider::Cpu,
         _ => NerProvider::Auto,
     };
-    match TokenClassDetector::from_dir(dir.path(), None, provider) {
+    match TokenClassDetector::from_dir(dir.path(), None, provider, None) {
         Ok(_) => return Err("invalid model unexpectedly loaded".into()),
         Err(error) => {
             let message = error.to_string();

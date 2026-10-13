@@ -95,6 +95,11 @@ backend = "tokens"
 # "auto" uses compiled accelerators with CPU fallback; "cpu" bypasses accelerators.
 provider = "auto"
 
+# Token intra-op threads (positive integer); omit for auto, capped at 8.
+# Auto uses macOS performance cores, available CPUs elsewhere.
+# NYM_NER_THREADS overrides layered config; an explicit --config file wins.
+# threads = 8
+
 # Token-classification model for the "tokens"/"both" backends. A HuggingFace repo
 # id (auto-downloaded + cached with a progress bar) or a local dir with
 # model.onnx/tokenizer.json/config.json.

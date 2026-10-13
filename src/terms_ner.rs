@@ -180,10 +180,13 @@ mod local {
             if progress {
                 eprintln!("NER priority: loading local CPU model (threshold 0.5)");
             }
-            let detector = TokenClassDetector::from_dir(&dir, Some(0.5), NerProvider::Cpu)
-                .map_err(|_| {
-                    anyhow::anyhow!("local NER ranking model could not load; discovery incomplete")
-                })?;
+            let detector =
+                TokenClassDetector::from_dir(&dir, Some(0.5), NerProvider::Cpu, config.threads)
+                    .map_err(|_| {
+                        anyhow::anyhow!(
+                            "local NER ranking model could not load; discovery incomplete"
+                        )
+                    })?;
             if hashes(&assets)? != before {
                 bail!("NER ranking model changed during loading; discovery incomplete");
             }

@@ -139,6 +139,7 @@ impl TokenClassDetector {
         model_dir: impl AsRef<Path>,
         threshold: Option<f32>,
         provider: NerProvider,
+        threads: Option<std::num::NonZeroUsize>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let dir = model_dir.as_ref();
         let model_path = MODEL_CANDIDATES
@@ -157,6 +158,7 @@ impl TokenClassDetector {
             &dir.join("config.json"),
             threshold,
             provider,
+            threads,
         )
     }
 
@@ -176,6 +178,7 @@ impl TokenClassDetector {
         cache_dir: Option<&Path>,
         threshold: Option<f32>,
         provider: NerProvider,
+        threads: Option<std::num::NonZeroUsize>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         use hf_hub::api::sync::ApiBuilder;
 
@@ -208,6 +211,7 @@ impl TokenClassDetector {
             &config_path,
             threshold,
             provider,
+            threads,
         )
     }
 
@@ -255,6 +259,7 @@ impl TokenClassDetector {
         config_path: &Path,
         threshold: Option<f32>,
         provider: NerProvider,
+        threads: Option<std::num::NonZeroUsize>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let id2label = load_id2label(config_path)?;
         let mut tokenizer = Tokenizer::from_file(tokenizer_path)?;
@@ -267,7 +272,10 @@ impl TokenClassDetector {
         tokenizer.with_truncation(None)?;
         tokenizer.with_padding(None);
         let cpu_only = provider == NerProvider::Cpu;
-        let session = match Self::try_create_session(model_path, cpu_only) {
+        let threads =
+            threads.map_or_else(crate::config::default_ner_threads, std::num::NonZero::get);
+        log::debug!("Token NER intra-op threads: {threads}");
+        let session = match Self::try_create_session(model_path, cpu_only, threads) {
             Ok(session) => session,
             Err(error)
                 if !cpu_only
@@ -278,7 +286,7 @@ impl TokenClassDetector {
                     )) =>
             {
                 log::warn!("Token NER accelerator initialization failed; retrying with CPU");
-                Self::try_create_session(model_path, true).map_err(|cpu_error| {
+                Self::try_create_session(model_path, true, threads).map_err(|cpu_error| {
                     format!(
                         "token NER accelerator failed: {error}; CPU fallback failed: {cpu_error}"
                     )
@@ -310,23 +318,19 @@ impl TokenClassDetector {
     fn try_create_session(
         model_path: &Path,
         cpu_only: bool,
+        threads: usize,
     ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Self::create_session(model_path, cpu_only)
+            Self::create_session(model_path, cpu_only, threads)
         }))
         .map_err(|_| "NER runtime initialization failed")?;
         Ok(result?)
     }
 
-    fn create_session(model_path: &Path, cpu_only: bool) -> ort::Result<Session> {
+    fn create_session(model_path: &Path, cpu_only: bool, threads: usize) -> ort::Result<Session> {
         let _environment = ort::environment::get_environment()?;
-        // ONNX Runtime defaults to a single intra-op thread on macOS/CPU, which
-        // makes each session.run() ~2s even on a short chunk (per-call overhead,
-        // not content cost). Set intra-op threads to the available parallelism
-        // so a batch-of-1 forward pass uses the cores. Graph optimization is
-        // already Level3 by default. This is the high-leverage fix for the
-        // per-inference-call cost.
-        let threads = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+        // A bounded intra-op pool avoids contention; explicit tuning can exceed
+        // the automatic cap. Accelerator CPU fallback uses the same budget.
         let mut builder = Session::builder()?.with_intra_threads(threads)?;
         // On Apple Silicon, register the CoreML execution provider so the
         // token-classification model runs on the ANE/GPU instead of CPU. CoreML

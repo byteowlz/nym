@@ -176,6 +176,8 @@ pub struct DetectorConfig {
     pub ner_backend: NerBackend,
     /// Execution provider for token-classification NER.
     pub ner_provider: NerProvider,
+    /// Token intra-op thread override; None uses the bounded automatic budget.
+    pub ner_threads: Option<std::num::NonZeroUsize>,
     /// Path to the token-classification model: a local dir (model.onnx + tokenizer.json
     /// + config.json) or a HuggingFace repo id. Used for the TokenClass/Both backends.
     pub ner_token_model: Option<std::path::PathBuf>,
@@ -197,6 +199,7 @@ impl Default for DetectorConfig {
             ner_cache_dir: None,
             ner_backend: NerBackend::default(),
             ner_provider: NerProvider::default(),
+            ner_threads: None,
             ner_token_model: None,
             trace_policy: None,
         }
@@ -509,13 +512,19 @@ impl Detector {
         // When unset, fall back to the default published model repo.
         let result = match config.ner_token_model {
             Some(ref model) if model.is_absolute() || model.exists() => {
-                TokenClassDetector::from_dir(model, config.ner_threshold, config.ner_provider)
+                TokenClassDetector::from_dir(
+                    model,
+                    config.ner_threshold,
+                    config.ner_provider,
+                    config.ner_threads,
+                )
             }
             Some(ref model) => TokenClassDetector::from_repo(
                 &model.to_string_lossy(),
                 config.ner_cache_dir.as_deref(),
                 config.ner_threshold,
                 config.ner_provider,
+                config.ner_threads,
             ),
             None => {
                 info!(
@@ -527,6 +536,7 @@ impl Detector {
                     config.ner_cache_dir.as_deref(),
                     config.ner_threshold,
                     config.ner_provider,
+                    config.ner_threads,
                 )
             }
         };

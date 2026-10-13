@@ -34,6 +34,67 @@ fn run(config: &str, args: &[&str], input: Option<&str>) -> Output {
     child.wait_with_output().unwrap()
 }
 
+fn expected_threads() -> Value {
+    status("[ner]\nbackend = 'tokens'\n", None)["models"][0]["threads"].clone()
+}
+
+#[test]
+fn thread_environment_precedence_and_invalid_values_are_fail_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let global = dir.path().join("config/nym");
+    fs::create_dir_all(&global).unwrap();
+    fs::write(global.join("config.toml"), "[ner]\nthreads = 2\n").unwrap();
+    fs::write(dir.path().join("config.toml"), "[ner]\nthreads = 3\n").unwrap();
+    for (explicit, env, expected) in [
+        (false, None, 3),
+        (false, Some("6"), 6),
+        (true, Some("6"), 2),
+    ] {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_nym"));
+        cmd.current_dir(dir.path())
+            .env("XDG_CONFIG_HOME", dir.path().join("config"))
+            .env_remove("NYM_NER_THREADS");
+        if let Some(value) = env {
+            cmd.env("NYM_NER_THREADS", value);
+        }
+        if explicit {
+            cmd.arg("--config").arg(global.join("config.toml"));
+        }
+        let out = cmd.args(["config", "ner-status"]).output().unwrap();
+        assert!(
+            out.status.success(),
+            "{}",
+            String::from_utf8_lossy(&out.stderr)
+        );
+        let status: Value = serde_json::from_slice(&out.stdout).unwrap();
+        let mut expected_status = status.clone();
+        expected_status["models"][0]["threads"] = json!(expected);
+        assert_eq!(status, expected_status);
+    }
+    for invalid in ["0", "-1", "private-invalid-value"] {
+        let out = Command::new(env!("CARGO_BIN_EXE_nym"))
+            .current_dir(dir.path())
+            .env("XDG_CONFIG_HOME", dir.path().join("config"))
+            .env("NYM_NER_THREADS", invalid)
+            .args(["config", "ner-status"])
+            .output()
+            .unwrap();
+        assert_eq!(out.status.code(), Some(1));
+        assert!(out.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&out.stderr).contains(invalid));
+    }
+    for invalid in ["0", "-1", "1.5", "'private-invalid-value'"] {
+        let out = run(
+            &format!("[ner]\nthreads = {invalid}\n"),
+            &["config", "ner-status"],
+            None,
+        );
+        assert_eq!(out.status.code(), Some(1));
+        assert!(out.stdout.is_empty());
+        assert!(!String::from_utf8_lossy(&out.stderr).contains(invalid));
+    }
+}
+
 fn status(config: &str, model: Option<&str>) -> Value {
     let mut args = vec!["config", "ner-status"];
     if let Some(model) = model {
@@ -125,10 +186,10 @@ fn status_is_safe_and_reports_both_models_decoding_and_label_scope() {
             "configured_enabled": true, "backend": "both", "threshold": 0.5, "regex_scope": "independent",
             "models": [
                 {"backend":"tokens", "identifier":"Wismut/nym-pii-multilingual-small/int8", "revision":null,
-                 "label_scope":"all-model-classes", "labels":null, "decoding":"recall-first", "provider":"cpu"},
+                 "label_scope":"all-model-classes", "labels":null, "decoding":"recall-first", "provider":"cpu", "threads":expected_threads()},
                 {"backend":"gliner", "identifier":"onnx-community/gliner_multi-v2.1", "revision":null,
                  "label_scope":"gliner-only", "labels":["person","organization","street_address","city","country"],
-                 "decoding":"span", "provider":null}
+                 "decoding":"span", "provider":null, "threads":null}
             ]
         })
     );

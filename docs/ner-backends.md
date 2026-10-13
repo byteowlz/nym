@@ -124,7 +124,7 @@ nym --config nym.toml config ner-status --ner-model nationaldesignstudio/rampart
 ```
 
 Status reports backend(s), safe model identifiers, threshold, label scope,
-decoding and token provider. `configured_enabled` is configuration, **not runtime
+decoding, token provider and effective token intra-op threads. `configured_enabled` is configuration, **not runtime
 readiness**; status does not load/download models. Revisions are `null` because
 no resolved/pinned revision is available. Only identifiers in the built-in public
 catalog are shown; other repositories and local paths become `[custom]`. Cache
@@ -342,6 +342,28 @@ alone. The benchmark results here do not establish precision on technical code
 or agent traces.
 
 ## Performance (latency / CPU / memory)
+
+Token NER uses an automatic intra-op thread budget capped at **8**. On macOS it
+prefers performance cores, falling back to available CPUs; Linux/Windows use
+available CPUs. Set a positive `ner.threads` to override, including above the cap:
+
+```toml
+[ner]
+threads = 8
+```
+
+`NYM_NER_THREADS=6 nym ...` overrides local/global layered config. An explicit
+`--config` file takes precedence; put `threads` in that file instead. Zero,
+negative and non-integer values fail. GLiNER is unaffected; vocabulary ranking
+and token accelerator CPU fallback use this same budget. Inspect it with
+`nym config ner-status`.
+
+A local 514 KB trace comparison (cache disabled, CPU INT8, M2 Ultra) took
+10.3–10.7 s at 8 threads versus 11.7–13.3 s at 24, with byte-identical plans.
+Earlier measurements under heavy contention showed 17 s versus 22–36 s.
+These are whole-command timings, not isolated kernel latencies; load varies,
+and neither a universal speedup nor population-wide recall parity is implied.
+No weights, thresholds or scanned-text scope were changed.
 
 Measured with `scripts/perf_bench.py` on an 8-core CPU-only Linux box, release
 build, median of 3 runs. "Load" is the fixed per-invocation cost (model load +

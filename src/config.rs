@@ -333,6 +333,10 @@ pub struct NerConfig {
     /// For `both`, this controls only the token-classification session.
     /// Environment override: NYM_NER_PROVIDER when loading layered config.
     pub provider: NerProvider,
+    /// Token backend intra-op threads. Omit for automatic selection capped at 8.
+    /// Positive values override the cap; NYM_NER_THREADS overrides layered config.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub threads: Option<std::num::NonZeroUsize>,
     /// Token-classification model for the `tokens`/`both` backends: a local dir
     /// (`model.onnx` + `tokenizer.json` + `config.json`) or a HuggingFace repo id
     /// (e.g. `Wismut/openmed-onnx/small`, `nationaldesignstudio/rampart`).
@@ -353,6 +357,7 @@ impl Default for NerConfig {
             recall_first: false,
             backend: NerBackend::default(),
             provider: NerProvider::default(),
+            threads: None,
             token_model: None,
         }
     }
@@ -380,6 +385,8 @@ pub struct NerModelStatus {
     pub labels: Option<Vec<String>>,
     pub decoding: &'static str,
     pub provider: Option<NerProvider>,
+    /// Effective token intra-op threads; GLiNER is not controlled by this setting.
+    pub threads: Option<usize>,
 }
 
 fn safe_model_identifier(model: &str) -> String {
@@ -442,7 +449,36 @@ pub fn normalize_gliner_labels(labels: &[String]) -> Result<Vec<String>> {
     Ok(normalized)
 }
 
+/// Automatic token NER intra-op threads: avoid oversubscribing busy machines.
+/// On macOS prefer performance cores; fall back to available CPUs if unavailable.
+pub fn default_ner_threads() -> usize {
+    let available = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+    #[cfg(target_os = "macos")]
+    let performance = std::process::Command::new("/usr/sbin/sysctl")
+        .args(["-n", "hw.perflevel0.physicalcpu"])
+        .output()
+        .ok()
+        .filter(|output| output.status.success())
+        .and_then(|output| String::from_utf8(output.stdout).ok())
+        .and_then(|count| count.trim().parse::<usize>().ok());
+    #[cfg(not(target_os = "macos"))]
+    let performance = None;
+    auto_ner_threads(available, performance)
+}
+
+fn auto_ner_threads(available: usize, performance: Option<usize>) -> usize {
+    performance
+        .filter(|&count| count > 0)
+        .unwrap_or(available)
+        .clamp(1, 8)
+}
+
 impl NerConfig {
+    pub fn inference_threads(&self) -> usize {
+        self.threads
+            .map_or_else(default_ner_threads, std::num::NonZero::get)
+    }
+
     /// Resolve a CLI model override against the selected backend, before scanning.
     /// `both` requires the backend-specific config fields rather than an ambiguous
     /// generic override. This does not load or download models.
@@ -520,6 +556,7 @@ impl NerConfig {
                     "argmax"
                 },
                 provider: Some(effective.provider),
+                threads: Some(effective.inference_threads()),
             });
         }
         if matches!(effective.backend, NerBackend::Gliner | NerBackend::Both) {
@@ -531,6 +568,7 @@ impl NerConfig {
                 labels: Some(effective.effective_gliner_labels()),
                 decoding: "span",
                 provider: None,
+                threads: None,
             });
         }
         Ok(NerStatus {
@@ -1135,6 +1173,35 @@ mod tests {
     }
 
     #[test]
+    fn ner_thread_budget_is_positive_bounded_and_overridable() {
+        for (available, performance, expected) in [
+            (1, None, 1),
+            (4, None, 4),
+            (24, None, 8),
+            (24, Some(4), 4),
+            (24, Some(16), 8),
+            (2, Some(0), 2),
+        ] {
+            assert_eq!(auto_ner_threads(available, performance), expected);
+        }
+        let default: NerConfig = toml::from_str("").unwrap();
+        assert!(default.threads.is_none());
+        assert!((1..=8).contains(&default.inference_threads()));
+        assert!(!toml::to_string(&default).unwrap().contains("threads"));
+        for count in [1, 6, 8, 24] {
+            let config: NerConfig = toml::from_str(&format!("threads = {count}")).unwrap();
+            assert_eq!(config.inference_threads(), count);
+            assert_eq!(
+                config.resolved(None).unwrap().threads,
+                std::num::NonZeroUsize::new(count)
+            );
+        }
+        for invalid in ["0", "-1", "1.5", "'invalid'"] {
+            assert!(toml::from_str::<NerConfig>(&format!("threads = {invalid}")).is_err());
+        }
+    }
+
+    #[test]
     fn ner_status_reports_effective_settings_without_private_identifiers() {
         let status = NerConfig {
             enabled: true,
@@ -1152,10 +1219,10 @@ mod tests {
                 "regex_scope": "independent",
                 "models": [
                     {"backend": "tokens", "identifier": "Wismut/nym-pii-multilingual-small/int8", "revision": null,
-                     "label_scope": "all-model-classes", "labels": null, "decoding": "argmax", "provider": "auto"},
+                     "label_scope": "all-model-classes", "labels": null, "decoding": "argmax", "provider": "auto", "threads": default_ner_threads()},
                     {"backend": "gliner", "identifier": "onnx-community/gliner_multi-v2.1", "revision": null,
                      "label_scope": "gliner-only", "labels": ["person", "organization", "street_address", "city", "country"],
-                     "decoding": "span", "provider": null}
+                     "decoding": "span", "provider": null, "threads": null}
                 ]
             })
         );
@@ -1193,7 +1260,7 @@ mod tests {
                 "threshold": 0.5,
                 "regex_scope": "independent",
                 "models": [{"backend": "tokens", "identifier": "nationaldesignstudio/rampart", "revision": null,
-                    "label_scope": "all-model-classes", "labels": null, "decoding": "recall-first", "provider": "cpu"}]
+                    "label_scope": "all-model-classes", "labels": null, "decoding": "recall-first", "provider": "cpu", "threads": default_ner_threads()}]
             })
         );
     }
@@ -1208,6 +1275,8 @@ mod tests {
         let ner = &schema["properties"]["ner"];
         assert_eq!(ner["properties"]["backend"]["default"], "tokens");
         assert_eq!(ner["properties"]["recall_first"]["default"], false);
+        assert_eq!(ner["properties"]["threads"]["minimum"], 1);
+        assert!(ner["properties"]["threads"].get("default").is_none());
         assert_eq!(ner["properties"]["token_model"]["type"], "string");
         assert_eq!(ner["properties"]["labels"]["minItems"], 1);
         assert_eq!(ner["then"]["properties"]["backend"]["const"], "gliner");

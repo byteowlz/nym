@@ -104,6 +104,7 @@ fn configure_ner(
 /// Apply the configured NER backend selection (`gliner`/`tokens`/`both`) and
 /// the token-classification model/provider onto a detector config.
 fn apply_ner_backend(mut dc: DetectorConfig, ner: &config::NerConfig) -> DetectorConfig {
+    dc.ner_threads = ner.threads;
     dc = dc
         .with_ner_backend(ner.backend)
         .with_ner_provider(ner.provider);
@@ -135,6 +136,7 @@ mod provider_wiring_tests {
         for provider in [config::NerProvider::Auto, config::NerProvider::Cpu] {
             let ner = config::NerConfig {
                 provider,
+                threads: std::num::NonZeroUsize::new(3),
                 backend: engine::detector::NerBackend::Both,
                 token_model: Some("synthetic-model".into()),
                 ..Default::default()
@@ -143,11 +145,13 @@ mod provider_wiring_tests {
             assert_eq!(
                 (
                     detector.ner_provider,
+                    detector.ner_threads,
                     detector.ner_backend,
                     detector.ner_token_model
                 ),
                 (
                     provider,
+                    std::num::NonZeroUsize::new(3),
                     ner.backend,
                     Some(PathBuf::from("synthetic-model"))
                 )
