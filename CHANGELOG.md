@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+## 0.4.0 - 2026-10-13
+
 - Cap automatic token NER intra-op threads at 8 (macOS performance cores, available CPUs elsewhere) to reduce contention. Tune with positive `ner.threads` or `NYM_NER_THREADS` in layered config; an explicit `--config` file wins. Applies to token detection, CPU fallback and vocabulary ranking, not GLiNER. `config ner-status` reports the effective count.
 
 - `nym traces anon --apply-plan FILE` replaces exactly the reviewed values of a plan everywhere in each session without running detectors (0.2 s instead of a full scan on the 30-session benchmark); kept values protect approved values inside them and uncovered sessions fail. NER results are cached per text in `$XDG_CACHE_HOME/nym/ner` (keyed hashes, offsets and labels only, owner-only, `--no-cache` to disable), so re-scanning a grown session only runs NER on new text (17 s to 1 s on a 514 KB session). Bare "age" findings now need a nearby label, the class of a value found with several classes is deterministic, and escaped `\n` before a value counts as a line break.
