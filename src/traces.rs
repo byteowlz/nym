@@ -110,6 +110,12 @@ struct AnonArgs {
     /// Disable stderr progress
     #[arg(long)]
     no_progress: bool,
+    /// Emit machine-readable progress on stderr, one JSON object per line:
+    /// `{"nym_progress":{"phase":"detect|ner|replace|done","done":N,"total":M}}`
+    /// (`detect`/`ner` count text bytes, `replace` string fields). For tools
+    /// such as pi-nym; independent of --no-progress.
+    #[arg(long)]
+    progress_json: bool,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -233,6 +239,33 @@ struct Summary {
     megabytes_per_second: f64,
     #[serde(flatten)]
     totals: SessionStats,
+}
+
+/// Per-session `--progress-json` reporter, throttled to about ten lines a second.
+struct Progress {
+    enabled: bool,
+    last: Instant,
+}
+
+impl Progress {
+    fn new(enabled: bool) -> Self {
+        Self {
+            enabled,
+            last: Instant::now(),
+        }
+    }
+
+    fn report(&mut self, phase: &str, done: usize, total: usize, force: bool) {
+        if !self.enabled || (!force && self.last.elapsed().as_millis() < 100) {
+            return;
+        }
+        self.last = Instant::now();
+        // One locked write per line: parallel sessions never interleave a line.
+        eprintln!(
+            "{}",
+            serde_json::json!({ "nym_progress": { "phase": phase, "done": done, "total": total } })
+        );
+    }
 }
 
 /// One value that would be replaced, for `--plan` review.
@@ -1301,10 +1334,18 @@ fn process(
         }
     }
     let mut found: HashMap<&str, Vec<PiiMatch>> = HashMap::new();
+    let mut ner_total = 0;
+    let mut ner_done = 0;
     // (parent string, line offset, line) for auto-scope NER on tool output.
     let mut lines_for_ner: Vec<(&str, usize, &str)> = Vec::new();
     let line_ner = ner.is_some() && matches!(args.ner_scope, NerScope::Auto | NerScope::Lines);
+    let mut progress = Progress::new(args.progress_json);
+    let detect_total: usize = regex_texts.iter().map(|s| s.len()).sum();
+    let mut detect_done = 0;
+    progress.report("detect", 0, detect_total, true);
     for s in &regex_texts {
+        detect_done += s.len();
+        progress.report("detect", detect_done, detect_total, false);
         stats.scanned_bytes += s.len();
         found.insert(s, regex.detect(s).map_err(|_| failure("detection failed"))?);
         if line_ner {
@@ -1331,14 +1372,19 @@ fn process(
                 .collect()
         };
         let mut by_line: HashMap<&str, Vec<PiiMatch>> = HashMap::new();
+        ner_total = unique.iter().map(|l| l.len()).sum::<usize>()
+            + ner_texts.iter().map(|t| t.len()).sum::<usize>();
+        progress.report("ner", 0, ner_total, true);
         for chunk in unique.chunks(64) {
             let results = ner
                 .detect_batch(chunk)
                 .map_err(|_| failure("NER inference failed"))?;
             for (line, matches) in chunk.iter().zip(results) {
                 stats.ner_bytes += line.len();
+                ner_done += line.len();
                 by_line.insert(line, matches);
             }
+            progress.report("ner", ner_done, ner_total, false);
         }
         for (parent, offset, line) in &lines_for_ner {
             let Some(matches) = by_line.get(line) else {
@@ -1361,9 +1407,11 @@ fn process(
             for (s, matches) in chunk.iter().zip(results) {
                 stats.scanned_bytes += s.len();
                 stats.ner_bytes += s.len();
+                ner_done += s.len();
                 // A string may be both prose and other; keep the richer result.
                 found.insert(s, matches);
             }
+            progress.report("ner", ner_done, ner_total, false);
         }
     }
 
@@ -1428,7 +1476,9 @@ fn process(
     let mut all_replacements = Vec::new();
     let mut rewritten: HashMap<String, String> = HashMap::new();
     let mut edits: Vec<(usize, String, Option<String>)> = Vec::new();
-    for leaf in &leaves {
+    progress.report("replace", 0, leaves.len(), true);
+    for (index, leaf) in leaves.iter().enumerate() {
+        progress.report("replace", index, leaves.len(), false);
         let s = get(leaf);
         match leaf.kind {
             Kind::Skip => continue,
@@ -1539,6 +1589,7 @@ fn process(
         session: rel.to_string_lossy().into_owned(),
         candidates,
     };
+    progress.report("done", leaves.len(), leaves.len(), true);
     let Some(output_dir) = &args.output else {
         return Ok((stats, plan));
     };

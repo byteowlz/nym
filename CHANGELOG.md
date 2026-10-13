@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- `nym traces anon --progress-json` emits throttled machine-readable progress on stderr (`{"nym_progress":{"phase","done","total"}}` for detect, NER, replace and done), independent of the terminal progress display. pi-nym renders it as a progress bar.
+
 - Ignore a leftover `ner.labels` with `backend = "tokens"` (it has no effect there; older `config init` versions wrote it) with a one-time warning instead of refusing to run. `backend = "both"` still rejects labels, since they would only restrict its GLiNER half.
 
 - `nym traces anon --plan FILE` reports every value that would be replaced (class, detected/listed/propagated source, credential flag, occurrence count, short context) without writing outputs; `--keep-values-file` applies explicit keep decisions, also to credentials and identity terms. Enables interactive review such as pi-nym.
