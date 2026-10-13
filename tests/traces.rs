@@ -453,3 +453,100 @@ fn redaction_profiles_are_shared_and_stack_on_default() {
     let anon = String::from_utf8(anon.stdout).unwrap();
     assert!(!anon.contains("Acme Corp") && !anon.contains("ada.quill"));
 }
+
+#[test]
+fn plan_lists_candidates_and_keep_values_are_honored() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let input = root.join("in");
+    fs::create_dir_all(&input).unwrap();
+    fs::write(input.join("s.jsonl"), session(SESSION)).unwrap();
+    let plan_path = root.join("plan.json");
+    let out = nym(
+        root,
+        &[
+            "traces",
+            "anon",
+            input.to_str().unwrap(),
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "--no-ner",
+            "--no-progress",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    assert!(!root.join("out").exists());
+    let plan: Value = serde_json::from_slice(&fs::read(&plan_path).unwrap()).unwrap();
+    let candidates = plan["sessions"][0]["candidates"].as_array().unwrap();
+    let find = |value: &str| candidates.iter().find(|c| c["value"] == value).cloned();
+    let email = find("ada.quill@example.org").expect("email candidate");
+    assert_eq!(email["class"], "email");
+    // Two prose occurrences plus the tool output; the opaque signature is never scanned.
+    assert_eq!(email["count"], 3);
+    assert!(
+        email["context"]
+            .as_str()
+            .unwrap()
+            .contains("ada.quill@example.org")
+    );
+    let secret = find("Sup3rSecretValue1").expect("secret candidate");
+    assert_eq!(secret["credential"], true);
+    // First seen in the home path, so detected; the local-identity literal covers the rest.
+    let account = find("zorbaxtester").expect("account candidate");
+    assert_eq!(
+        (account["class"].clone(), account["source"].clone()),
+        ("username".into(), "detected".into())
+    );
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&plan_path).unwrap().permissions().mode() & 0o077,
+            0
+        );
+    }
+    // Apply with an explicit keep decision: the email stays, everything else is replaced.
+    let keep = root.join("keep.txt");
+    fs::write(&keep, "ada.quill@example.org\n").unwrap();
+    let output = root.join("out");
+    let out = nym(
+        root,
+        &[
+            "traces",
+            "anon",
+            input.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+            "--keep-values-file",
+            keep.to_str().unwrap(),
+            "--no-ner",
+            "--no-progress",
+        ],
+    );
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let text = fs::read_to_string(output.join("s.jsonl")).unwrap();
+    assert_eq!(text.matches("ada.quill@example.org").count(), 4);
+    assert!(!text.contains("Sup3rSecretValue1") && !text.contains("/Users/zorbaxtester"));
+    // --plan cannot be combined with outputs.
+    let both = nym(
+        root,
+        &[
+            "traces",
+            "anon",
+            input.to_str().unwrap(),
+            "--plan",
+            plan_path.to_str().unwrap(),
+            "-o",
+            output.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(both.status.code(), Some(2));
+}

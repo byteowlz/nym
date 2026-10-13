@@ -56,8 +56,18 @@ struct AnonArgs {
     #[arg(required = true)]
     inputs: Vec<PathBuf>,
     /// Output directory; mirrors the input layout. Must not already contain outputs unless --force
-    #[arg(short, long)]
-    output: PathBuf,
+    #[arg(short, long, required_unless_present = "plan")]
+    output: Option<PathBuf>,
+    /// Write the values that would be replaced (per session, with class, source,
+    /// count and a short context) to this private JSON file instead of writing
+    /// outputs. Contains originals: keep it private.
+    #[arg(long, conflicts_with_all = ["output", "keys"])]
+    plan: Option<PathBuf>,
+    /// UTF-8 file of exact values never to replace, one per line (repeatable).
+    /// Explicit user decisions: unlike allow lists, these also apply to
+    /// credentials and identity terms.
+    #[arg(long)]
+    keep_values_file: Vec<PathBuf>,
     /// Write one key file per session into this directory, for later `nym deanon`
     #[arg(long)]
     keys: Option<PathBuf>,
@@ -225,6 +235,42 @@ struct Summary {
     totals: SessionStats,
 }
 
+/// One value that would be replaced, for `--plan` review.
+#[derive(Serialize, Clone)]
+struct Candidate {
+    value: String,
+    class: String,
+    /// `detected`, `listed` (identity/sensitive terms) or `propagated`
+    source: &'static str,
+    credential: bool,
+    count: usize,
+    context: String,
+}
+
+#[derive(Serialize)]
+struct SessionPlan {
+    session: String,
+    candidates: Vec<Candidate>,
+}
+
+/// Short single-occurrence context around a match, on char boundaries.
+fn context(text: &str, start: usize, end: usize) -> String {
+    let mut from = start.saturating_sub(60);
+    while !text.is_char_boundary(from) {
+        from -= 1;
+    }
+    let mut to = (end + 60).min(text.len());
+    while !text.is_char_boundary(to) {
+        to += 1;
+    }
+    format!(
+        "{}{}{}",
+        if from > 0 { "…" } else { "" },
+        &text[from..to],
+        if to < text.len() { "…" } else { "" }
+    )
+}
+
 /// A literal that must be replaced wherever it occurs in a session.
 #[derive(Clone)]
 struct Literal {
@@ -251,13 +297,13 @@ fn detector(config: &Config, ner: bool) -> Result<Detector> {
 
 fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<()> {
     let started = Instant::now();
-    let files = resolve(&args.inputs, &args.output)?;
+    let files = resolve(&args.inputs, args.output.as_deref())?;
     if files.is_empty() {
         bail!("no session files (*.jsonl) found");
     }
-    if !args.force {
+    if let (false, Some(output)) = (args.force, &args.output) {
         for (_, rel) in &files {
-            if args.output.join(rel).exists() {
+            if output.join(rel).exists() {
                 bail!("output already exists; use --force to replace it");
             }
         }
@@ -284,6 +330,16 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
         class: sensitive_class(term).into(),
     }));
     let identity = Identity::new(&literals)?;
+    let mut keep = HashSet::new();
+    for path in &args.keep_values_file {
+        let text = fs::read_to_string(path).context("failed to read keep values file")?;
+        keep.extend(
+            text.lines()
+                .map(|l| l.trim_end_matches('\r'))
+                .filter(|l| !l.is_empty())
+                .map(str::to_string),
+        );
+    }
     let mut allow = allowlist(&args.allow_terms_file)?;
     allow.extend(profile_lists.allow.iter().map(|t| t.to_lowercase()));
     let regex = detector(config, false)?;
@@ -311,11 +367,20 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
         .filter_map(|(p, _)| fs::metadata(p).ok())
         .map(|m| m.len())
         .sum();
-    let results: Vec<Result<SessionStats>> = pool.install(|| {
+    let results: Vec<Result<(SessionStats, SessionPlan)>> = pool.install(|| {
         files
             .par_iter()
             .map(|(path, rel)| {
-                let result = process(path, rel, &args, &regex, ner.as_ref(), &identity, &allow);
+                let result = process(
+                    path,
+                    rel,
+                    &args,
+                    &regex,
+                    ner.as_ref(),
+                    &identity,
+                    &allow,
+                    &keep,
+                );
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                 if progress {
                     eprint!(
@@ -332,9 +397,13 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
     }
     let mut totals = SessionStats::default();
     let mut failed = 0;
+    let mut plans = Vec::new();
     for result in &results {
         match result {
-            Ok(stats) => merge(&mut totals, stats),
+            Ok((stats, plan)) => {
+                merge(&mut totals, stats);
+                plans.push(plan);
+            }
             Err(error) => {
                 failed += 1;
                 // Errors are generic by construction; never echo session content.
@@ -343,6 +412,10 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
                 }
             }
         }
+    }
+    if let (Some(path), 0) = (&args.plan, failed) {
+        let body = serde_json::to_vec_pretty(&serde_json::json!({ "sessions": plans }))?;
+        publish(path, &body).context("failed to write the plan file")?;
     }
     let seconds = started.elapsed().as_secs_f64();
     let summary = Summary {
@@ -393,8 +466,8 @@ fn merge(totals: &mut SessionStats, stats: &SessionStats) {
 }
 
 /// Resolve inputs into (source, relative output path). Symlinks are not followed.
-fn resolve(inputs: &[PathBuf], output: &Path) -> Result<Vec<(PathBuf, PathBuf)>> {
-    let out = fs::canonicalize(output).ok();
+fn resolve(inputs: &[PathBuf], output: Option<&Path>) -> Result<Vec<(PathBuf, PathBuf)>> {
+    let out = output.and_then(|o| fs::canonicalize(o).ok());
     let mut files = Vec::new();
     let multiple = inputs.len() > 1;
     for input in inputs {
@@ -1168,7 +1241,8 @@ fn process(
     ner: Option<&Detector>,
     identity: &Identity,
     allow: &HashSet<String>,
-) -> Result<SessionStats> {
+    keep: &HashSet<String>,
+) -> Result<(SessionStats, SessionPlan)> {
     let failure = |what: &str| anyhow!("{what} for session #{}", short_id(rel));
     let raw = fs::read(path).map_err(|_| failure("read failed"))?;
     let text = std::str::from_utf8(&raw).map_err(|_| failure("invalid UTF-8"))?;
@@ -1296,7 +1370,9 @@ fn process(
     for (leaf, matches) in &mut found {
         let prose = prose_texts.contains(leaf);
         matches.iter_mut().for_each(trim_edges);
-        matches.retain(|m| m.start < m.end && plausible(m, leaf, prose, allow));
+        matches.retain(|m| {
+            m.start < m.end && !keep.contains(&m.matched_text) && plausible(m, leaf, prose, allow)
+        });
     }
 
     // Session-wide propagation set: identity literals plus every identity-like finding.
@@ -1342,6 +1418,13 @@ fn process(
         Session::new(name)
     };
     replacer = replacer.with_session_id(session.id.clone());
+    let mut multiplicity: HashMap<&str, usize> = HashMap::new();
+    for leaf in &leaves {
+        if matches!(leaf.kind, Kind::Prose | Kind::Other) {
+            *multiplicity.entry(get(leaf)).or_default() += 1;
+        }
+    }
+    let mut candidates: HashMap<String, Candidate> = HashMap::new();
     let mut all_replacements = Vec::new();
     let mut rewritten: HashMap<String, String> = HashMap::new();
     let mut edits: Vec<(usize, String, Option<String>)> = Vec::new();
@@ -1379,7 +1462,10 @@ fn process(
         if let Some(matcher) = &propagation {
             matches.extend(literal_matches(matcher, &session_literals, s));
         }
-        let matches = resolve_overlaps(s, matches);
+        // Explicit keep decisions win, before and after overlap merging.
+        matches.retain(|m| !keep.contains(&m.matched_text));
+        let mut matches = resolve_overlaps(s, matches);
+        matches.retain(|m| !keep.contains(&m.matched_text));
         if matches.is_empty() {
             rewritten.insert(s.to_string(), s.to_string());
             continue;
@@ -1395,8 +1481,27 @@ fn process(
                 stats.propagated += 1;
             }
         }
+        let occurrences = multiplicity.get(s).copied().unwrap_or(1);
         for m in &matches {
             *stats.by_class.entry(m.pattern_name.clone()).or_default() += 1;
+            let span = (m.start, m.end);
+            let entry = candidates
+                .entry(m.matched_text.clone())
+                .or_insert_with(|| Candidate {
+                    value: m.matched_text.clone(),
+                    class: m.pattern_name.clone(),
+                    source: if detected.contains(&span) {
+                        "detected"
+                    } else if identity_spans.contains(&span) {
+                        "listed"
+                    } else {
+                        "propagated"
+                    },
+                    credential: m.category == crate::engine::patterns::PiiCategory::Authentication,
+                    count: 0,
+                    context: context(s, m.start, m.end),
+                });
+            entry.count += occurrences;
         }
         let (out, replacements) = replacer.replace_all(s, &matches);
         stats.replacements += replacements.len();
@@ -1428,7 +1533,16 @@ fn process(
             output.extend_from_slice(line.as_bytes());
         }
     }
-    let target = args.output.join(rel);
+    let mut candidates: Vec<Candidate> = candidates.into_values().collect();
+    candidates.sort_by(|a, b| b.count.cmp(&a.count).then_with(|| a.value.cmp(&b.value)));
+    let plan = SessionPlan {
+        session: rel.to_string_lossy().into_owned(),
+        candidates,
+    };
+    let Some(output_dir) = &args.output else {
+        return Ok((stats, plan));
+    };
+    let target = output_dir.join(rel);
     publish(&target, &output).map_err(|_| failure("write failed"))?;
     if let Some(keys) = &args.keys {
         let mut key_path = keys.join(rel);
@@ -1447,7 +1561,7 @@ fn process(
         crate::write_key_file(&key_path, &dedup(all_replacements), &session, &config, None)
             .map_err(|_| failure("key file write failed"))?;
     }
-    Ok(stats)
+    Ok((stats, plan))
 }
 
 fn dedup(replacements: Vec<crate::engine::Replacement>) -> Vec<crate::engine::Replacement> {

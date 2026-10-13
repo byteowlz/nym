@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- `nym traces anon --plan FILE` reports every value that would be replaced (class, detected/listed/propagated source, credential flag, occurrence count, short context) without writing outputs; `--keep-values-file` applies explicit keep decisions, also to credentials and identity terms. Enables interactive review such as pi-nym.
+
 - Resolve XDG base directories per the Base Directory Specification : unset, empty or relative `XDG_CONFIG_HOME`/`XDG_DATA_HOME`/`XDG_STATE_HOME` values fall back to `~/.config`, `~/.local/share` and `~/.local/state` on Linux and macOS (previously macOS used `~/Library/Application Support` and invalid values were used as-is), or `%APPDATA%`/`%LOCALAPPDATA%` on Windows, matching the rust-cli template. The model catalog cache, build store and Pi launcher follow the same rule.
 
 - Add redaction profiles (`nym profiles list/show/add/remove/import/path`): private `sensitive.txt`/`allow.txt` lists per named profile under the config directory, `default` always applied, others stacked with `--redaction-profile` in `anon`, `detect` and `traces anon`. Replaces the single `trace-allow.txt` file.
