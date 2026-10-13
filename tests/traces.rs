@@ -550,3 +550,88 @@ fn plan_lists_candidates_and_keep_values_are_honored() {
     );
     assert_eq!(both.status.code(), Some(2));
 }
+
+#[test]
+fn apply_plan_replaces_exactly_the_reviewed_values_everywhere() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let input = root.join("in");
+    fs::create_dir_all(&input).unwrap();
+    let lines = [
+        r#"{"type":"session","id":"s-1","cwd":"/tmp/app"}"#,
+        r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Ask Henrike or other@example.org; build 4711 at 14711"}]}}"#,
+        r#"{"type":"message","message":{"role":"toolResult","content":[{"type":"text","text":"owner=Henrike Brinkhaus;id 4711"}]}}"#,
+        r#"{"type":"message","message":{"role":"toolResult","content":[{"type":"text","text":"log: \\nHenrike said"}]}}"#,
+    ];
+    fs::write(input.join("s.jsonl"), session(&lines)).unwrap();
+    let plan = root.join("approved.json");
+    let approved = serde_json::json!({"sessions": [{"session": "s.jsonl", "candidates": [
+        {"value": "Henrike", "class": "first_name"},
+        {"value": "4711", "class": "pin"}
+    ]}]});
+    fs::write(&plan, approved.to_string()).unwrap();
+    let keep = root.join("keep.txt");
+    fs::write(&keep, "Henrike Brinkhaus\n").unwrap();
+    let out = root.join("out");
+    let result = nym(
+        root,
+        &[
+            "traces",
+            "anon",
+            input.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--apply-plan",
+            plan.to_str().unwrap(),
+            "--keep-values-file",
+            keep.to_str().unwrap(),
+            "--no-progress",
+        ],
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let r = records(&out.join("s.jsonl"));
+    let user = r[1]["message"]["content"][0]["text"].as_str().unwrap();
+    let tool = r[2]["message"]["content"][0]["text"].as_str().unwrap();
+    // Approved values go everywhere; unreviewed findings (the email) stay.
+    assert!(!user.contains("Henrike") && user.contains("other@example.org"));
+    // Word boundaries: 14711 is a different number.
+    assert!(user.ends_with(" at 14711") && !user.contains("build 4711"));
+    // A kept value protects the approved value inside it.
+    assert!(tool.starts_with("owner=Henrike Brinkhaus;") && !tool.ends_with("id 4711"));
+    // A literal `\n` (double-escaped output) is a line break, not part of a word.
+    let escaped = r[3]["message"]["content"][0]["text"].as_str().unwrap();
+    assert!(escaped.starts_with("log: \\n") && !escaped.contains("Henrike"));
+    // Sessions the plan does not cover fail rather than pass through.
+    fs::write(input.join("other.jsonl"), session(&lines)).unwrap();
+    let uncovered = nym(
+        root,
+        &[
+            "traces",
+            "anon",
+            input.to_str().unwrap(),
+            "-o",
+            root.join("o2").to_str().unwrap(),
+            "--apply-plan",
+            plan.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(uncovered.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&uncovered.stderr).contains("plan does not cover"));
+    let both = nym(
+        root,
+        &[
+            "traces",
+            "anon",
+            input.to_str().unwrap(),
+            "--plan",
+            plan.to_str().unwrap(),
+            "--apply-plan",
+            plan.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(both.status.code(), Some(2));
+}

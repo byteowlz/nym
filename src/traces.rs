@@ -68,6 +68,14 @@ struct AnonArgs {
     /// credentials and identity terms.
     #[arg(long)]
     keep_values_file: Vec<PathBuf>,
+    /// Replace exactly the values in this plan file (the `--plan` format, e.g.
+    /// after review), everywhere in each session, without running detectors.
+    /// Sessions the plan does not cover fail.
+    #[arg(long, conflicts_with = "plan")]
+    apply_plan: Option<PathBuf>,
+    /// Do not read or write the NER result cache ($XDG_CACHE_HOME/nym/ner)
+    #[arg(long)]
+    no_cache: bool,
     /// Write one key file per session into this directory, for later `nym deanon`
     #[arg(long)]
     keys: Option<PathBuf>,
@@ -304,6 +312,73 @@ fn context(text: &str, start: usize, end: usize) -> String {
     )
 }
 
+#[derive(serde::Deserialize)]
+struct PlanFile {
+    sessions: Vec<PlanSession>,
+}
+
+#[derive(serde::Deserialize)]
+struct PlanSession {
+    session: String,
+    candidates: Vec<PlanValue>,
+}
+
+#[derive(serde::Deserialize)]
+struct PlanValue {
+    value: String,
+    class: String,
+}
+
+/// Approved values per session, from `--apply-plan`.
+fn load_plan(path: &Path) -> Result<HashMap<String, Vec<Literal>>> {
+    let text = fs::read_to_string(path).context("failed to read the plan file")?;
+    let plan: PlanFile = serde_json::from_str(&text).context("invalid plan file")?;
+    Ok(plan
+        .sessions
+        .into_iter()
+        .map(|s| {
+            let literals = s
+                .candidates
+                .into_iter()
+                .filter(|c| !c.value.is_empty())
+                .map(|c| Literal {
+                    text: c.value,
+                    class: c.class,
+                })
+                .collect();
+            (s.session, literals)
+        })
+        .collect())
+}
+
+/// Everything `process` needs besides the session itself.
+struct Shared<'a> {
+    regex: &'a Detector,
+    ner: Option<&'a Detector>,
+    identity: &'a Identity,
+    allow: &'a HashSet<String>,
+    keep: &'a HashSet<String>,
+    /// Matcher over kept values: approved literals inside a kept value stay.
+    keep_matcher: Option<AhoCorasick>,
+    approved: Option<HashMap<String, Vec<Literal>>>,
+    cache: Option<crate::traces_cache::NerCache>,
+}
+
+/// Executable identity, so any rebuild invalidates cached NER results.
+fn executable_stamp() -> String {
+    std::env::current_exe()
+        .and_then(fs::metadata)
+        .map(|m| {
+            let modified = m
+                .modified()
+                .ok()
+                .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                .map_or(0, |d| d.as_nanos());
+            format!("{}:{modified}", m.len())
+        })
+        .unwrap_or_default()
+}
+
 /// A literal that must be replaced wherever it occurs in a session.
 #[derive(Clone)]
 struct Literal {
@@ -376,6 +451,17 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
     let mut allow = allowlist(&args.allow_terms_file)?;
     allow.extend(profile_lists.allow.iter().map(|t| t.to_lowercase()));
     let regex = detector(config, false)?;
+    let approved = args.apply_plan.as_deref().map(load_plan).transpose()?;
+    let keep_matcher = if keep.is_empty() {
+        None
+    } else {
+        Some(
+            AhoCorasickBuilder::new()
+                .match_kind(MatchKind::LeftmostLongest)
+                .build(keep.iter())
+                .map_err(|_| anyhow!("failed to build keep matcher"))?,
+        )
+    };
     let cpus = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
     let jobs = args
         .jobs
@@ -383,10 +469,34 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
         .max(1);
     // One shared model session: NER is compute-bound, and measured per-worker
     // sessions with split cores were slower than one session using all cores.
-    let ner = if args.no_ner {
+    // Applying a reviewed plan needs no detectors, so no model and no cache.
+    let ner = if args.no_ner || approved.is_some() {
         None
     } else {
         Some(detector(config, true)?)
+    };
+    let cache = if args.no_cache || ner.is_none() {
+        None
+    } else {
+        let fingerprint = format!(
+            "{}|{}|{}|{:?}",
+            env!("NYM_BUILD_VERSION"),
+            executable_stamp(),
+            serde_json::to_string(&config.ner)?,
+            args.ner_scope
+        );
+        crate::traces_cache::NerCache::open(&crate::config::cache_dir().join("ner"), &fingerprint)
+            .ok()
+    };
+    let shared = Shared {
+        regex: &regex,
+        ner: ner.as_ref(),
+        identity: &identity,
+        allow: &allow,
+        keep: &keep,
+        keep_matcher,
+        approved,
+        cache,
     };
     let pool = rayon::ThreadPoolBuilder::new()
         .num_threads(jobs)
@@ -404,16 +514,7 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
         files
             .par_iter()
             .map(|(path, rel)| {
-                let result = process(
-                    path,
-                    rel,
-                    &args,
-                    &regex,
-                    ner.as_ref(),
-                    &identity,
-                    &allow,
-                    &keep,
-                );
+                let result = process(path, rel, &args, &shared);
                 let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                 if progress {
                     eprint!(
@@ -445,6 +546,13 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
                 }
             }
         }
+    }
+    if let Some(cache) = &shared.cache
+        && let Err(error) = cache.flush()
+        && !common.quiet
+    {
+        // Losing cache entries only costs recomputation next time.
+        eprintln!("warning: {error}");
     }
     if let (Some(path), 0) = (&args.plan, failed) {
         let body = serde_json::to_vec_pretty(&serde_json::json!({ "sessions": plans }))?;
@@ -671,6 +779,40 @@ fn bounded(text: &str, start: usize, end: usize) -> bool {
     let after = text[end..].chars().next();
     (escaped || !before.is_some_and(char::is_alphanumeric))
         && !after.is_some_and(char::is_alphanumeric)
+}
+
+/// Reviewed values match wherever they occur, except inside a longer word:
+/// boundaries are only required on alphanumeric value edges.
+fn approved_matches(matcher: &AhoCorasick, literals: &[Literal], text: &str) -> Vec<PiiMatch> {
+    matcher
+        .find_iter(text)
+        .filter(|m| {
+            let value = &text[m.start()..m.end()];
+            let first = value.chars().next().is_some_and(char::is_alphanumeric);
+            let last = value.chars().next_back().is_some_and(char::is_alphanumeric);
+            let prefix = &text[..m.start()];
+            // Double-escaped tool output: a literal `\n` before a value is a line break.
+            let escaped = ["\\n", "\\t", "\\r"].iter().any(|e| prefix.ends_with(e));
+            let before = !escaped
+                && prefix
+                    .chars()
+                    .next_back()
+                    .is_some_and(char::is_alphanumeric);
+            let after = text[m.end()..]
+                .chars()
+                .next()
+                .is_some_and(char::is_alphanumeric);
+            !(first && before) && !(last && after)
+        })
+        .map(|m| PiiMatch {
+            pattern_name: literals[m.pattern().as_usize()].class.clone(),
+            matched_text: text[m.start()..m.end()].to_string(),
+            start: m.start(),
+            end: m.end(),
+            confidence: crate::engine::patterns::Confidence::High,
+            category: crate::engine::patterns::PiiCategory::Identity,
+        })
+        .collect()
 }
 
 fn literal_matches(matcher: &AhoCorasick, literals: &[Literal], text: &str) -> Vec<PiiMatch> {
@@ -915,7 +1057,11 @@ fn plausible(m: &PiiMatch, leaf: &str, prose: bool, allow: &HashSet<String>) -> 
             "no.",
         ]),
         "ner_entity" => prose && !numeric,
-        "age" | "postcode" => true,
+        // Bare one- or two-digit "ages" are almost always parts of times or counts.
+        "age" => labelled(&[
+            "age", "aged", "years", "year-old", "yrs", "jahre", "alter", " alt",
+        ]),
+        "postcode" => true,
         "phone_us" | "phone_intl" | "phone_ner" => {
             digits >= 7 && (text.contains('+') || text.chars().any(|c| " -.()".contains(c)))
         }
@@ -1270,13 +1416,24 @@ fn process(
     path: &Path,
     rel: &Path,
     args: &AnonArgs,
-    regex: &Detector,
-    ner: Option<&Detector>,
-    identity: &Identity,
-    allow: &HashSet<String>,
-    keep: &HashSet<String>,
+    shared: &Shared,
 ) -> Result<(SessionStats, SessionPlan)> {
+    let Shared {
+        regex,
+        ner,
+        identity,
+        allow,
+        keep,
+        ..
+    } = *shared;
     let failure = |what: &str| anyhow!("{what} for session #{}", short_id(rel));
+    let approved = match &shared.approved {
+        Some(plan) => Some(
+            plan.get(rel.to_string_lossy().as_ref())
+                .ok_or_else(|| failure("plan does not cover this session"))?,
+        ),
+        None => None,
+    };
     let raw = fs::read(path).map_err(|_| failure("read failed"))?;
     let text = std::str::from_utf8(&raw).map_err(|_| failure("invalid UTF-8"))?;
     let lines: Vec<&str> = text.split_inclusive('\n').collect();
@@ -1346,6 +1503,9 @@ fn process(
     for s in &regex_texts {
         detect_done += s.len();
         progress.report("detect", detect_done, detect_total, false);
+        if approved.is_some() {
+            continue;
+        }
         stats.scanned_bytes += s.len();
         found.insert(s, regex.detect(s).map_err(|_| failure("detection failed"))?);
         if line_ner {
@@ -1375,16 +1535,15 @@ fn process(
         ner_total = unique.iter().map(|l| l.len()).sum::<usize>()
             + ner_texts.iter().map(|t| t.len()).sum::<usize>();
         progress.report("ner", 0, ner_total, true);
-        for chunk in unique.chunks(64) {
-            let results = ner
-                .detect_batch(chunk)
-                .map_err(|_| failure("NER inference failed"))?;
-            for (line, matches) in chunk.iter().zip(results) {
-                stats.ner_bytes += line.len();
-                ner_done += line.len();
-                by_line.insert(line, matches);
-            }
-            progress.report("ner", ner_done, ner_total, false);
+        let results =
+            crate::traces_cache::detect_cached(ner, shared.cache.as_ref(), &unique, 64, |bytes| {
+                ner_done += bytes;
+                progress.report("ner", ner_done, ner_total, false);
+            })
+            .map_err(|_| failure("NER inference failed"))?;
+        for (line, matches) in unique.iter().zip(results) {
+            stats.ner_bytes += line.len();
+            by_line.insert(line, matches);
         }
         for (parent, offset, line) in &lines_for_ner {
             let Some(matches) = by_line.get(line) else {
@@ -1400,18 +1559,22 @@ fn process(
         }
     }
     if let Some(ner) = ner {
-        for chunk in ner_texts.chunks(32) {
-            let results = ner
-                .detect_batch(chunk)
-                .map_err(|_| failure("NER inference failed"))?;
-            for (s, matches) in chunk.iter().zip(results) {
-                stats.scanned_bytes += s.len();
-                stats.ner_bytes += s.len();
-                ner_done += s.len();
-                // A string may be both prose and other; keep the richer result.
-                found.insert(s, matches);
-            }
-            progress.report("ner", ner_done, ner_total, false);
+        let results = crate::traces_cache::detect_cached(
+            ner,
+            shared.cache.as_ref(),
+            &ner_texts,
+            32,
+            |bytes| {
+                ner_done += bytes;
+                progress.report("ner", ner_done, ner_total, false);
+            },
+        )
+        .map_err(|_| failure("NER inference failed"))?;
+        for (s, matches) in ner_texts.iter().zip(results) {
+            stats.scanned_bytes += s.len();
+            stats.ner_bytes += s.len();
+            // A string may be both prose and other; keep the richer result.
+            found.insert(s, matches);
         }
     }
 
@@ -1424,9 +1587,17 @@ fn process(
     }
 
     // Session-wide propagation set: identity literals plus every identity-like finding.
-    let mut session_literals: Vec<Literal> = Vec::new();
+    let mut session_literals: Vec<Literal> = approved.cloned().unwrap_or_default();
     let mut known = HashSet::new();
-    for matches in found.values() {
+    // Session order, not hash order: a value found with different classes
+    // gets the class of its first occurrence, deterministically.
+    let mut first_seen: HashMap<&str, usize> = HashMap::new();
+    for (index, leaf) in leaves.iter().enumerate() {
+        first_seen.entry(get(leaf)).or_insert(index);
+    }
+    let mut ordered: Vec<(&&str, &Vec<PiiMatch>)> = found.iter().collect();
+    ordered.sort_by_key(|(text, _)| first_seen.get(**text).copied().unwrap_or(usize::MAX));
+    for (_, matches) in ordered {
         for m in matches {
             let mut m = m.clone();
             narrow_home(&mut m);
@@ -1502,18 +1673,31 @@ fn process(
         }
         let mut matches: Vec<PiiMatch> = found.get(s).cloned().unwrap_or_default();
         matches.iter_mut().for_each(narrow_home);
-        let detected: HashSet<(usize, usize)> = matches.iter().map(|m| (m.start, m.end)).collect();
+        let mut detected: HashSet<(usize, usize)> =
+            matches.iter().map(|m| (m.start, m.end)).collect();
         let mut identity_spans = HashSet::new();
-        if let Some(matcher) = &identity.matcher {
+        if let (Some(matcher), None) = (&identity.matcher, approved) {
             let hits = literal_matches(matcher, &identity.literals, s);
             identity_spans.extend(hits.iter().map(|m| (m.start, m.end)));
             matches.extend(hits);
         }
         if let Some(matcher) = &propagation {
-            matches.extend(literal_matches(matcher, &session_literals, s));
+            if approved.is_some() {
+                // Reviewed values: every occurrence counts as an explicit decision.
+                let hits = approved_matches(matcher, &session_literals, s);
+                detected.extend(hits.iter().map(|m| (m.start, m.end)));
+                matches.extend(hits);
+            } else {
+                matches.extend(literal_matches(matcher, &session_literals, s));
+            }
         }
         // Explicit keep decisions win, before and after overlap merging.
         matches.retain(|m| !keep.contains(&m.matched_text));
+        if let Some(kept) = &shared.keep_matcher {
+            let spans: Vec<(usize, usize)> =
+                kept.find_iter(s).map(|k| (k.start(), k.end())).collect();
+            matches.retain(|m| !spans.iter().any(|&(a, b)| m.start < b && a < m.end));
+        }
         let mut matches = resolve_overlaps(s, matches);
         matches.retain(|m| !keep.contains(&m.matched_text));
         if matches.is_empty() {

@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- `nym traces anon --apply-plan FILE` replaces exactly the reviewed values of a plan everywhere in each session without running detectors (0.2 s instead of a full scan on the 30-session benchmark); kept values protect approved values inside them and uncovered sessions fail. NER results are cached per text in `$XDG_CACHE_HOME/nym/ner` (keyed hashes, offsets and labels only, owner-only, `--no-cache` to disable), so re-scanning a grown session only runs NER on new text (17 s to 1 s on a 514 KB session). Bare "age" findings now need a nearby label, the class of a value found with several classes is deterministic, and escaped `\n` before a value counts as a line break.
+
 - `nym traces anon --progress-json` emits throttled machine-readable progress on stderr (`{"nym_progress":{"phase","done","total"}}` for detect, NER, replace and done), independent of the terminal progress display. pi-nym renders it as a progress bar.
 
 - Ignore a leftover `ner.labels` with `backend = "tokens"` (it has no effect there; older `config init` versions wrote it) with a one-time warning instead of refusing to run. `backend = "both"` still rejects labels, since they would only restrict its GLiNER half.

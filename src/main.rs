@@ -38,6 +38,7 @@ mod terms_runs;
 mod terms_sketch;
 mod terms_unicode;
 mod traces;
+mod traces_cache;
 use input::FormatArg;
 #[cfg(feature = "streaming")]
 mod streaming;

@@ -946,6 +946,12 @@ pub fn global_config_path() -> Option<PathBuf> {
     config_dir().map(|dir| dir.join("config.toml"))
 }
 
+/// `$XDG_CACHE_HOME/nym` (default `~/.cache/nym`).
+pub fn cache_dir() -> PathBuf {
+    xdg_home("XDG_CACHE_HOME", ".cache", "LOCALAPPDATA")
+        .map_or_else(|| PathBuf::from(".nym-cache"), |base| base.join("nym"))
+}
+
 /// `$XDG_DATA_HOME/nym` (default `~/.local/share/nym`).
 pub fn data_dir() -> PathBuf {
     xdg_home("XDG_DATA_HOME", ".local/share", "APPDATA")
