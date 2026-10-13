@@ -175,7 +175,7 @@ fn ambiguous_models_and_explicit_incompatible_or_bad_labels_are_errors() {
     assert!(both.stdout.is_empty());
     let error = String::from_utf8_lossy(&both.stderr);
     assert!(error.contains("ambiguous") && !error.contains("private"));
-    for backend in ["tokens", "both", "gliner"] {
+    for backend in ["both", "gliner"] {
         for labels in ["[]", "['private-unknown-label']", "['email']"] {
             let config = format!("[ner]\nbackend = '{backend}'\nlabels = {labels}\n");
             let output = run(&config, &["config", "ner-status"], None);
@@ -183,12 +183,25 @@ fn ambiguous_models_and_explicit_incompatible_or_bad_labels_are_errors() {
             assert!(output.stdout.is_empty());
             assert!(!String::from_utf8_lossy(&output.stderr).contains("private-unknown-label"));
         }
-        if backend != "gliner" {
-            let config = format!("[ner]\nbackend = '{backend}'\nlabels = ['person']\n");
-            let output = run(&config, &["config", "ner-status"], None);
-            assert_eq!(output.status.code(), Some(1));
-            assert!(String::from_utf8_lossy(&output.stderr).contains("GLiNER-only"));
-        }
+    }
+    let config = "[ner]\nbackend = 'both'\nlabels = ['person']\n";
+    let output = run(config, &["config", "ner-status"], None);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("GLiNER half"));
+    // Leftover labels cannot affect the token backend: warn once, never echo them, keep working.
+    for labels in ["[]", "['private-unknown-label']", "['person']"] {
+        let config = format!("[ner]\nbackend = 'tokens'\nlabels = {labels}\n");
+        let output = run(&config, &["config", "ner-status"], None);
+        assert_eq!(
+            output.status.code(),
+            Some(0),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert_eq!(stderr.matches("ner.labels is ignored").count(), 1);
+        assert!(!stderr.contains("private-unknown-label"));
+        assert!(!String::from_utf8_lossy(&output.stdout).contains("private-unknown-label"));
     }
     for backend in ["tokens", "gliner"] {
         let config = format!("[ner]\nbackend = '{backend}'\n");

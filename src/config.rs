@@ -475,10 +475,20 @@ impl NerConfig {
                 );
             }
         }
+        // A leftover GLiNER label list cannot affect the token backend (older
+        // `config init` wrote one), so drop it with a warning instead of failing.
+        if effective.backend == NerBackend::TokenClass && effective.labels.take().is_some() {
+            static WARNED: std::sync::Once = std::sync::Once::new();
+            WARNED.call_once(|| {
+                log::warn!(
+                    "ner.labels is ignored: it only applies to backend=gliner; remove it from the config to silence this"
+                );
+            });
+        }
         if let Some(ref labels) = effective.labels {
             if !matches!(effective.backend, NerBackend::Gliner) {
                 anyhow::bail!(
-                    "ner.labels is GLiNER-only; omit it for backend=tokens or backend=both (token model classes are not filtered)"
+                    "ner.labels only restricts the GLiNER half of backend=both and does not filter token model classes; use backend=gliner or omit it"
                 );
             }
             effective.labels = Some(normalize_gliner_labels(labels)?);
@@ -1035,17 +1045,26 @@ mod tests {
                 .resolved(None)
                 .is_ok()
             );
-            for labels in [vec![], vec!["person".to_string()]] {
-                let error = NerConfig {
-                    backend,
-                    labels: Some(labels),
-                    ..NerConfig::default()
-                }
-                .resolved(None)
-                .unwrap_err()
-                .to_string();
-                assert!(error.contains("GLiNER-only"));
+        }
+        // Stale labels are inert for the token backend: ignored, not fatal.
+        for labels in [vec![], vec!["person".to_string()]] {
+            let tokens = NerConfig {
+                backend: NerBackend::TokenClass,
+                labels: Some(labels.clone()),
+                ..NerConfig::default()
             }
+            .resolved(None)
+            .unwrap();
+            assert_eq!(tokens.labels, None);
+            let error = NerConfig {
+                backend: NerBackend::Both,
+                labels: Some(labels),
+                ..NerConfig::default()
+            }
+            .resolved(None)
+            .unwrap_err()
+            .to_string();
+            assert!(error.contains("GLiNER half"));
         }
         for labels in [
             vec![],
@@ -1104,7 +1123,8 @@ mod tests {
             assert!(settings.ner.resolved(None).is_ok());
             let explicit: Config =
                 toml::from_str(&format!("[ner]\nbackend = '{backend}'\nlabels = []\n")).unwrap();
-            assert!(explicit.ner.resolved(None).is_err());
+            // Labels are inert for the token backend and ignored there.
+            assert_eq!(explicit.ner.resolved(None).is_err(), backend != "tokens");
         }
     }
 
