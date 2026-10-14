@@ -289,10 +289,6 @@ impl Replacer {
     }
 
     /// Get the current configuration.
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "Public API - used by consumers")
-    )]
     pub fn config(&self) -> &ReplacerConfig {
         &self.config
     }

@@ -128,7 +128,7 @@ impl KeyFile {
     /// Returns `Ok(None)` when the file does not exist, so callers can treat
     /// "first run" differently from "load existing mapping".
     pub fn load(path: &Path) -> Result<Option<Self>> {
-        if !path.exists() {
+        if !path.try_exists().context("Failed to inspect key file")? {
             return Ok(None);
         }
         let file = File::open(path)
@@ -158,6 +158,9 @@ impl KeyFile {
         }
 
         let header = header.ok_or_else(|| anyhow!("key file is missing a header line"))?;
+        if header.version != KEY_FILE_VERSION {
+            return Err(anyhow!("unsupported key-file format version"));
+        }
 
         validate_mappings(&replacements)?;
 

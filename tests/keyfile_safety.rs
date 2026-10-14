@@ -21,6 +21,78 @@ fn run(args: &[&str], input: &str) -> Output {
 }
 
 #[test]
+fn invalid_or_incompatible_maps_fail_before_any_output() {
+    let base = serde_json::json!({"version":"1","session":"fixture","strategy":"fake","seed":42,"context":"release-fixture"});
+    let mut bad_version = base.clone();
+    bad_version["version"] = "unsupported-private-map-material".into();
+    let mut bad_strategy = base.clone();
+    bad_strategy["strategy"] = "mask".into();
+    let mut bad_seed = base.clone();
+    bad_seed["seed"] = 99.into();
+    let mut bad_context = base.clone();
+    bad_context["context"] = "private-map-material".into();
+    let entry = serde_json::json!({"original":"alpha@example.invalid","replacement":"alias-a@example.invalid","pattern_name":"email","components":[]});
+    let mut conflict = entry.clone();
+    conflict["replacement"] = "alias-b@example.invalid".into();
+    let maps = [
+        String::new(),
+        "private-map-material".to_string(),
+        format!("{base}\n{{\"original\":\"private-map-material"),
+        format!("{base}\n{entry}\n{conflict}\n"),
+        bad_version.to_string(),
+        bad_strategy.to_string(),
+        bad_seed.to_string(),
+        bad_context.to_string(),
+    ];
+    for map in maps {
+        for stream in [false, true]
+            .into_iter()
+            .filter(|s| !*s || cfg!(feature = "streaming"))
+        {
+            for file_output in [false, true] {
+                let dir = tempfile::tempdir().unwrap();
+                let key = dir.path().join("keys.jsonl");
+                let output = dir.path().join("output.txt");
+                fs::write(&key, &map).unwrap();
+                fs::write(&output, "unchanged destination").unwrap();
+                let mut args = vec![
+                    "anon",
+                    "--no-ner",
+                    "--patterns",
+                    "email",
+                    "--strategy",
+                    "fake",
+                    "--seed",
+                    "42",
+                    "--context",
+                    "release-fixture",
+                    "-k",
+                    key.to_str().unwrap(),
+                ];
+                if stream {
+                    args.push("--stream");
+                }
+                if file_output {
+                    args.extend(["-o", output.to_str().unwrap()]);
+                }
+                let out = run(&args, "alpha@example.invalid\n");
+                assert_eq!(out.status.code(), Some(1));
+                assert!(
+                    out.stdout.is_empty(),
+                    "invalid maps must not publish transformed text"
+                );
+                assert_eq!(
+                    fs::read_to_string(&output).unwrap(),
+                    "unchanged destination"
+                );
+                assert_eq!(fs::read_to_string(&key).unwrap(), map);
+                assert!(!String::from_utf8_lossy(&out.stderr).contains("private-map-material"));
+            }
+        }
+    }
+}
+
+#[test]
 fn resumed_seeded_maps_preserve_all_round_trips() {
     for strategy in ["fake", "consistent", "hash"] {
         let dir = tempfile::tempdir().unwrap();

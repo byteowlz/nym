@@ -21,6 +21,8 @@ use log::{debug, info};
 use serde::{Deserialize, Serialize};
 
 mod config;
+mod corpus;
+mod corpus_json;
 mod engine;
 mod input;
 mod profiles;
@@ -39,6 +41,7 @@ mod terms_sketch;
 mod terms_unicode;
 mod traces;
 mod traces_cache;
+mod unique_json;
 use input::FormatArg;
 #[cfg(feature = "streaming")]
 mod streaming;
@@ -221,6 +224,7 @@ fn try_main() -> Result<()> {
         Command::Terms(cmd) => terms_cli::run(&cli.common, &config, cmd),
         Command::Traces(cmd) => traces::run(&cli.common, &config, cmd),
         Command::Profiles(cmd) => profiles::run(&cli.common, cmd),
+        Command::Corpus(cmd) => corpus::run(&cli.common, cmd),
         Command::Config(cmd) => handle_config(&cli.common, &config, cmd),
         Command::Sessions(cmd) => handle_sessions(&cli.common, cmd),
         #[cfg(feature = "ner")]
@@ -419,6 +423,9 @@ enum Command {
 
     /// Manage redaction profiles: named sensitive and allow term lists
     Profiles(profiles::ProfilesCommand),
+
+    /// Inventory, review, transform and verify a corpus without certifying anonymity
+    Corpus(corpus::CorpusCommand),
 
     /// Show or manage configuration
     Config(ConfigCommand),
@@ -1166,13 +1173,7 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         );
     }
 
-    let detector = Detector::new(&detector_config)?;
-    debug!("Active patterns: {:?}", detector.active_patterns());
-
-    if detector.ner_enabled() {
-        debug!("NER detection enabled");
-    }
-
+    // Validate replacement-map reuse before model initialization or any output.
     // Configure replacer (CLI args override config)
     let strategy: ReplacementStrategy = cmd.strategy.into();
     let seed = cmd.seed.or(config.replacement.seed);
@@ -1188,10 +1189,16 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
     // Load any existing replacement map so consistent/fake strategies reuse the
     // recorded aliases across runs (safe, non-destructive key reuse).
     if let Some(ref key_path) = cmd.key_file {
-        let loaded = seed_replacer_from_key_file(key_path, &mut replacer)?;
+        let loaded = seed_replacer_from_key_file(key_path, &mut replacer, cmd.context.as_deref())?;
         if loaded > 0 {
             debug!("Loaded {loaded} existing mapping(s) into replacer");
         }
+    }
+
+    let detector = Detector::new(&detector_config)?;
+    debug!("Active patterns: {:?}", detector.active_patterns());
+    if detector.ner_enabled() {
+        debug!("NER detection enabled");
     }
 
     // Office documents: in-place redaction of the archive's text nodes.
@@ -1548,7 +1555,11 @@ fn handle_anon_streaming(
         replacer_config: replacer_config.clone(),
         session_id: Some(session.id.clone()),
         format: StreamFormat::Text,
-        seed_mappings: load_seed_mappings(cmd.key_file.as_ref()),
+        seed_mappings: load_seed_mappings(
+            cmd.key_file.as_ref(),
+            &replacer_config,
+            cmd.context.as_deref(),
+        )?,
         path_selector: build_path_selector(&cmd.include_paths, &cmd.exclude_paths)?,
         json_coverage: cmd.json_coverage,
     };
@@ -3398,22 +3409,38 @@ fn write_key_file(
 /// Load an existing replacement map and seed the replacer so consistent/fake
 /// strategies reuse recorded aliases across runs and processes. Returns the
 /// number of mappings loaded (0 when the file is absent or empty).
-fn seed_replacer_from_key_file(key_path: &PathBuf, replacer: &mut Replacer) -> Result<usize> {
-    let mappings = load_seed_mappings(Some(key_path));
+fn seed_replacer_from_key_file(
+    key_path: &PathBuf,
+    replacer: &mut Replacer,
+    context: Option<&str>,
+) -> Result<usize> {
+    let mappings = load_seed_mappings(Some(key_path), replacer.config(), context)?;
     replacer.seed_mappings(&mappings);
     Ok(mappings.len())
 }
 
-/// Load the replacement mappings recorded in a key file (empty when absent).
-fn load_seed_mappings(key_path: Option<&PathBuf>) -> Vec<engine::Replacement> {
+/// Missing maps are first-run inputs; unreadable, invalid or incompatible maps
+/// are errors, never permission to silently generate unrelated aliases.
+fn load_seed_mappings(
+    key_path: Option<&PathBuf>,
+    config: &ReplacerConfig,
+    context: Option<&str>,
+) -> Result<Vec<engine::Replacement>> {
     let Some(key_path) = key_path else {
-        return Vec::new();
+        return Ok(Vec::new());
     };
-    engine::load_key_file(key_path)
-        .ok()
-        .flatten()
-        .map(|kf| kf.replacements)
-        .unwrap_or_default()
+    let Some(file) = engine::load_key_file(key_path)
+        .map_err(|_| anyhow!("replacement map could not be read or validated"))?
+    else {
+        return Ok(Vec::new());
+    };
+    let strategy = format!("{:?}", config.strategy).to_lowercase();
+    file.header
+        .check_compatible(Some(&strategy), config.seed, context)
+        .map_err(|_| {
+            anyhow!("replacement map is incompatible with the requested strategy, seed or context")
+        })?;
+    Ok(file.replacements)
 }
 
 #[derive(Debug, Serialize)]

@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Add `nym corpus inventory/status/schema/validate/apply/verify`: unresolved-by-default structural/opaque-source accounting, explicit session or full scope and identity namespaces, reviewed typed/span/asset/reference transforms, source-bound private ledgers, staged no-overwrite candidates, hash-bound teacher-source handoff and verified resume. Complete declarations are not anonymity or rights certification; native media and semantic/label quality require external review. See `docs/corpus-transformations.md`.
+
+- Fail closed on unreadable, malformed, conflicting, unsupported-version or incompatible replacement maps before anonymization output/model initialization; preserve intentional missing-map first runs. Validate strategy, seed and context before reuse, not only during later persistence.
+
 - Add regression coverage for existing `USERNAME`/`USER_NAME` label aliases and full-value cached-model username findings, including class and byte-offset fidelity.
 
 - Preserve failed macOS test-harness exit statuses when the native teardown hook has no explicit CLI status; retain fast-exit protection for CLI statuses and intentionally leaked native sessions.

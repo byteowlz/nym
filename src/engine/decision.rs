@@ -128,35 +128,8 @@ struct SystemOneAnswer {
     probabilities: std::collections::HashMap<String, f32>,
 }
 
-/// HashMap's default deserializer silently overwrites duplicate question IDs.
-fn unique_map<'de, D, T>(
-    deserializer: D,
-) -> std::result::Result<std::collections::HashMap<String, T>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    struct Unique<T>(std::marker::PhantomData<T>);
-    impl<'de, T: Deserialize<'de>> serde::de::Visitor<'de> for Unique<T> {
-        type Value = std::collections::HashMap<String, T>;
-        fn expecting(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-            f.write_str("map with unique keys")
-        }
-        fn visit_map<A: serde::de::MapAccess<'de>>(
-            self,
-            mut map: A,
-        ) -> std::result::Result<Self::Value, A::Error> {
-            let mut out = std::collections::HashMap::new();
-            while let Some((key, value)) = map.next_entry::<String, T>()? {
-                if out.insert(key, value).is_some() {
-                    return Err(serde::de::Error::custom("duplicate decision-map key"));
-                }
-            }
-            Ok(out)
-        }
-    }
-    deserializer.deserialize_map(Unique(std::marker::PhantomData))
-}
+// Shared duplicate-key rejection; ordinary HashMap deserialization overwrites IDs.
+use crate::unique_json::map as unique_map;
 
 impl SystemOneAnswer {
     fn into_decision(self) -> Result<ModelAnswer> {
