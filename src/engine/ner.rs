@@ -125,10 +125,11 @@ const MIN_TEXT_LENGTH: usize = 3;
 #[cfg(feature = "ner")]
 const MIN_WORD_COUNT: usize = 2;
 
-/// Global exit code for macOS crash workaround.
-/// Set by the program before exit to preserve the intended exit status.
+/// Explicit CLI exit code for the macOS crash workaround.
+/// -1 means unset: libtest/embedding hosts must retain their own exit status.
+/// The CLI sets a fail-closed status before any native initialization.
 #[cfg(all(feature = "ner", target_os = "macos"))]
-static EXIT_CODE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+static EXIT_CODE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(-1);
 
 /// Set the exit code for macOS ONNX Runtime crash workaround.
 /// Call this before exiting to preserve the exit status.
@@ -173,8 +174,13 @@ fn setup_macos_crash_workaround() {
                 // Use _exit to skip C++ destructors and atexit handlers.
                 // This prevents the ONNX Runtime mutex crash.
                 let code = EXIT_CODE.load(std::sync::atomic::Ordering::SeqCst);
-                unsafe {
-                    libc::_exit(code);
+                // Unknown is not success: don't overwrite libtest's 101 with 0.
+                // Detectors still leak their native sessions; explicit CLI
+                // statuses retain the fast-exit workaround unchanged.
+                if code >= 0 {
+                    unsafe {
+                        libc::_exit(code);
+                    }
                 }
             }
 
@@ -735,6 +741,10 @@ impl NerModelConfig {
         })
     }
 }
+
+#[cfg(all(test, feature = "ner", target_os = "macos"))]
+#[path = "ner_exit_tests.rs"]
+mod exit_tests;
 
 #[cfg(all(test, feature = "ner"))]
 mod tests {
