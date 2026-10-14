@@ -90,7 +90,20 @@ const MIN_TEXT_LENGTH: usize = 3;
 const MAX_BATCH_SIZE: usize = 128;
 
 /// Cap on padded tokens per forward pass (rows x padded length).
-const MAX_BATCH_TOKENS: usize = 16 * 1024;
+/// Small microbatches limit attention workspace and allocator high-water marks
+/// across concurrent trace workers without shrinking any window's context.
+/// This bounds each batch, not total process RSS or arbitrary worker counts.
+const MAX_BATCH_TOKENS: usize = 2 * 1024;
+
+/// Number of ascending window lengths fitting one padded forward pass.
+/// Always admit one window: an oversized window runs alone, never disappears.
+fn padded_batch_len(lengths: impl Iterator<Item = usize>) -> usize {
+    lengths
+        .take(MAX_BATCH_SIZE)
+        .enumerate()
+        .take_while(|&(row, tokens)| row == 0 || tokens <= MAX_BATCH_TOKENS / (row + 1))
+        .count()
+}
 
 /// A decoded entity span within a single chunk, in chunk-local byte offsets.
 struct DecodedSpan {
@@ -447,13 +460,8 @@ impl TokenClassDetector {
         let mut out = vec![Vec::new(); texts.len()];
         let mut start = 0;
         while start < windows.len() {
-            let mut end = start + 1;
-            while end < windows.len()
-                && end - start < MAX_BATCH_SIZE
-                && (end - start + 1) * windows[end].3.get_ids().len() <= MAX_BATCH_TOKENS
-            {
-                end += 1;
-            }
+            let end =
+                start + padded_batch_len(windows[start..].iter().map(|w| w.3.get_ids().len()));
             let batch = &windows[start..end];
             let encodings: Vec<_> = batch.iter().map(|w| &w.3).collect();
             let (logits, seq) = self.run_logits(&encodings)?;
@@ -1105,6 +1113,31 @@ mod runtime_tests;
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn padded_batches_bound_workspace_without_dropping_windows() {
+        assert_eq!(
+            [
+                padded_batch_len(std::iter::empty()),
+                padded_batch_len(std::iter::repeat_n(512, 100)),
+                padded_batch_len(std::iter::repeat_n(8, 256)),
+                padded_batch_len([8, 8, 480, 480, 480].into_iter()),
+                padded_batch_len([2049, 2049].into_iter()),
+                padded_batch_len([usize::MAX, usize::MAX].into_iter()),
+            ],
+            [0, 4, 128, 4, 1, 1]
+        );
+        let lengths = [2, 2, 700, 700, 700];
+        let mut batches = Vec::new();
+        let mut start = 0;
+        while start < lengths.len() {
+            let count = padded_batch_len(lengths[start..].iter().copied());
+            assert!(count > 0, "every queued window must make progress");
+            batches.push(lengths[start..start + count].to_vec());
+            start += count;
+        }
+        assert_eq!(batches, vec![vec![2, 2], vec![700, 700], vec![700]]);
+    }
 
     #[test]
     fn unicode_chunk_windows_are_exact_and_invalid_offsets_fail_instead_of_skipping_text() {

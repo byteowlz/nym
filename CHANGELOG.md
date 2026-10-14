@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Lower the token NER microbatch budget from 16K to 2K padded tokens to reduce inference working memory. Preserve model, threshold, window context, detection scope and every queued window.
+
 ## 0.4.0 - 2026-10-13
 
 - Cap automatic token NER intra-op threads at 8 (macOS performance cores, available CPUs elsewhere) to reduce contention. Tune with positive `ner.threads` or `NYM_NER_THREADS` in layered config; an explicit `--config` file wins. Applies to token detection, CPU fallback and vocabulary ranking, not GLiNER. `config ner-status` reports the effective count.
