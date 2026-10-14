@@ -1282,6 +1282,9 @@ mod tests {
         assert_eq!(label_to_pattern("SURNAME").0, "last_name");
         assert_eq!(label_to_pattern("ZIP_CODE").0, "postcode");
         assert_eq!(label_to_pattern("STREET_NAME").0, "street_address");
+        for label in ["USERNAME", "USER_NAME", "username", "user_name"] {
+            assert_eq!(label_to_pattern(label), ("username", PiiCategory::Social));
+        }
     }
 
     #[test]

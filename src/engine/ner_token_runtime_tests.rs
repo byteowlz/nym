@@ -123,6 +123,40 @@ fn cached_thread_counts_preserve_findings() -> Result<(), Box<dyn std::error::Er
     Ok(())
 }
 
+#[test]
+#[ignore = "requires NYM_TEST_CACHED_NER_MODEL; CPU only, never downloads"]
+fn cached_username_has_typed_full_value_offsets()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let model = std::env::var("NYM_TEST_CACHED_NER_MODEL")?;
+    let detector = TokenClassDetector::from_dir(model, Some(0.5), NerProvider::Cpu, None)?;
+    let text = "My username is trace_user_47.";
+    let matches = detector.detect(text)?;
+    let findings = matches
+        .iter()
+        .map(|m| {
+            (
+                m.pattern_name.as_str(),
+                m.category,
+                m.matched_text.as_str(),
+                m.start,
+                m.end,
+            )
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        findings,
+        vec![(
+            "username",
+            super::PiiCategory::Social,
+            "trace_user_47",
+            15,
+            28
+        )]
+    );
+    assert_eq!(detector.detect_batch(&[text])?, vec![matches]);
+    Ok(())
+}
+
 /// An abort must fail the parent test, not terminate the entire test suite.
 #[test]
 fn invalid_model_returns_error() -> Result<(), Box<dyn std::error::Error + Send + Sync>> {

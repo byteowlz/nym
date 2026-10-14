@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Add regression coverage for existing `USERNAME`/`USER_NAME` label aliases and full-value cached-model username findings, including class and byte-offset fidelity.
+
 - Preserve failed macOS test-harness exit statuses when the native teardown hook has no explicit CLI status; retain fast-exit protection for CLI statuses and intentionally leaked native sessions.
 
 - Lower the token NER microbatch budget from 16K to 2K padded tokens to reduce inference working memory. Preserve model, threshold, window context, detection scope and every queued window.
