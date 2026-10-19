@@ -602,6 +602,9 @@ impl TokenClassDetector {
             if !is_valid_entity(&span.base_label, matched_text) {
                 continue;
             }
+            if pattern_name == "postcode" && !plausible_postcode(text, start, end) {
+                continue;
+            }
             matches.push(PiiMatch {
                 pattern_name: pattern_name.to_string(),
                 matched_text: matched_text.to_string(),
@@ -996,6 +999,83 @@ fn is_valid_entity(base_label: &str, text: &str) -> bool {
         "phone_number" | "fax_number" => text.chars().filter(char::is_ascii_digit).count() >= 7,
         "ssn" | "credit_debit_card" => text.chars().filter(char::is_ascii_digit).count() >= 4,
         _ => text.chars().count() >= 2,
+    }
+}
+
+/// Postcodes are bare digits in most formats, so a bare numeric token labelled
+/// `postcode` needs postal context: an explicit postal/address cue on the same
+/// line, or direct adjacency to a capitalized word (city, state, country).
+/// Without this, ports, years and constants in code and logs get redacted.
+fn plausible_postcode(text: &str, start: usize, end: usize) -> bool {
+    let line_start = text[..start].rfind('\n').map_or(0, |index| index + 1);
+    let line_end = text[end..]
+        .find('\n')
+        .map_or(text.len(), |index| end + index);
+    let line = &text[line_start..line_end];
+    const CUES: &[&str] = &[
+        "zip",
+        "postal",
+        "post_code",
+        "postcode",
+        "plz",
+        "address",
+        "adresse",
+        "anschrift",
+    ];
+    if CUES
+        .iter()
+        .any(|cue| line.to_ascii_lowercase().contains(cue))
+    {
+        return true;
+    }
+    let capitalized = |word: &str| {
+        let mut characters = word.chars();
+        matches!(characters.next(), Some(first) if first.is_uppercase())
+            && word
+                .chars()
+                .skip(1)
+                .all(|c| c.is_alphabetic() || c == '.' || c == '-')
+    };
+    // Followed by a capitalized word: `10115 Berlin`.
+    let after = text[end..].trim_start_matches([' ', '\t']);
+    let followed_by_word = after
+        .split([',', ';', ':', ')'])
+        .next()
+        .is_some_and(|rest| rest.split_whitespace().next().is_some_and(capitalized));
+    if followed_by_word {
+        return true;
+    }
+    // Preceded by a capitalized word (city or state code): `Springfield, IL 62704`.
+    let before = text[..start].trim_end_matches([' ', '\t', ',']);
+    before.rsplit([' ', '\t']).next().is_some_and(capitalized)
+        && before.chars().last().is_some_and(|c| c.is_alphabetic())
+}
+
+#[cfg(test)]
+mod postcode_tests {
+    use super::plausible_postcode as plausible;
+    #[test]
+    fn postcodes_need_postal_context_or_adjacent_capitalized_words() {
+        let span = |text: &str, needle: &str| {
+            let start = text.find(needle).unwrap();
+            (start, start + needle.len())
+        };
+        // Ports, constants and bare numbers in code/prose are not postcodes.
+        let (start, end) = span("pub const PORT: u16 = 8080;", "8080");
+        assert!(!plausible("pub const PORT: u16 = 8080;", start, end));
+        let (start, end) = span("keep HTTP port 8080 unchanged", "8080");
+        assert!(!plausible("keep HTTP port 8080 unchanged", start, end));
+        let (start, end) = span("retries after 8080 ms", "8080");
+        assert!(!plausible("retries after 8080 ms", start, end));
+        // Address-shaped contexts stay covered.
+        let (start, end) = span("ship to 10115 Berlin", "10115");
+        assert!(plausible("ship to 10115 Berlin", start, end));
+        let (start, end) = span("Springfield, IL 62704 confirmed", "62704");
+        assert!(plausible("Springfield, IL 62704 confirmed", start, end));
+        let (start, end) = span("PLZ 80331 Mu\u{308}nchen", "80331");
+        assert!(plausible("PLZ 80331 Mu\u{308}nchen", start, end));
+        let (start, end) = span("Adresse: 20095, Hamburg", "20095");
+        assert!(plausible("Adresse: 20095, Hamburg", start, end));
     }
 }
 

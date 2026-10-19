@@ -4,6 +4,23 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Cover quoted credential assignments in any key case: `password="..."`, `"password": "..."` and `token: '...'` now match `secret_assignment` (value span excludes the quotes), while bare lowercase assignments and code identifiers such as `password_hash` stay unmatched. SCREAMING_CASE keys additionally accept `:` separators. Closes the repeated-password leak in native text and JSON anonymization (trx-ppar.1).
+
+- Require postal context for NER `postcode` findings: an explicit postal/address cue on the line, or an adjacent capitalized word (city, state, country). Bare numeric constants, ports and prose counts no longer get redacted (a port `8080` in a code line was previously replaced).
+
+- Fix the NER cache on Windows: the append-only cache handle could not be locked (`Access is denied`), so the cache never persisted and every `traces anon` run warned and recomputed. Open the cache file with read access before locking.
+
+- Make the test suite pass natively on Windows 11 (241 unit tests, 19 suites, plus the four cached real-ONNX tests): platform-absolute XDG fixtures, backslash-normalized expected profile paths, verbatim-path-safe artifact writes and temp-home redirection that no longer writes into the real user profile. Document the local `esaxx-rs` static-CRT vendor shim needed to build/link natively on Windows MSVC (see `docs/windows-build.md`); the upstream CRT mismatch remains open (trx-rby8).
+
+- Add `nym corpus inventory/status/schema/validate/apply/verify`: unresolved-by-default structural/opaque-source accounting, explicit session or full scope and identity namespaces, reviewed typed/span/asset/reference transforms, source-bound private ledgers, staged no-overwrite candidates, hash-bound teacher-source handoff and verified resume. Complete declarations are not anonymity or rights certification; native media and semantic/label quality require external review. See `docs/corpus-transformations.md`.
+
+- Fail closed on unreadable, malformed, conflicting, unsupported-version or incompatible replacement maps before anonymization output/model initialization; preserve intentional missing-map first runs. Validate strategy, seed and context before reuse, not only during later persistence.
+
+- Add regression coverage for existing `USERNAME`/`USER_NAME` label aliases and full-value cached-model username findings, including class and byte-offset fidelity.
+
+- Preserve failed macOS test-harness exit statuses when the native teardown hook has no explicit CLI status; retain fast-exit protection for CLI statuses and intentionally leaked native sessions.
+
+- Lower the token NER microbatch budget from 16K to 2K padded tokens to reduce inference working memory. Preserve model, threshold, window context, detection scope and every queued window.
 
 ## 0.4.0 - 2026-10-13
 

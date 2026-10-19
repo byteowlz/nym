@@ -738,7 +738,13 @@ impl Detector {
                 // Contextual patterns may include benign syntax to establish
                 // sensitivity. Only their named `pii` span is a finding; other
                 // alternatives and ordinary patterns retain the full match.
-                let Some(m) = captures.name("pii").or_else(|| captures.get(0)) else {
+                // `piz` is the secondary contextual span of a pattern whose
+                // alternatives cannot share one capture-group name.
+                let Some(m) = captures
+                    .name("pii")
+                    .or_else(|| captures.name("piz"))
+                    .or_else(|| captures.get(0))
+                else {
                     continue;
                 };
                 if Self::is_social_handle_pattern(pattern.name)
@@ -849,6 +855,38 @@ impl Default for Detector {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    fn spans(config: DetectorConfig, text: &str) -> Vec<String> {
+        Detector::new(&config)
+            .unwrap()
+            .detect(text)
+            .unwrap()
+            .into_iter()
+            .map(|finding| finding.matched_text)
+            .collect()
+    }
+
+    #[test]
+    fn secret_assignments_cover_screaming_quoted_and_json_style_keys() {
+        let config = DetectorConfig::default().with_patterns(["secret_assignment"]);
+        let value = "SyntheticOnly-Pass-7zQ!";
+        for text in [
+            format!("DB_PASSWORD={value}"),
+            format!("DB_PASSWORD: {value}"),
+            format!("DB_PASSWORD=\"{value}\""),
+            format!("password=\"{value}\""),
+            format!("\"password\": \"{value}\""),
+            format!("token: '{value}'"),
+            format!("api_key = \"{value}\""),
+        ] {
+            let findings = spans(config.clone(), &text);
+            assert_eq!(findings, vec![value.to_string()], "{text}");
+        }
+        // Bare lowercase assignments stay unmatched: without quoting they are
+        // indistinguishable from ordinary code identifiers.
+        assert!(spans(config.clone(), &format!("password={value}")).is_empty());
+        assert!(spans(config, "password_hash = shadowed_value1").is_empty());
+    }
 
     #[cfg(feature = "ner")]
     struct InjectedRuntime {

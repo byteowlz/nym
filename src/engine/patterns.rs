@@ -195,11 +195,18 @@ static VENDOR_SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 });
 
 // Environment-style secret assignments (.env files, shell exports). Upper-case
-// variable names keep this to configuration, not ordinary code identifiers;
-// shell expansions (`$VAR`) are references, not values.
+// Environment/config-style secret assignments. Two shapes:
+// - SCREAMING_CASE keys accept bare or quoted values with `=` or `:`
+//   (configuration identifiers; variable names keep this to configuration,
+//   not ordinary code identifiers; shell expansions (`$VAR`) are references,
+//   not values).
+// - Any-case keys (optionally JSON/YAML-quoted) accept only quoted literal
+//   values: `password="..."`, `"password": "..."`, `token: '...'`. Quoting
+//   marks a literal, so ordinary code identifiers (`password = formData.value`)
+//   and bare lowercase assignments stay unmatched.
 static SECRET_ASSIGNMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     regex(
-        r#"\b[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*=\s*["']?(?P<pii>[^\s"'`$][^\s"'`]{7,})"#,
+        r#"\b[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*[:=]\s*["']?(?P<pii>[^\s"'`$][^\s"'`]{7,})|(?i:["']?(?:password|passwd|secret|token|api_?key|access_?key|private_?key)["']?[ \t]*[:=][ \t]*["'](?P<piz>[^\s"'`$][^\s"'`]{7,})["'])"#,
     )
 });
 
