@@ -14,6 +14,9 @@ pub fn nym_command(home: &TempDir) -> Command {
     command.args(["--config", config.to_str().unwrap()]);
     command
         .env("HOME", home.path())
+        // Windows resolves ~ through USERPROFILE; keep both redirected so
+        // fixtures never touch the real user profile on any platform.
+        .env("USERPROFILE", home.path())
         .env("XDG_STATE_HOME", home.path().join("state"))
         .env("XDG_DATA_HOME", home.path().join("data"));
     command

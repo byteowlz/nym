@@ -1,6 +1,6 @@
 //! Synthetic-only saved-run inventory and source-binding integration proofs.
 use serde_json::Value;
-use std::{fs, process::Output, thread, time::Duration};
+use std::{fs, path::PathBuf, process::Output, thread, time::Duration};
 use tempfile::TempDir;
 
 #[path = "support/command.rs"]
@@ -140,7 +140,9 @@ fn legacy_runs_are_listed_without_artifact_reads_and_incomplete_latest_is_exclud
     assert!(!home.path().join("state/nym/terms/runs").exists());
     // Inventory is metadata-only even for a corrupt artifact; use/registration must verify it.
     fs::write(
-        latest["directory"].as_str().unwrap().to_owned() + "/discovery.json",
+        // The reported directory may be a verbatim \\?\ path on Windows; it
+        // rejects forward slashes, so always extend via Path::join.
+        PathBuf::from(latest["directory"].as_str().unwrap()).join("discovery.json"),
         "private invalid artifact",
     )
     .unwrap();
@@ -224,24 +226,52 @@ fn invalid_inventory_and_selector_fail_before_stdout_and_hosting() {
 #[test]
 fn configured_state_and_data_paths_override_xdg() {
     let home = TempDir::new().unwrap();
+    // Windows ~ comes from the shell known-folder API (dirs 6 ignores HOME and
+    // USERPROFILE there), so the override is exercised with an absolute temp
+    // path on Windows and the tilde form elsewhere.
+    let (state_dir, data_dir, state_value) = if cfg!(windows) {
+        (
+            home.path()
+                .join("configured-state")
+                .to_str()
+                .unwrap()
+                .to_owned(),
+            home.path()
+                .join("configured-data")
+                .to_str()
+                .unwrap()
+                .to_owned(),
+            home.path()
+                .join("configured-state")
+                .to_str()
+                .unwrap()
+                .to_owned(),
+        )
+    } else {
+        (
+            "~/${RUN_TEST_STATE}".to_owned(),
+            "~/configured-data".to_owned(),
+            "configured-state".to_owned(),
+        )
+    };
     fs::write(
         home.path().join("config.toml"),
-        "[paths]\nstate_dir = '~/${RUN_TEST_STATE}'\ndata_dir = '~/configured-data'\n",
+        format!("[paths]\nstate_dir = '{state_dir}'\ndata_dir = '{data_dir}'\n"),
     )
     .unwrap();
     let directory = fixture(&home, "external");
     let output = command(&home)
-        .env("RUN_TEST_STATE", "configured-state")
+        .env("RUN_TEST_STATE", state_value)
         .args(["--json", "terms", "runs", "register", &directory])
         .output()
         .unwrap();
     let entry = success(output);
     assert!(
         home.path()
-            .join(format!(
-                "configured-state/terms/runs/{}.json",
-                entry["id"].as_str().unwrap()
-            ))
+            .join("configured-state")
+            .join("terms")
+            .join("runs")
+            .join(format!("{}.json", entry["id"].as_str().unwrap()))
             .exists()
     );
     assert!(!home.path().join("state/nym/terms/runs").exists());

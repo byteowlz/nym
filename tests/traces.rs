@@ -389,8 +389,9 @@ fn redaction_profiles_are_shared_and_stack_on_default() {
     assert_eq!(
         listed,
         serde_json::json!([
-            {"name": "default", "path": root.join("xdg/nym/profiles/default"), "sensitive": 0, "allow": 1},
-            {"name": "work", "path": root.join("xdg/nym/profiles/work"), "sensitive": 1, "allow": 1}
+            // Segment-wise joins keep expected paths backslash-normalized on Windows.
+            {"name": "default", "path": root.join("xdg").join("nym").join("profiles").join("default"), "sensitive": 0, "allow": 1},
+            {"name": "work", "path": root.join("xdg").join("nym").join("profiles").join("work"), "sensitive": 1, "allow": 1}
         ])
     );
 

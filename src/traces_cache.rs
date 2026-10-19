@@ -184,10 +184,13 @@ impl NerCache {
             body.push('\n');
         }
         let mut file = private_options()
+            .read(true)
             .append(true)
             .create(true)
             .open(&self.file)
             .context("failed to open the NER cache")?;
+        // Windows LockFileEx needs read or write data access; an append-only
+        // handle only requests FILE_APPEND_DATA and fails with Access denied.
         file.lock().context("failed to lock the NER cache")?;
         file.write_all(body.as_bytes())?;
         file.unlock()?;

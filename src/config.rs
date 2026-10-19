@@ -1339,14 +1339,24 @@ mod tests {
 
     #[test]
     fn xdg_values_must_be_absolute_and_nonempty() {
-        let home = Some(PathBuf::from("/home/ada"));
+        // Fixture roots must be absolute on every target platform: a leading
+        // '/' alone is not absolute on Windows (drive-relative root only).
+        let absolute = |relative: &str| {
+            if cfg!(windows) {
+                PathBuf::from("C:\\").join(relative)
+            } else {
+                PathBuf::from("/").join(relative)
+            }
+        };
+        let home = Some(absolute("home/ada"));
         let resolve = |value: Option<&str>| {
             xdg_base(value.map(Into::into), home.clone(), None, false, ".config")
         };
-        let config = Some(PathBuf::from("/home/ada/.config"));
+        let config = home.as_ref().map(|home| home.join(".config"));
+        let custom = absolute("custom/config");
         assert_eq!(
             [
-                resolve(Some("/custom/config")),
+                resolve(Some(custom.to_str().unwrap())),
                 resolve(None),
                 resolve(Some("")),
                 resolve(Some("relative/config")),
@@ -1355,19 +1365,19 @@ mod tests {
                 xdg_base(
                     Some("relative".into()),
                     home.clone(),
-                    Some("/appdata".into()),
+                    Some(absolute("appdata").into()),
                     true,
                     ".config"
                 ),
             ],
             [
-                Some(PathBuf::from("/custom/config")),
+                Some(custom),
                 config.clone(),
                 config.clone(),
                 config.clone(),
                 config,
                 None,
-                Some(PathBuf::from("/appdata")),
+                Some(absolute("appdata")),
             ]
         );
     }
