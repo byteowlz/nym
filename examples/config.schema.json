@@ -38,6 +38,11 @@
           ],
           "description": "Minimum confidence level for pattern matching",
           "default": "high"
+        },
+        "report_private_ipv4": {
+          "type": "boolean",
+          "default": false,
+          "description": "Report private, loopback, CGNAT and documentation IPv4 ranges. Off by default: they identify infrastructure, not people."
         }
       },
       "additionalProperties": false
@@ -450,6 +455,11 @@
               "consistent"
             ]
           }
+        },
+        "report_private_ipv4": {
+          "type": "boolean",
+          "default": false,
+          "description": "Report private, loopback, CGNAT and documentation IPv4 ranges. Off by default: they identify infrastructure, not people."
         }
       },
       "additionalProperties": false

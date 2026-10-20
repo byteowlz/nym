@@ -181,6 +181,9 @@ pub struct DetectorConfig {
     /// Path to the token-classification model: a local dir (model.onnx + tokenizer.json
     /// + config.json) or a HuggingFace repo id. Used for the TokenClass/Both backends.
     pub ner_token_model: Option<std::path::PathBuf>,
+    /// Report private, loopback, CGNAT and documentation IPv4 ranges. Off by
+    /// default: they are infrastructure, not personal data.
+    pub report_private_ipv4: bool,
     /// Opt-in trace filtering and literal lists. None preserves existing behavior.
     pub trace_policy: Option<TracePolicyConfig>,
 }
@@ -201,12 +204,20 @@ impl Default for DetectorConfig {
             ner_provider: NerProvider::default(),
             ner_threads: None,
             ner_token_model: None,
+            report_private_ipv4: false,
             trace_policy: None,
         }
     }
 }
 
 impl DetectorConfig {
+    /// Report infrastructure IPv4 ranges that are harmless by default.
+    #[must_use]
+    pub fn with_report_private_ipv4(mut self, report: bool) -> Self {
+        self.report_private_ipv4 = report;
+        self
+    }
+
     /// Create a new config with all patterns enabled.
     #[cfg_attr(
         not(test),
@@ -324,6 +335,8 @@ pub struct Detector {
     regex_set: RegexSet,
     /// Ordered list of patterns corresponding to regex set indices
     patterns: Vec<&'static PiiPattern>,
+    /// Report infrastructure-only IPv4 ranges instead of dropping them.
+    report_private_ipv4: bool,
     trace_policy: Option<TracePolicy>,
     /// Optional GLiNER detector for name/address detection
     #[cfg(feature = "ner")]
@@ -426,6 +439,7 @@ impl Detector {
         Ok(Self {
             regex_set,
             patterns,
+            report_private_ipv4: config.report_private_ipv4,
             trace_policy,
             #[cfg(feature = "ner")]
             ner: ner_detector,
@@ -749,6 +763,12 @@ impl Detector {
                 };
                 if Self::is_social_handle_pattern(pattern.name)
                     && !Self::is_valid_social_handle(text, m.start(), m.end())
+                {
+                    continue;
+                }
+                if pattern.name == "ipv4"
+                    && !self.report_private_ipv4
+                    && crate::engine::patterns::is_local_ipv4(&text[m.start()..m.end()])
                 {
                     continue;
                 }

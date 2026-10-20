@@ -1114,7 +1114,9 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         config.detection.min_confidence.into()
     };
 
-    let mut detector_config = DetectorConfig::default().with_min_confidence(min_confidence);
+    let mut detector_config = DetectorConfig::default()
+        .with_min_confidence(min_confidence)
+        .with_report_private_ipv4(config.detection.report_private_ipv4);
 
     // Use patterns from CLI, or ruleset, or fall back to config
     if let Some(ref patterns) = cmd.patterns {
@@ -2079,7 +2081,9 @@ fn decide_one(
 #[cfg(feature = "decision")]
 fn build_decide_detector(config: &Config, cmd: &DecideCommand) -> Result<Detector> {
     let min_confidence = config.detection.min_confidence.into();
-    let mut detector_config = DetectorConfig::default().with_min_confidence(min_confidence);
+    let mut detector_config = DetectorConfig::default()
+        .with_min_confidence(min_confidence)
+        .with_report_private_ipv4(config.detection.report_private_ipv4);
     if !config.detection.enabled_patterns.is_empty() {
         detector_config =
             detector_config.with_patterns(config.detection.enabled_patterns.iter().cloned());
@@ -2236,7 +2240,9 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
         config.detection.min_confidence.into()
     };
 
-    let mut detector_config = DetectorConfig::default().with_min_confidence(min_confidence);
+    let mut detector_config = DetectorConfig::default()
+        .with_min_confidence(min_confidence)
+        .with_report_private_ipv4(config.detection.report_private_ipv4);
 
     // Use patterns from CLI, or ruleset, or fall back to config
     if let Some(ref patterns) = cmd.patterns {

@@ -396,7 +396,7 @@ mod tests {
                     "email": "alice@company.org"
                 }
             },
-            "logs": ["Visit from 192.168.1.100"]
+            "logs": ["Visit from 8.8.8.8"]
         }"#;
 
         let (output, replacements) = process_json(input, &detector, &mut replacer).unwrap();
@@ -430,7 +430,7 @@ mod tests {
             "user": {
                 "email": "test@example.com"
             },
-            "ips": ["192.168.1.1", "10.0.0.1"]
+            "ips": ["8.8.8.8", "1.1.1.1"]
         }"#;
 
         let matches = detect_json(input, &detector).unwrap();

@@ -126,6 +126,10 @@ pub struct DetectionConfig {
     pub disabled_patterns: Vec<String>,
     /// Minimum confidence level
     pub min_confidence: ConfidenceConfig,
+    /// Report private/loopback/CGNAT/documentation IPv4 ranges (off by default:
+    /// they identify infrastructure, not people).
+    #[serde(default)]
+    pub report_private_ipv4: bool,
 }
 
 impl Default for DetectionConfig {
@@ -134,6 +138,7 @@ impl Default for DetectionConfig {
             enabled_patterns: Vec::new(),
             disabled_patterns: Vec::new(),
             min_confidence: ConfidenceConfig::High,
+            report_private_ipv4: false,
         }
     }
 }

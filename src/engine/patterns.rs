@@ -124,6 +124,32 @@ static CREDIT_CARD_NODASH_REGEX: LazyLock<Regex> =
     LazyLock::new(|| regex(r"\b(?:4\d{15}|5[1-5]\d{14}|3[47]\d{13}|6(?:011|5\d{2})\d{12})\b"));
 
 // IPv4 address
+/// True when an IPv4 address carries no personal information: loopback, RFC1918
+/// private space, link-local, CGNAT (100.64.0.0/10, which includes the tailnet),
+/// multicast/reserved blocks and the documentation/benchmark ranges. These appear
+/// constantly in agent logs as infrastructure and were the largest measured
+/// false-positive family after URLs (70% of reviewed ipv4 findings were harmless).
+pub(crate) fn is_local_ipv4(value: &str) -> bool {
+    let octets: Option<Vec<u8>> = value
+        .split('.')
+        .map(|part| part.parse::<u8>().ok())
+        .collect();
+    let Some(octets) = octets.filter(|octets| octets.len() == 4) else {
+        return false;
+    };
+    let [a, b, c, _] = [octets[0], octets[1], octets[2], octets[3]];
+    matches!(a, 0 | 10 | 127)                 // this-network, RFC1918, loopback
+        || (a == 172 && (16..=31).contains(&b))   // RFC1918
+        || (a == 192 && b == 168)                 // RFC1918
+        || (a == 169 && b == 254)                 // link-local
+        || (a == 100 && (64..=127).contains(&b))  // CGNAT / tailnet
+        || a >= 224                               // multicast, reserved, broadcast
+        || (a == 192 && b == 0 && c == 2)         // TEST-NET-1
+        || (a == 198 && b == 51 && c == 100)      // TEST-NET-2
+        || (a == 203 && b == 0 && c == 113)       // TEST-NET-3
+        || (a == 198 && (b == 18 || b == 19)) // benchmarking
+}
+
 static IPV4_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     regex(
         r"(?x)
@@ -843,6 +869,43 @@ mod tests {
         assert!(re.is_match("user+tag@example.co.uk"));
         assert!(!re.is_match("not-an-email"));
         assert!(!re.is_match("@missing-local.com"));
+    }
+
+    #[test]
+    fn local_ipv4_ranges_are_not_personal() {
+        for value in [
+            "127.0.0.1",
+            "10.1.2.3",
+            "172.16.0.1",
+            "172.31.255.254",
+            "192.168.1.1",
+            "169.254.10.1",
+            "100.64.0.1",
+            "100.127.255.254",
+            "0.0.0.0",
+            "224.0.0.1",
+            "255.255.255.255",
+            "192.0.2.5",
+            "198.51.100.7",
+            "203.0.113.9",
+            "198.18.0.1",
+        ] {
+            assert!(
+                is_local_ipv4(value),
+                "{value} should be local/infrastructure"
+            );
+        }
+        for value in [
+            "8.8.8.8",
+            "1.1.1.1",
+            "100.63.255.255",
+            "100.128.0.1",
+            "172.32.0.1",
+            "203.0.114.1",
+        ] {
+            assert!(!is_local_ipv4(value), "{value} should stay reportable");
+        }
+        assert!(!is_local_ipv4("not.an.ip"));
     }
 
     #[test]
