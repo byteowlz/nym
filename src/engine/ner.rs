@@ -426,41 +426,7 @@ impl NerDetector {
 
     /// Split text into overlapping chunks, returning (chunk_text, byte_offset) pairs.
     fn split_into_chunks(&self, text: &str) -> Vec<(String, usize)> {
-        let words: Vec<&str> = text.split_whitespace().collect();
-        let mut chunks = Vec::new();
-
-        if words.is_empty() {
-            return chunks;
-        }
-
-        let step = self.chunk_size.saturating_sub(self.chunk_overlap).max(1);
-        let mut word_idx = 0;
-        let mut byte_offset = 0;
-
-        while word_idx < words.len() {
-            let end_idx = (word_idx + self.chunk_size).min(words.len());
-            let chunk_words = &words[word_idx..end_idx];
-            let chunk_text = chunk_words.join(" ");
-
-            // Calculate the actual byte offset in the original text
-            // Find where this chunk starts by locating the first word
-            if word_idx > 0 {
-                // Find the byte position of the first word of this chunk
-                if let Some(pos) = text[byte_offset..].find(chunk_words[0]) {
-                    byte_offset += pos;
-                }
-            }
-
-            chunks.push((chunk_text, byte_offset));
-
-            if end_idx >= words.len() {
-                break;
-            }
-
-            word_idx += step;
-        }
-
-        chunks
+        chunk_texts(text, self.chunk_size, self.chunk_overlap)
     }
 
     /// Find cached entities in text using fast string matching.
@@ -626,6 +592,49 @@ impl NerModelPaths {
     }
 }
 
+/// Split `text` into overlapping word-window chunks, returning each chunk's text
+/// and its byte offset in `text`.
+///
+/// Chunk text must be a verbatim slice of `text`: GLiNER span offsets are relative
+/// to the chunk, so a re-joined or whitespace-normalized chunk shifts every span
+/// and redaction then targets the wrong bytes while still reporting the right
+/// matched text.
+fn chunk_texts(text: &str, chunk_size: usize, chunk_overlap: usize) -> Vec<(String, usize)> {
+    let mut starts = Vec::new();
+    let mut in_word = false;
+    for (index, character) in text.char_indices() {
+        if character.is_whitespace() {
+            in_word = false;
+        } else if !in_word {
+            starts.push(index);
+            in_word = true;
+        }
+    }
+    if starts.is_empty() {
+        return Vec::new();
+    }
+    let step = chunk_size.saturating_sub(chunk_overlap).max(1);
+    let mut chunks = Vec::new();
+    let mut word_idx = 0;
+    while word_idx < starts.len() {
+        let end_idx = (word_idx + chunk_size).min(starts.len());
+        let start = starts[word_idx];
+        let end = if end_idx < starts.len() {
+            starts[end_idx]
+        } else {
+            text.len()
+        };
+        let chunk = &text[start..end];
+        let chunk = chunk.trim_end();
+        chunks.push((chunk.to_string(), start));
+        if end_idx >= starts.len() {
+            break;
+        }
+        word_idx += step;
+    }
+    chunks
+}
+
 /// NER model configuration with cache and download support.
 #[cfg(feature = "ner")]
 #[derive(Debug, Clone)]
@@ -748,6 +757,34 @@ mod exit_tests;
 
 #[cfg(all(test, feature = "ner"))]
 mod tests {
+
+    /// GLiNER span offsets are relative to the chunk, so each chunk must be a
+    /// verbatim slice of the source text. Whitespace normalization broke this and
+    /// shifted every span in real (multi-line) session text.
+    #[test]
+    fn chunks_are_verbatim_slices_of_the_source_text() {
+        let text = "first line here\n  indented second line about Svea Nakagawa\n\t\ttabbed tail\nMünchen Köln für";
+        for (size, overlap) in [(4, 0), (4, 1), (6, 2)] {
+            let chunks = super::chunk_texts(text, size, overlap);
+            assert!(!chunks.is_empty());
+            for (chunk, offset) in &chunks {
+                assert!(
+                    text[*offset..].starts_with(chunk.as_str()),
+                    "chunk {chunk:?} at {offset} is not a verbatim slice"
+                );
+                assert!(text.is_char_boundary(*offset));
+            }
+            // Every word of the source appears in at least one chunk.
+            for word in text.split_whitespace() {
+                assert!(
+                    chunks
+                        .iter()
+                        .any(|(chunk, _)| chunk.split_whitespace().any(|w| w == word)),
+                    "word {word:?} missing from chunks {size}/{overlap}"
+                );
+            }
+        }
+    }
     use super::*;
     use crate::engine::patterns::PiiCategory;
 

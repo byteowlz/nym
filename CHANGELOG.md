@@ -4,6 +4,7 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Fix GLiNER chunking offsets: chunks were rebuilt with single-space joins and then offset into the original text, so every span in a chunked text (over 200 words, i.e. most real session bodies) pointed at the wrong bytes while still reporting the right matched text. Chunks are now verbatim slices at word boundaries. Found while measuring the GLiNER union; a new unit test fails on the previous join-and-find chunker.
 - Cover quoted credential assignments in any key case: `password="..."`, `"password": "..."` and `token: '...'` now match `secret_assignment` (value span excludes the quotes), while bare lowercase assignments and code identifiers such as `password_hash` stay unmatched. SCREAMING_CASE keys additionally accept `:` separators. Closes the repeated-password leak in native text and JSON anonymization (trx-ppar.1).
 
 - Require postal context for NER `postcode` findings: an explicit postal/address cue on the line, or an adjacent capitalized word (city, state, country). Bare numeric constants, ports and prose counts no longer get redacted (a port `8080` in a code line was previously replaced).
