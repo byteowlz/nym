@@ -15,19 +15,27 @@
       "properties": {
         "enabled_patterns": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Built-in patterns to enable (default: all high-confidence patterns)",
           "default": []
         },
         "disabled_patterns": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Patterns to disable",
           "default": []
         },
         "min_confidence": {
           "type": "string",
-          "enum": ["high", "medium", "low"],
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
           "description": "Minimum confidence level for pattern matching",
           "default": "high"
         }
@@ -39,12 +47,41 @@
       "description": "Model-independent corpus vocabulary discovery budgets. Suggestions are not privacy decisions.",
       "additionalProperties": false,
       "properties": {
-        "min_count": { "type": "integer", "minimum": 1, "default": 2 },
-        "max_candidates": { "type": "integer", "minimum": 1, "maximum": 5000, "default": 200 },
-        "max_distinct": { "type": "integer", "minimum": 1, "maximum": 1000000, "default": 50000 },
-        "max_examples": { "type": "integer", "minimum": 1, "maximum": 5, "default": 3 },
-        "max_phrase_words": { "type": "integer", "minimum": 1, "maximum": 3, "default": 3 },
-        "max_unit_bytes": { "type": "integer", "minimum": 1, "maximum": 268435456, "default": 16777216 }
+        "min_count": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 2
+        },
+        "max_candidates": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5000,
+          "default": 200
+        },
+        "max_distinct": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 1000000,
+          "default": 50000
+        },
+        "max_examples": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5,
+          "default": 3
+        },
+        "max_phrase_words": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3,
+          "default": 3
+        },
+        "max_unit_bytes": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 268435456,
+          "default": 16777216
+        }
       }
     },
     "trace_policy": {
@@ -52,12 +89,58 @@
       "description": "Opt-in contextual trace policy and local literal-list files. Disabled by default; no blanket code/metadata exclusions.",
       "additionalProperties": false,
       "properties": {
-        "profile": { "type": ["string", "null"], "enum": ["agent_trace", null], "default": null },
-        "public_hosts": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Exact ASCII public-reference hosts; no suffixes or wildcards." },
-        "sensitive_terms_files": { "type": "array", "items": { "type": "string" }, "default": [], "description": "UTF-8 literal lists, one term per nonblank line; supports ~ and environment variables." },
-        "benign_terms_files": { "type": "array", "items": { "type": "string" }, "default": [], "description": "Benign NER terms; requires profile, never overrides sensitive lists or regex/private-cue findings." },
-        "term_boundary": { "type": "string", "enum": ["word", "substring"], "default": "word" },
-        "case_sensitive": { "type": "boolean", "default": true }
+        "profile": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "enum": [
+            "agent_trace",
+            null
+          ],
+          "default": null
+        },
+        "public_hosts": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Exact ASCII public-reference hosts; no suffixes or wildcards."
+        },
+        "sensitive_terms_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "UTF-8 literal lists, one term per nonblank line; supports ~ and environment variables."
+        },
+        "benign_terms_files": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Benign NER terms; requires profile, never overrides sensitive lists or regex/private-cue findings."
+        },
+        "term_boundary": {
+          "type": "string",
+          "enum": [
+            "word",
+            "substring"
+          ],
+          "default": "word"
+        },
+        "case_sensitive": {
+          "type": "boolean",
+          "default": true
+        },
+        "builtin_benign_terms": {
+          "type": "boolean",
+          "default": true,
+          "description": "Apply the built-in vendor/product/tool benign list in person-like classes on every profile. Extend with benign_terms lists; disable to redact product names deliberately."
+        }
       }
     },
     "replacement": {
@@ -66,7 +149,13 @@
       "properties": {
         "strategy": {
           "type": "string",
-          "enum": ["placeholder", "mask", "hash", "random", "consistent"],
+          "enum": [
+            "placeholder",
+            "mask",
+            "hash",
+            "random",
+            "consistent"
+          ],
           "description": "Replacement strategy for detected PII",
           "default": "placeholder"
         },
@@ -111,7 +200,13 @@
       "properties": {
         "level": {
           "type": "string",
-          "enum": ["error", "warn", "info", "debug", "trace"],
+          "enum": [
+            "error",
+            "warn",
+            "info",
+            "debug",
+            "trace"
+          ],
           "description": "Log level",
           "default": "warn"
         }
@@ -163,7 +258,12 @@
         },
         "backend": {
           "type": "string",
-          "enum": ["tokens", "openmed", "gliner", "both"],
+          "enum": [
+            "tokens",
+            "openmed",
+            "gliner",
+            "both"
+          ],
           "description": "Selected NER engines; openmed is a legacy alias for tokens. --ner-model targets the selected engine, and is rejected for both (configure model/token_model separately).",
           "default": "tokens"
         },
@@ -184,7 +284,10 @@
         },
         "provider": {
           "type": "string",
-          "enum": ["auto", "cpu"],
+          "enum": [
+            "auto",
+            "cpu"
+          ],
           "description": "Token backend only (tokens, or token portion of both): auto uses compiled accelerators with CPU fallback; cpu bypasses accelerators. Does not control GLiNER.",
           "default": "auto"
         },
@@ -215,15 +318,54 @@
           "minItems": 1,
           "items": {
             "type": "string",
-            "enum": ["person", "first_name", "firstname", "given_name", "givenname", "last_name", "lastname", "surname", "family_name", "organization", "company", "org", "street_address", "address", "city", "state", "province", "region", "country", "location", "phone_number", "phone", "date", "date_of_birth", "dob", "birthday", "birthdate", "time"]
+            "enum": [
+              "person",
+              "first_name",
+              "firstname",
+              "given_name",
+              "givenname",
+              "last_name",
+              "lastname",
+              "surname",
+              "family_name",
+              "organization",
+              "company",
+              "org",
+              "street_address",
+              "address",
+              "city",
+              "state",
+              "province",
+              "region",
+              "country",
+              "location",
+              "phone_number",
+              "phone",
+              "date",
+              "date_of_birth",
+              "dob",
+              "birthday",
+              "birthdate",
+              "time"
+            ]
           },
           "description": "GLiNER-only restrictions; explicit labels require backend=gliner. Omit for GLiNER defaults: person, organization, street_address, city, country. Empty/unknown labels are errors. Token model classes and regex findings are not filtered. given_name maps to first_name; surname maps to last_name. Runtime normalizes case, surrounding whitespace and duplicates."
         }
       },
-      "if": { "required": ["labels"] },
+      "if": {
+        "required": [
+          "labels"
+        ]
+      },
       "then": {
-        "required": ["backend"],
-        "properties": { "backend": { "const": "gliner" } }
+        "required": [
+          "backend"
+        ],
+        "properties": {
+          "backend": {
+            "const": "gliner"
+          }
+        }
       },
       "additionalProperties": false
     },
@@ -253,28 +395,46 @@
         },
         "enabled_patterns": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Patterns to enable for this ruleset"
         },
         "disabled_patterns": {
           "type": "array",
-          "items": { "type": "string" },
+          "items": {
+            "type": "string"
+          },
           "description": "Patterns to disable for this ruleset"
         },
         "min_confidence": {
           "type": "string",
-          "enum": ["high", "medium", "low"],
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
           "description": "Minimum confidence level override"
         },
         "ner": {
           "type": "string",
-          "enum": ["auto", "on", "off"],
+          "enum": [
+            "auto",
+            "on",
+            "off"
+          ],
           "description": "NER mode: auto (use when needed), on (always), off (never)",
           "default": "auto"
         },
         "strategy": {
           "type": "string",
-          "enum": ["placeholder", "mask", "hash", "random", "consistent"],
+          "enum": [
+            "placeholder",
+            "mask",
+            "hash",
+            "random",
+            "consistent"
+          ],
           "description": "Replacement strategy override"
         },
         "pattern_strategies": {
@@ -282,7 +442,13 @@
           "description": "Per-pattern strategy overrides within this ruleset",
           "additionalProperties": {
             "type": "string",
-            "enum": ["placeholder", "mask", "hash", "random", "consistent"]
+            "enum": [
+              "placeholder",
+              "mask",
+              "hash",
+              "random",
+              "consistent"
+            ]
           }
         }
       },
@@ -298,7 +464,13 @@
         },
         "strategy": {
           "type": "string",
-          "enum": ["placeholder", "mask", "hash", "random", "consistent"],
+          "enum": [
+            "placeholder",
+            "mask",
+            "hash",
+            "random",
+            "consistent"
+          ],
           "description": "Replacement strategy for this pattern"
         },
         "template": {
@@ -307,7 +479,11 @@
         },
         "min_confidence": {
           "type": "string",
-          "enum": ["high", "medium", "low"],
+          "enum": [
+            "high",
+            "medium",
+            "low"
+          ],
           "description": "Minimum confidence override for this pattern"
         }
       },

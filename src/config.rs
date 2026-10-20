@@ -58,6 +58,13 @@ pub struct TracePolicySettings {
     pub term_boundary: crate::engine::TermBoundary,
     #[serde(default = "default_case_sensitive")]
     pub case_sensitive: bool,
+    /// Apply the built-in vendor/product/tool benign list (default true).
+    #[serde(default = "default_true")]
+    pub builtin_benign_terms: bool,
+}
+
+const fn default_true() -> bool {
+    true
 }
 
 const fn default_case_sensitive() -> bool {
@@ -74,6 +81,7 @@ impl Default for TracePolicySettings {
             benign_terms_files: Vec::default(),
             term_boundary: policy.term_boundary,
             case_sensitive: policy.case_sensitive,
+            builtin_benign_terms: policy.builtin_benign_terms,
         }
     }
 }

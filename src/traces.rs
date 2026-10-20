@@ -1214,6 +1214,10 @@ const CODE_HANDLES: &[&str] = &[
     "vercel",
 ];
 
+/// Trace pipeline's word-level allowance for models, products, tools and type
+/// names. It is broader than the shared detector list (`DEFAULT_BENIGN_TERMS`)
+/// because trace replacement also allow-lists single words such as "claude" or
+/// "sonnet"; both lists are applied together.
 /// Built-in allowlist: models, products, tools and type names that detectors
 /// often label as people, organizations or accounts. Matched case-insensitively
 /// against whole values (and, for names, against every word of the value).
@@ -1347,7 +1351,6 @@ const BUILTIN_ALLOW: &[&str] = &[
     "jupyter",
 ];
 
-/// Pseudonym class for a user-listed sensitive literal.
 fn sensitive_class(term: &str) -> &'static str {
     if term.contains('@') {
         "email"
@@ -1360,6 +1363,11 @@ fn sensitive_class(term: &str) -> &'static str {
 
 fn allowlist(files: &[PathBuf]) -> Result<HashSet<String>> {
     let mut allow: HashSet<String> = BUILTIN_ALLOW.iter().map(|s| (*s).to_string()).collect();
+    allow.extend(
+        crate::engine::trace_policy::DEFAULT_BENIGN_TERMS
+            .iter()
+            .map(|term| (*term).to_string()),
+    );
     for path in files {
         let text = fs::read_to_string(&path).context("failed to read allow terms file")?;
         allow.extend(

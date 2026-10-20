@@ -517,6 +517,9 @@ struct TraceOpts {
     /// UTF-8 file of benign literals (repeatable; never vetoes sensitive/regex findings)
     #[arg(long = "benign-terms-file", value_name = "FILE")]
     benign_terms_files: Vec<String>,
+    /// Do not apply the built-in vendor/product name list (redact those too)
+    #[arg(long = "no-builtin-benign-terms")]
+    no_builtin_benign_terms: bool,
     /// Exact public DNS host (repeatable; replaces configured hosts)
     #[arg(long = "public-host", value_name = "HOST")]
     public_hosts: Vec<String>,
@@ -580,6 +583,7 @@ fn configure_trace(
             files(&opts.benign_terms_files, &settings.benign_terms_files)?,
             &profile_lists.allow,
         ),
+        builtin_benign_terms: !opts.no_builtin_benign_terms && settings.builtin_benign_terms,
         case_sensitive: opts.term_case_sensitive.unwrap_or(settings.case_sensitive),
         term_boundary: match opts.term_boundary {
             Some(BoundaryArg::Word) => engine::TermBoundary::Word,
@@ -588,13 +592,9 @@ fn configure_trace(
         },
     };
     policy.validate()?;
-    if policy.profile.is_some()
-        || !policy.sensitive_terms.is_empty()
-        || !policy.benign_terms.is_empty()
-        || !policy.public_hosts.is_empty()
-    {
-        detector = detector.with_trace_policy(policy);
-    }
+    // Always install the policy: its built-in benign list applies to every
+    // command, and profile/CLI terms extend it.
+    detector = detector.with_trace_policy(policy);
     Ok(detector)
 }
 
@@ -2323,7 +2323,11 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
                 .map(|m| (m.pii_match.pattern_name.as_str(), m.pii_match.category))
                 .collect();
             let mut summary = engine::AuditSummary::from_findings(findings, &fail_policy);
-            summary.trace_policy = detector_config.trace_policy.as_ref().map(|_| trace_stats);
+            summary.trace_policy = detector_config
+                .trace_policy
+                .as_ref()
+                .filter(|policy| policy.user_configured() || trace_stats.recorded())
+                .map(|_| trace_stats);
 
             if cmd.summary_json {
                 println!("{}", engine::to_summary_json(&summary)?);
@@ -2359,7 +2363,10 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
                     .ok_or_else(|| anyhow!("text reader unavailable"))?,
                 &detector,
                 &fail_policy,
-                detector_config.trace_policy.is_some(),
+                detector_config
+                    .trace_policy
+                    .as_ref()
+                    .is_some_and(engine::TracePolicyConfig::user_configured),
             )?;
         }
         FormatArg::Text => {
@@ -2371,7 +2378,11 @@ fn handle_detect(common: &CommonOpts, config: &Config, cmd: DetectCommand) -> Re
                 .map(|m| (m.pattern_name.as_str(), m.category))
                 .collect();
             let mut summary = engine::AuditSummary::from_findings(findings, &fail_policy);
-            summary.trace_policy = detector_config.trace_policy.as_ref().map(|_| trace_stats);
+            summary.trace_policy = detector_config
+                .trace_policy
+                .as_ref()
+                .filter(|policy| policy.user_configured() || trace_stats.recorded())
+                .map(|_| trace_stats);
 
             if cmd.summary_json {
                 println!("{}", engine::to_summary_json(&summary)?);
@@ -3603,11 +3614,11 @@ fn detect_jsonl(
     reader: &mut input::TextReader,
     detector: &Detector,
     policy: &engine::FailOnPolicy,
-    trace_enabled: bool,
+    report_trace_policy: bool,
 ) -> Result<()> {
     let selector = build_path_selector(&cmd.include_paths, &cmd.exclude_paths)?;
     let mut summary = engine::AuditSummary::from_findings(std::iter::empty(), policy);
-    summary.trace_policy = trace_enabled.then(engine::TracePolicyStats::default);
+    summary.trace_policy = report_trace_policy.then(engine::TracePolicyStats::default);
     let mut staged = tempfile::tempfile()?;
     let mut first = true;
     if common.json {

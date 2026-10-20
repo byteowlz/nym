@@ -33,6 +33,10 @@ benign_terms_files = []
 # Unicode word boundaries or "substring" for paths/identifiers; no normalization.
 term_boundary = "word"
 case_sensitive = true
+# Built-in vendor/model list (claude opus, gpt-4, openai, ...) applied in
+# person-like classes on every profile; extend it with the lists above.
+# CLI: --no-builtin-benign-terms to redact product names deliberately.
+builtin_benign_terms = true
 # Sensitive matches work without the profile and win over benign lists.
 # Benign lists require the profile and never suppress regex/private-cue matches.
 

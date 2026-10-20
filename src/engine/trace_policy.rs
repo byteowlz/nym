@@ -46,8 +46,81 @@ pub struct TracePolicyConfig {
     pub public_hosts: Vec<String>,
     pub sensitive_terms: Vec<String>,
     pub benign_terms: Vec<String>,
+    /// Apply the built-in vendor/product/tool name list (models labelled as
+    /// people). On by default; disable to redact product names deliberately.
+    pub builtin_benign_terms: bool,
     pub case_sensitive: bool,
     pub term_boundary: TermBoundary,
+}
+
+/// Vendor, product and tool names that NER models label as people
+/// ("Claude Opus", "Mistral Large"). Seeded into the benign list by default so
+/// every backend and command gets the same suppression; users extend it with
+/// `benign_terms` (profile `allow.txt`, `--benign-terms-file`, config) and turn
+/// the built-in part off with `builtin_benign_terms = false`.
+///
+/// Entries are matched whole-candidate only, and only for person-like classes
+/// (`benign_eligible`), so credentials, identifiers and contact findings are
+/// never suppressed.
+pub(crate) const DEFAULT_BENIGN_TERMS: &[&str] = &[
+    // vendor/model identifiers that are never a person on their own
+    "claude opus",
+    "claude sonnet",
+    "claude haiku",
+    "claude 3",
+    "claude 3.5",
+    "claude 4",
+    "gpt-3.5",
+    "gpt-4",
+    "gpt-4o",
+    "gpt-5",
+    "mistral large",
+    "mistral small",
+    "llama 2",
+    "llama 3",
+    "llama 4",
+    "gemma 2",
+    "gemma 3",
+    "qwen 2",
+    "qwen 3",
+    "phi 3",
+    "gemini pro",
+    "gemini flash",
+    "gemini ultra",
+    "deepseek v3",
+    "nova pro",
+    "nova lite",
+    "nemotron nano",
+    "nemotron ultra",
+    "whisper large",
+    "moonshine base",
+    // vendors that NER labels as organizations
+    "openai",
+    "anthropic",
+    "huggingface",
+    "hugging face",
+    "ollama",
+];
+/// Fold case and whitespace so a product name matches regardless of spacing.
+fn normalize_identifier(value: &str) -> String {
+    value
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ")
+        .to_lowercase()
+}
+
+impl TracePolicyConfig {
+    /// True when the policy carries user intent (profile, term lists or hosts),
+    /// as opposed to only the always-on built-in defaults. Summaries report the
+    /// policy object only for user-configured policies or recorded outcomes, so
+    /// the default output shape is unchanged.
+    pub fn user_configured(&self) -> bool {
+        self.profile.is_some()
+            || !self.public_hosts.is_empty()
+            || !self.sensitive_terms.is_empty()
+            || !self.benign_terms.is_empty()
+    }
 }
 
 impl Default for TracePolicyConfig {
@@ -57,6 +130,7 @@ impl Default for TracePolicyConfig {
             public_hosts: Vec::new(),
             sensitive_terms: Vec::new(),
             benign_terms: Vec::new(),
+            builtin_benign_terms: true,
             case_sensitive: true,
             term_boundary: TermBoundary::Word,
         }
@@ -83,6 +157,18 @@ pub struct TracePolicyError;
 
 /// Aggregate counts only: no values, paths, labels supplied by users or snippets.
 /// Counts precede overlap merging and count each backend's candidates separately.
+/// Policy outcomes worth reporting. `ner_candidates` is deliberately excluded:
+/// it counts inspection, not a decision, so a run that suppressed nothing keeps
+/// the summary shape it had before the policy was always installed.
+impl TracePolicyStats {
+    pub fn recorded(&self) -> bool {
+        self.suppressed_public_urls > 0
+            || self.suppressed_technical_values > 0
+            || self.suppressed_benign_terms > 0
+            || self.sensitive_term_matches > 0
+    }
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub struct TracePolicyStats {
     pub ner_candidates: usize,
@@ -98,6 +184,10 @@ pub struct TracePolicy {
     public_hosts: Vec<String>,
     sensitive: Vec<Regex>,
     benign: Vec<Regex>,
+    /// Vendor/product names; applied on every profile because they are product
+    /// identifiers, not a trace heuristic. Normalized: lowercased, whitespace
+    /// collapsed, so "Claude   Opus" and "claude opus" both match.
+    builtin_benign: std::collections::HashSet<String>,
     boundary: TermBoundary,
 }
 
@@ -126,6 +216,17 @@ impl TracePolicy {
                 .collect(),
             sensitive: compile_terms(&config.sensitive_terms, config.case_sensitive)?,
             benign: compile_terms(&config.benign_terms, config.case_sensitive)?,
+            // Product identifiers are matched case-insensitively regardless of
+            // the user-term setting: "Claude Opus" and "claude opus" are the
+            // same product, and the list is fixed rather than user-authored.
+            builtin_benign: if config.builtin_benign_terms {
+                DEFAULT_BENIGN_TERMS
+                    .iter()
+                    .map(|term| normalize_identifier(term))
+                    .collect()
+            } else {
+                std::collections::HashSet::new()
+            },
             boundary: config.term_boundary,
         })
     }
@@ -191,6 +292,21 @@ impl TracePolicy {
             .into_iter()
             .filter(|candidate| {
                 stats.ner_candidates += 1;
+                // Product identifiers are removed on every profile; credentials and
+                // contact classes are excluded by benign_eligible.
+                if benign_eligible(candidate)
+                    && candidate.start < candidate.end
+                    && text.get(candidate.start..candidate.end)
+                        == Some(candidate.matched_text.as_str())
+                    && (self.boundary == TermBoundary::Substring
+                        || word_bounded(text, candidate.start, candidate.end))
+                    && self
+                        .builtin_benign
+                        .contains(&normalize_identifier(&candidate.matched_text))
+                {
+                    stats.suppressed_benign_terms += 1;
+                    return false;
+                }
                 if self.profile != Some(TraceProfile::AgentTrace)
                     || private_context
                     || candidate.start >= candidate.end
@@ -866,6 +982,71 @@ mod tests {
                 "synthetic case: {text}"
             );
         }
+    }
+
+    #[test]
+    fn builtin_vendor_names_are_suppressed_on_every_profile() {
+        // No profile: the built-in product list still applies, because a model
+        // name is a product identifier rather than a trace heuristic.
+        let config = TracePolicyConfig {
+            profile: None,
+            builtin_benign_terms: true,
+            ..Default::default()
+        };
+        for (value, pattern, category, suppress) in [
+            ("Claude Opus", "person", PiiCategory::Identity, true),
+            ("claude   opus", "person", PiiCategory::Identity, true),
+            ("GPT-4", "first_name", PiiCategory::Identity, true),
+            ("OpenAI", "organization", PiiCategory::Other, true),
+            // Real people and near-misses stay.
+            (
+                "Benedikt Hammerschmidt",
+                "person",
+                PiiCategory::Identity,
+                false,
+            ),
+            ("Claude", "first_name", PiiCategory::Identity, false),
+            ("Opus Dei", "organization", PiiCategory::Other, false),
+            // Credentials and contacts are never suppressible.
+            ("Claude Opus", "api_key", PiiCategory::Authentication, false),
+            ("Claude Opus", "email", PiiCategory::Contact, false),
+        ] {
+            let text = format!("value {value} end");
+            let found = PiiMatch {
+                pattern_name: pattern.to_string(),
+                matched_text: value.to_string(),
+                start: 6,
+                end: 6 + value.len(),
+                confidence: Confidence::High,
+                category,
+            };
+            let (kept, stats) = filtered(&config, &text, found);
+            assert_eq!(kept.is_empty(), suppress, "{value} as {pattern}");
+            assert_eq!(
+                stats.suppressed_benign_terms,
+                usize::from(suppress),
+                "{value} stats"
+            );
+        }
+    }
+
+    #[test]
+    fn builtin_vendor_names_can_be_disabled_and_user_terms_extend() {
+        let disabled = TracePolicyConfig {
+            profile: None,
+            builtin_benign_terms: false,
+            ..Default::default()
+        };
+        let found = PiiMatch {
+            pattern_name: "person".into(),
+            matched_text: "Claude Opus".into(),
+            start: 6,
+            end: 17,
+            confidence: Confidence::High,
+            category: PiiCategory::Identity,
+        };
+        let (kept, _) = filtered(&disabled, "value Claude Opus end", found);
+        assert_eq!(kept.len(), 1, "opt-out must keep the finding");
     }
 
     #[test]
