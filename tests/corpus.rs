@@ -499,3 +499,81 @@ fn span_alias_collapse_is_blocked_and_plain_text_is_not_quoted() {
         "Eve then Sam."
     );
 }
+
+#[test]
+fn deny_policy_disqualifies_sources_instead_of_redacting() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("input");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("keep.txt"), "owned synthetic fixture\n").unwrap();
+    fs::write(
+        root.join("client-x.txt"),
+        "confidential: project nightingale\n",
+    )
+    .unwrap();
+    let deny = dir.path().join("deny.txt");
+    fs::write(&deny, "# never publish this project\nnightingale\n").unwrap();
+    let plan_path = dir.path().join("plan.json");
+    let reported = ok(run(&[
+        "corpus",
+        "inventory",
+        root.to_str().unwrap(),
+        "-o",
+        plan_path.to_str().unwrap(),
+        "--deny-file",
+        deny.to_str().unwrap(),
+    ]));
+    assert_eq!(reported["denied_sources"], 1);
+
+    // A denied source can never be approved into a candidate bundle.
+    let mut plan: Value = serde_json::from_slice(&fs::read(&plan_path).unwrap()).unwrap();
+    reviewed(&mut plan);
+    save(&plan_path, &plan);
+    let out = dir.path().join("out");
+    let ledger = dir.path().join("ledger.json");
+    let blocked = applied(&plan_path, &root, &out, &ledger);
+    assert!(!blocked.status.success());
+    assert!(blocked.stdout.is_empty());
+    assert!(!out.exists());
+    assert!(!ledger.exists());
+
+    // Removing the disqualified source clears the gate.
+    fs::remove_file(root.join("client-x.txt")).unwrap();
+    let replan = dir.path().join("plan2.json");
+    let clean = ok(run(&[
+        "corpus",
+        "inventory",
+        root.to_str().unwrap(),
+        "-o",
+        replan.to_str().unwrap(),
+        "--deny-file",
+        deny.to_str().unwrap(),
+    ]));
+    assert_eq!(clean["denied_sources"], 0);
+    let mut plan: Value = serde_json::from_slice(&fs::read(&replan).unwrap()).unwrap();
+    reviewed(&mut plan);
+    save(&replan, &plan);
+    ok(applied(&replan, &root, &out, &ledger));
+}
+
+#[test]
+fn invalid_deny_pattern_fails_closed() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("input");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("a.txt"), "owned synthetic fixture\n").unwrap();
+    let deny = dir.path().join("deny.txt");
+    fs::write(&deny, "unclosed(field\n").unwrap();
+    let plan_path = dir.path().join("plan.json");
+    let failed = run(&[
+        "corpus",
+        "inventory",
+        root.to_str().unwrap(),
+        "-o",
+        plan_path.to_str().unwrap(),
+        "--deny-file",
+        deny.to_str().unwrap(),
+    ]);
+    assert!(!failed.status.success());
+    assert!(!plan_path.exists());
+}

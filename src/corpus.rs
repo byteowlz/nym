@@ -35,6 +35,9 @@ enum Command {
         scope: Scope,
         #[arg(long, default_value_t = 42)]
         seed: u64,
+        /// UTF-8 file of deny regexes (one per line); a match disqualifies the source
+        #[arg(long, value_name = "FILE")]
+        deny_file: Option<PathBuf>,
     },
     /// Check immutable sources and complete declared decisions without writing outputs
     Validate {
@@ -78,6 +81,10 @@ struct Plan {
     version: u32,
     scope: Scope,
     seed: u64,
+    /// Regexes that disqualify a source from publication outright. A match is
+    /// not redaction: the source must be removed or the policy changed.
+    #[serde(default)]
+    deny: Vec<String>,
     sources: Vec<Source>,
 }
 #[derive(Clone, Deserialize, Serialize)]
@@ -89,6 +96,9 @@ struct Source {
     bytes: u64,
     format: String,
     group: String,
+    /// Index into `Plan::deny` when this source matched a deny rule.
+    #[serde(default)]
+    denied_by: Option<usize>,
     review: Option<Review>,
     units: Vec<Unit>,
 }
@@ -336,7 +346,22 @@ fn units(id: &str, path: &str, bytes: &[u8], format: &str) -> Result<Vec<Unit>> 
         })
         .collect())
 }
-fn inventory(root: &Path, scope: Scope, seed: u64) -> Result<Plan> {
+fn compile_deny(patterns: &[String]) -> Result<Vec<regex::Regex>> {
+    patterns
+        .iter()
+        .map(|pattern| regex::Regex::new(pattern).map_err(|_| anyhow!("invalid deny pattern")))
+        .collect()
+}
+
+fn deny_index(deny: &[regex::Regex], bytes: &[u8]) -> Option<usize> {
+    if deny.is_empty() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(bytes);
+    deny.iter().position(|pattern| pattern.is_match(&text))
+}
+
+fn inventory(root: &Path, scope: Scope, seed: u64, deny: &[String]) -> Result<Plan> {
     let mut paths = Vec::new();
     files(root, root, 0, &mut paths)?;
     let mut keyed = paths
@@ -348,6 +373,7 @@ fn inventory(root: &Path, scope: Scope, seed: u64) -> Result<Plan> {
     if paths.is_empty() {
         bail!("empty corpus");
     }
+    let deny_patterns = compile_deny(deny)?;
     let mut total = 0;
     let mut sources = Vec::new();
     for (index, path) in paths.iter().enumerate() {
@@ -360,8 +386,10 @@ fn inventory(root: &Path, scope: Scope, seed: u64) -> Result<Plan> {
         let name = source_name(path, root)?;
         let id = format!("f{index:05}");
         let fmt = format(path);
+        let denied_by = deny_index(&deny_patterns, &bytes);
         sources.push(Source {
             group: id.clone(),
+            denied_by,
             units: units(&id, &name, &bytes, fmt)?,
             id,
             path: name,
@@ -375,6 +403,7 @@ fn inventory(root: &Path, scope: Scope, seed: u64) -> Result<Plan> {
         version: VERSION,
         scope,
         seed,
+        deny: deny.to_vec(),
         sources,
     })
 }
@@ -382,7 +411,7 @@ fn check_sources(plan: &Plan, root: &Path) -> Result<()> {
     if plan.version != VERSION {
         bail!("unsupported corpus artifact version");
     }
-    let actual = inventory(root, plan.scope, plan.seed)?;
+    let actual = inventory(root, plan.scope, plan.seed, &plan.deny)?;
     if actual.sources.len() != plan.sources.len() {
         bail!("corpus source set changed");
     }
@@ -415,6 +444,19 @@ fn check_sources(plan: &Plan, root: &Path) -> Result<()> {
     Ok(())
 }
 fn decisions(plan: &Plan) -> Result<()> {
+    if let Some((index, source)) = plan
+        .sources
+        .iter()
+        .enumerate()
+        .find(|(_, source)| source.denied_by.is_some())
+    {
+        // Value-free diagnostic: source id plus which deny rule fired.
+        let rule = source.denied_by.unwrap_or_default();
+        bail!(
+            "corpus source {} (index {index}) is disqualified by deny rule {rule}; remove it or change the policy",
+            source.id
+        );
+    }
     for source in &plan.sources {
         let review = source
             .review
@@ -1036,13 +1078,40 @@ pub(crate) fn run(common: &crate::CommonOpts, command: CorpusCommand) -> Result<
             output,
             scope,
             seed,
+            deny_file,
         } => {
             let root = source.canonicalize()?;
             outside(&output, &root)?;
-            let plan = inventory(&root, scope, seed)?;
+            let deny = match deny_file {
+                Some(path) => {
+                    let meta = fs::symlink_metadata(&path)?;
+                    if !meta.is_file() || meta.file_type().is_symlink() || meta.len() > 1024 * 1024
+                    {
+                        bail!("invalid deny policy file");
+                    }
+                    fs::read_to_string(&path)?
+                        .lines()
+                        .map(str::trim)
+                        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+                        .map(str::to_owned)
+                        .collect::<Vec<_>>()
+                }
+                None => Vec::new(),
+            };
+            let plan = inventory(&root, scope, seed, &deny)?;
             let count = plan.sources.iter().map(|s| s.units.len()).sum::<usize>();
+            let denied = plan
+                .sources
+                .iter()
+                .filter(|s| s.denied_by.is_some())
+                .count();
             private_write(&output, &serde_json::to_vec_pretty(&plan)?)?;
-            Ok(serde_json::json!({"sources":plan.sources.len(),"units":count,"unresolved":count}))
+            Ok(serde_json::json!({
+                "sources": plan.sources.len(),
+                "units": count,
+                "unresolved": count,
+                "denied_sources": denied,
+            }))
         }
         Command::Validate { plan, source } => {
             let plan: Plan = read_json(&plan)?;
