@@ -674,8 +674,8 @@ struct AnonCommand {
     #[arg(long)]
     seed: Option<u64>,
 
-    /// Placeholder numbering for --strategy placeholder: session (sequential)
-    /// or corpus (stable id derived from the value)
+    /// Placeholder numbering for --strategy placeholder: file (sequential within
+    /// one input) or corpus (stable id derived from the value)
     #[arg(long, value_enum)]
     placeholder_scope: Option<PlaceholderScopeArg>,
 
@@ -739,8 +739,8 @@ enum StrategyArg {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum PlaceholderScopeArg {
-    /// Number inside one session: <EMAIL_1>, <EMAIL_2>
-    Session,
+    /// Number inside one file: <EMAIL_1>, <EMAIL_2>
+    File,
     /// Stable id derived from the value: <EMAIL_8f3a2b>
     Corpus,
 }
@@ -748,7 +748,7 @@ enum PlaceholderScopeArg {
 impl From<PlaceholderScopeArg> for engine::PlaceholderScope {
     fn from(arg: PlaceholderScopeArg) -> Self {
         match arg {
-            PlaceholderScopeArg::Session => Self::Session,
+            PlaceholderScopeArg::File => Self::File,
             PlaceholderScopeArg::Corpus => Self::Corpus,
         }
     }

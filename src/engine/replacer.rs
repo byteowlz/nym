@@ -73,9 +73,9 @@ pub enum PlaceholderScope {
     /// existing pipeline matching `<EMAIL>` does not break.
     #[default]
     None,
-    /// Sequential per class within one input/session: `<EMAIL_1>`, `<EMAIL_2>`.
-    /// Deterministic because a session is processed in order.
-    Session,
+    /// Sequential per class within one input (file): `<EMAIL_1>`, `<EMAIL_2>`.
+    /// Deterministic because a file is processed in order.
+    File,
     /// Stable per value across a corpus: `<EMAIL_8f3a2b>`, derived from the
     /// value itself so parallel sessions cannot disagree about the numbering.
     Corpus,
@@ -90,7 +90,7 @@ pub struct ReplacerConfig {
     pub seed: Option<u64>,
     /// Domain to use for email replacements
     pub email_domain: String,
-    /// Numbering scheme for `Placeholder`: per session or stable per corpus.
+    /// Numbering scheme for `Placeholder`: per file or stable per corpus.
     pub placeholder_scope: PlaceholderScope,
 }
 
@@ -330,7 +330,7 @@ impl Replacer {
         let value = &pii_match.matched_text;
         let index = match self.config.placeholder_scope {
             PlaceholderScope::None => return Self::placeholder_bare(pii_match),
-            PlaceholderScope::Session => {
+            PlaceholderScope::File => {
                 let key = (class.clone(), value.clone());
                 if let Some(existing) = self.placeholder_ids.get(&key) {
                     *existing
@@ -1785,10 +1785,10 @@ mod tests {
     }
 
     #[test]
-    fn placeholders_are_stable_within_a_session_and_per_class() {
+    fn placeholders_are_stable_within_a_file_and_per_class() {
         let mut replacer = Replacer::new(ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
-            placeholder_scope: PlaceholderScope::Session,
+            placeholder_scope: PlaceholderScope::File,
             ..Default::default()
         });
         let first = replacer
@@ -1807,10 +1807,10 @@ mod tests {
         assert_eq!(again, "<EMAIL_1>", "same value keeps its index");
         assert_eq!(other, "<EMAIL_2>", "distinct values get distinct indices");
         assert_eq!(phone, "<PHONE_1>", "classes number independently");
-        // Two sessions agree on the numbering because each processes in order.
+        // Two files agree on the numbering because each is processed in order.
         let mut second = Replacer::new(ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
-            placeholder_scope: PlaceholderScope::Session,
+            placeholder_scope: PlaceholderScope::File,
             ..Default::default()
         });
         assert_eq!(
@@ -1846,7 +1846,7 @@ mod tests {
         let b_second = b
             .replace(&make_match("email", "ada@example.invalid"))
             .replacement;
-        assert_eq!(a_first, b_second, "same value, same token across sessions");
+        assert_eq!(a_first, b_second, "same value, same token across files");
         assert_eq!(b_first, a_second);
         assert_ne!(a_first, a_second);
         assert!(a_first.starts_with("<EMAIL_") && a_first.ends_with('>'));
@@ -2073,7 +2073,7 @@ mod tests {
             strategy: ReplacementStrategy::Fake,
             seed: Some(42),
             email_domain: "example.com".to_string(),
-            placeholder_scope: PlaceholderScope::Session,
+            placeholder_scope: PlaceholderScope::File,
         });
 
         // First process a name
@@ -2117,7 +2117,7 @@ mod tests {
             strategy: ReplacementStrategy::Fake,
             seed: Some(42),
             email_domain: "example.com".to_string(),
-            placeholder_scope: PlaceholderScope::Session,
+            placeholder_scope: PlaceholderScope::File,
         });
 
         // Process a name with umlauts

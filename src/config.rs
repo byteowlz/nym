@@ -173,7 +173,7 @@ pub struct ReplacementConfig {
     pub seed: Option<u64>,
     /// Domain for email replacements
     pub email_domain: String,
-    /// Placeholder numbering: sequential per session, or stable per corpus.
+    /// Placeholder numbering: sequential per file, or stable per corpus.
     #[serde(default)]
     pub placeholder_scope: crate::engine::PlaceholderScope,
 }

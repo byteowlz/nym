@@ -474,14 +474,44 @@ accelerates this workload once the EP engages.
 
 ## Train your own model
 
-`scripts/datagen/` synthesizes labeled token-classification data with exact,
-noise-free labels: a local LLM emits `[LABEL]`-placeholder templates, Faker fills
-them with realistic locale-aware values, and offsets are recorded by construction.
+`scripts/datagen/` synthesizes token-classification data with exact span offsets:
+a local LLM emits `[LABEL]`-placeholder templates, Faker fills them with
+locale-aware values, and offsets are recorded by construction. Exact offsets do
+not guarantee correct contextual labels or complete annotation.
 Output is char-offset JSONL (`{"text","entities":[{start,end,label}]}`) plus
 optional HF BIO — ready for `AutoModelForTokenClassification`. The label set
 matches this backend's mapping, so a trained model integrates cleanly; export it
 with `scripts/convert_openmed_onnx.sh` and point `token_model` at it. See
 [`scripts/datagen/README.md`](../scripts/datagen/README.md).
+
+### Trace-specific synthetic adaptation
+
+`trace_protocol.py --taxonomy CONFIG --output PLAN` freezes ten languages,
+all configured classes and disjoint scenario identifiers before inference.
+`trace_seeds.py --plan PLAN --output BANK` builds authored English scenario
+frames with required field cues; constrained LLM variants are also supported by
+`trace_generate.py templates --plan PLAN --language English`.
+`trace_generate.py templates --plan PLAN --translate-bank BANK` translates prose
+while requiring the exact placeholder multiset to survive. `trace_audit.py` performs a second-model semantic screening
+of synthetic templates only; it never establishes human gold.
+
+Plain `{{LABEL:7}}` and `{{NEG:LABEL:7}}` share a literal but have entity versus
+O labels. `{{KEEP:DATE}}`, `{{KEEP:TIME}}` and `{{KEEP:URL}}` retain recognition
+labels while recording a separate keep policy. Credentials cannot use KEEP.
+Policy metadata is a training/evaluation contract, not a new runtime exemption.
+
+`trace_generate.py fill --plan PLAN --taxonomy CONFIG --tokenizer DIR` requires
+current audit approval, split/language class coverage and cross-split exact/near
+copy checks. Token-boundary splitting retains every inserted span rather than
+silently truncating. Outputs include policy, language, family and source ranges.
+Scenario IDs and lexical checks do not prove semantic family independence.
+
+Run `just test-trace-data` for offline contract tests. `eval_trace.py` reports
+full-span any-label and correct-label counts separately from character coverage;
+these argmax diagnostics are not deployed threshold-0.5 anonymization proof.
+Require multilingual preservation, actual full-value output reconciliation and
+human-labelled real-trace validation before promotion. Keep all corpus/model
+artifacts in private persistent XDG data/state storage; never activate by default.
 
 ## Notes & follow-ups
 

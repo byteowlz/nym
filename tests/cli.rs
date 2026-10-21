@@ -1057,10 +1057,10 @@ fn placeholder_numbering_is_opt_in_and_scope_aware() {
         plain.contains("<EMAIL>"),
         "default stays un-numbered: {plain}"
     );
-    let session = run(&["--placeholder-scope", "session"]);
+    let per_file = run(&["--placeholder-scope", "file"]);
     assert!(
-        session.contains("<EMAIL_1>") && session.contains("<EMAIL_2>"),
-        "{session}"
+        per_file.contains("<EMAIL_1>") && per_file.contains("<EMAIL_2>"),
+        "{per_file}"
     );
     let corpus = run(&["--placeholder-scope", "corpus"]);
     assert!(corpus.contains("<EMAIL_"), "{corpus}");

@@ -177,11 +177,12 @@
         "placeholder_scope": {
           "type": "string",
           "enum": [
-            "session",
+            "none",
+            "file",
             "corpus"
           ],
-          "default": "session",
-          "description": "Placeholder numbering for --strategy placeholder: sequential per session, or a stable id derived from the value."
+          "default": "none",
+          "description": "Placeholder numbering for --strategy placeholder: none keeps <EMAIL>, file numbers within one input (<EMAIL_1>), corpus derives a stable id from the value (<EMAIL_8f3a2b>)."
         }
       },
       "additionalProperties": false

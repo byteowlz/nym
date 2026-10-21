@@ -761,6 +761,7 @@ impl TransformState {
                 strategy: ReplacementStrategy::Fake,
                 seed: Some(seed),
                 email_domain: "example.invalid".into(),
+                placeholder_scope: crate::engine::PlaceholderScope::File,
             })
         });
         let value = resolve(

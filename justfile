@@ -56,6 +56,11 @@ test-gold:
     uv run --no-project python scripts/test_train_ner.py
     uv run --no-project python scripts/test_eval_ner_gold.py
 
+# Synthetic trace plans, policy labels, token boundaries and full-span diagnostics
+test-trace-data:
+    uv run --no-project --with faker python -m unittest discover -s scripts/datagen -p 'test_trace_*.py'
+    uv run --no-project python scripts/test_eval_trace.py
+
 # Run tests with NER feature
 test-ner:
     cargo test --features ner
