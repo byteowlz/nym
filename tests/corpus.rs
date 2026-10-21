@@ -30,7 +30,7 @@ fn snapshot(root: &Path, plan: &Path, scope: &str) -> Value {
 }
 fn reviewed(plan: &mut Value) {
     for source in plan["sources"].as_array_mut().unwrap() {
-        source["review"] = json!({"basis":"synthetic","evidence":"owned synthetic fixture","privacy_review":"fixture review only","serialization_reviewed":true,"media_reviewed":true});
+        source["review"] = json!({"basis":"synthetic","evidence":"owned synthetic fixture","privacy_review":"fixture review only","serialization_reviewed":true,"media_reviewed":true,"publish_verbatim":true});
         for unit in source["units"].as_array_mut().unwrap() {
             unit["approval"] = "fixture".into();
             unit["action"] = json!({"kind":"retain"});
@@ -103,9 +103,14 @@ fn corpus_accounts_keys_numbers_structural_fields_and_opaque_assets() {
         "--json",
     ]);
     assert!(!blocked.status.success());
-    assert_eq!(
-        serde_json::from_slice::<Value>(&blocked.stdout).unwrap(),
-        json!({"error":{"code":"corpus_blocked","state":"blocked"}})
+    let blocked_json: Value = serde_json::from_slice(&blocked.stdout).unwrap();
+    assert_eq!(blocked_json["error"]["code"], "corpus_blocked");
+    assert_eq!(blocked_json["error"]["state"], "blocked");
+    assert!(
+        blocked_json["error"]["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.is_empty()),
+        "operators need the value-free reason: {blocked_json}"
     );
     #[cfg(unix)]
     {
@@ -164,6 +169,7 @@ fn full_and_session_scopes_are_explicit_and_deterministic() {
         ok(run(&[
             "corpus",
             "verify",
+            "--ledger",
             ledger.to_str().unwrap(),
             "--source",
             root.to_str().unwrap(),
@@ -178,6 +184,7 @@ fn full_and_session_scopes_are_explicit_and_deterministic() {
             !run(&[
                 "corpus",
                 "verify",
+                "--ledger",
                 ledger.to_str().unwrap(),
                 "--source",
                 root.to_str().unwrap(),
@@ -345,6 +352,7 @@ fn assets_references_manifest_tamper_and_resume_are_accounted() {
         !run(&[
             "corpus",
             "verify",
+            "--ledger",
             ledger.to_str().unwrap(),
             "--source",
             root.to_str().unwrap(),
@@ -374,6 +382,7 @@ fn assets_references_manifest_tamper_and_resume_are_accounted() {
         !run(&[
             "corpus",
             "verify",
+            "--ledger",
             ledger.to_str().unwrap(),
             "--source",
             root.to_str().unwrap(),
@@ -576,4 +585,43 @@ fn invalid_deny_pattern_fails_closed() {
     ]);
     assert!(!failed.status.success());
     assert!(!plan_path.exists());
+}
+
+#[test]
+fn unchanged_sources_require_an_explicit_verbatim_declaration() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("input");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("a.txt"), "owned synthetic fixture\n").unwrap();
+    let path = dir.path().join("plan.json");
+    let mut plan = snapshot(&root, &path, "session");
+    // Approve everything but retain it verbatim, without declaring that choice.
+    for source in plan["sources"].as_array_mut().unwrap() {
+        source["review"] = json!({"basis":"synthetic","evidence":"fixture","privacy_review":"fixture","serialization_reviewed":true,"media_reviewed":true});
+        for unit in source["units"].as_array_mut().unwrap() {
+            unit["approval"] = "fixture".into();
+            unit["action"] = json!({"kind":"retain"});
+        }
+    }
+    save(&path, &plan);
+    let out = dir.path().join("out");
+    let ledger = dir.path().join("ledger.json");
+    let refused = applied(&path, &root, &out, &ledger);
+    assert!(
+        !refused.status.success(),
+        "unchanged source must not publish silently"
+    );
+    assert!(!out.exists() && !ledger.exists());
+    let message = String::from_utf8_lossy(&refused.stderr);
+    assert!(message.contains("publish_verbatim"), "{message}");
+
+    // Declaring it is enough, and the hash stays available for label binding.
+    for source in plan["sources"].as_array_mut().unwrap() {
+        source["review"]["publish_verbatim"] = true.into();
+    }
+    save(&path, &plan);
+    ok(applied(&path, &root, &out, &ledger));
+    let manifest: Value =
+        serde_json::from_slice(&fs::read(out.join("manifest.json")).unwrap()).unwrap();
+    assert!(manifest["label_sources"][0]["sha256"].is_string());
 }

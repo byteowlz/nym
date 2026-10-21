@@ -62,6 +62,7 @@ enum Command {
     },
     /// Verify every generated source against the private transformation ledger
     Verify {
+        #[arg(long)]
         ledger: PathBuf,
         #[arg(long)]
         source: PathBuf,
@@ -110,6 +111,11 @@ struct Review {
     privacy_review: String,
     serialization_reviewed: bool,
     media_reviewed: bool,
+    /// Required when the transformed source is byte-identical to its input:
+    /// publishing it means publishing the original file, which is a decision
+    /// rather than a side effect of retaining every unit.
+    #[serde(default)]
+    publish_verbatim: bool,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -883,6 +889,19 @@ fn prepare(plan: &Plan, root: &Path) -> Result<(Vec<Output>, Vec<Vec<u8>>)> {
             bail!("corpus output filename collision");
         }
         let bytes = materialize(source, root, &values)?;
+        // Byte-identical output means the published file is the private input.
+        if bytes == bounded_read(&root.join(relative(&source.path)?), 16 * 1024 * 1024)? {
+            let declared = source
+                .review
+                .as_ref()
+                .is_some_and(|review| review.publish_verbatim);
+            if !declared {
+                bail!(
+                    "corpus source {} is unchanged by the transformation; declare publish_verbatim to publish the original file deliberately",
+                    source.id
+                );
+            }
+        }
         total += bytes.len() as u64;
         if bytes.len() as u64 > MAX_BYTES || total > MAX_BYTES * 4 {
             bail!("corpus transformed output size limit exceeded");
@@ -1152,16 +1171,20 @@ pub(crate) fn run(common: &crate::CommonOpts, command: CorpusCommand) -> Result<
             }
             Ok(())
         }
-        Err(_) => {
+        Err(error) => {
+            // Diagnostics are constructed from source ids, indices and rule
+            // numbers only, so the reason is safe to surface.
+            let reason = format!("{error}");
             if common.json {
                 println!(
                     "{}",
-                    serde_json::json!({"error":{"code":"corpus_blocked","state":"blocked"}})
+                    serde_json::json!({"error":{"code":"corpus_blocked","state":"blocked","reason":reason}})
                 );
             }
-            bail!(
-                "corpus operation blocked: invalid, changed, incomplete or unsupported input; inspect the private plan"
-            )
+            if common.verbose > 0 && !common.quiet {
+                eprintln!("corpus blocked: {reason}");
+            }
+            bail!("corpus operation blocked: {reason}")
         }
     }
 }

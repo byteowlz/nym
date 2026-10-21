@@ -3,37 +3,488 @@
   "$id": "urn:nym:corpus:v1",
   "title": "Nym corpus artifacts v1",
   "description": "Private plans and ledgers contain originals. Only manifests are public handoff artifacts. Declarations are not anonymity or rights certification.",
-  "oneOf": [{"$ref":"#/$defs/plan"},{"$ref":"#/$defs/ledger"},{"$ref":"#/$defs/manifest"}],
+  "oneOf": [
+    {
+      "$ref": "#/$defs/plan"
+    },
+    {
+      "$ref": "#/$defs/ledger"
+    },
+    {
+      "$ref": "#/$defs/manifest"
+    }
+  ],
   "$defs": {
-    "digest": {"type":"string","pattern":"^[a-f0-9]{64}$"},
-    "review": {"type":"object","additionalProperties":false,"required":["basis","evidence","privacy_review","serialization_reviewed","media_reviewed"],"properties":{
-      "basis":{"enum":["owned","licensed","synthetic"]},"evidence":{"type":"string","minLength":1},"privacy_review":{"type":"string","minLength":1},"serialization_reviewed":{"type":"boolean"},"media_reviewed":{"type":"boolean"}
-    }},
-    "edit": {"type":"object","additionalProperties":false,"required":["start","end","action"],"properties":{"start":{"type":"integer","minimum":0},"end":{"type":"integer","minimum":1},"action":{"$ref":"#/$defs/action"}}},
-    "action": {"oneOf":[
-      {"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"unresolved"}}},
-      {"type":"object","additionalProperties":false,"required":["kind"],"properties":{"kind":{"const":"retain"}}},
-      {"type":"object","additionalProperties":false,"required":["kind","value"],"properties":{"kind":{"const":"literal"},"value":{"type":"string","minLength":1}}},
-      {"type":"object","additionalProperties":false,"required":["kind","pattern"],"properties":{"kind":{"const":"fake"},"pattern":{"type":"string","minLength":1}}},
-      {"type":"object","additionalProperties":false,"required":["kind","edits"],"properties":{"kind":{"const":"spans"},"edits":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/edit"}}}},
-      {"type":"object","additionalProperties":false,"required":["kind","path","sha256"],"properties":{"kind":{"const":"asset"},"path":{"type":"string","minLength":1},"sha256":{"$ref":"#/$defs/digest"}}},
-      {"type":"object","additionalProperties":false,"required":["kind","source_id"],"properties":{"kind":{"const":"reference"},"source_id":{"type":"string","minLength":1}}}
-    ]},
-    "unit": {"type":"object","additionalProperties":false,"required":["id","location","kind","original","approval","action"],"properties":{
-      "id":{"type":"string","minLength":1},"location":{"type":"string"},"kind":{"enum":["filename","asset","key","string","number","boolean","null","layout","media","empty_object","empty_array"]},"original":{"type":"string"},"entity":{"type":["string","null"]},"approval":{"type":["string","null"]},"action":{"$ref":"#/$defs/action"}
-    }},
-    "source": {"type":"object","additionalProperties":false,"required":["id","path","sha256","bytes","format","group","review","units"],"properties":{
-      "id":{"type":"string","minLength":1},"path":{"type":"string","minLength":1},"sha256":{"$ref":"#/$defs/digest"},"bytes":{"type":"integer","minimum":0},"format":{"enum":["text","json","jsonl","asset"]},"group":{"type":"string","minLength":1},"review":{"oneOf":[{"type":"null"},{"$ref":"#/$defs/review"}]},"units":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/unit"}}
-    }},
-    "plan": {"type":"object","additionalProperties":false,"required":["version","scope","seed","sources"],"properties":{
-      "version":{"const":1},"scope":{"enum":["session","full"]},"seed":{"type":"integer","minimum":0,"maximum":18446744073709551615},"sources":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/source"}}
-    }},
-    "output": {"type":"object","additionalProperties":false,"required":["id","path","sha256","bytes","values"],"properties":{
-      "id":{"type":"string"},"path":{"type":"string"},"sha256":{"$ref":"#/$defs/digest"},"bytes":{"type":"integer","minimum":0},"values":{"type":"array","items":{"type":"string"}}
-    }},
-    "ledger": {"type":"object","additionalProperties":false,"required":["version","plan","outputs"],"properties":{"version":{"const":1},"plan":{"$ref":"#/$defs/plan"},"outputs":{"type":"array","items":{"$ref":"#/$defs/output"}}}},
-    "declaration": {"type":"object","additionalProperties":false,"required":["sources","units","declared_decisions_complete","anonymity_guaranteed","rights_verified_by_nym","dry_run"],"properties":{"sources":{"type":"integer","minimum":1},"units":{"type":"integer","minimum":1},"declared_decisions_complete":{"const":true},"anonymity_guaranteed":{"const":false},"rights_verified_by_nym":{"const":false},"dry_run":{"const":false}}},
-    "label_source": {"type":"object","additionalProperties":false,"required":["id","path","sha256","bytes"],"properties":{"id":{"type":"string"},"path":{"type":"string"},"sha256":{"$ref":"#/$defs/digest"},"bytes":{"type":"integer","minimum":0}}},
-    "manifest": {"type":"object","additionalProperties":false,"required":["version","declaration","label_sources"],"properties":{"version":{"const":1},"declaration":{"$ref":"#/$defs/declaration"},"label_sources":{"type":"array","minItems":1,"items":{"$ref":"#/$defs/label_source"}}}}
+    "digest": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "basis",
+        "evidence",
+        "privacy_review",
+        "serialization_reviewed",
+        "media_reviewed",
+        "publish_verbatim"
+      ],
+      "properties": {
+        "basis": {
+          "enum": [
+            "owned",
+            "licensed",
+            "synthetic"
+          ]
+        },
+        "evidence": {
+          "type": "string",
+          "minLength": 1
+        },
+        "privacy_review": {
+          "type": "string",
+          "minLength": 1
+        },
+        "serialization_reviewed": {
+          "type": "boolean"
+        },
+        "media_reviewed": {
+          "type": "boolean"
+        },
+        "publish_verbatim": {
+          "type": "boolean",
+          "default": false,
+          "description": "Required when the transformed source is byte-identical to its input: publishing it publishes the original file. nym refuses to emit such a source without this declaration."
+        }
+      }
+    },
+    "edit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "start",
+        "end",
+        "action"
+      ],
+      "properties": {
+        "start": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "end": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "action": {
+          "$ref": "#/$defs/action"
+        }
+      }
+    },
+    "action": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "unresolved"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind"
+          ],
+          "properties": {
+            "kind": {
+              "const": "retain"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "value"
+          ],
+          "properties": {
+            "kind": {
+              "const": "literal"
+            },
+            "value": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "pattern"
+          ],
+          "properties": {
+            "kind": {
+              "const": "fake"
+            },
+            "pattern": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "edits"
+          ],
+          "properties": {
+            "kind": {
+              "const": "spans"
+            },
+            "edits": {
+              "type": "array",
+              "minItems": 1,
+              "items": {
+                "$ref": "#/$defs/edit"
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "path",
+            "sha256"
+          ],
+          "properties": {
+            "kind": {
+              "const": "asset"
+            },
+            "path": {
+              "type": "string",
+              "minLength": 1
+            },
+            "sha256": {
+              "$ref": "#/$defs/digest"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
+            "source_id"
+          ],
+          "properties": {
+            "kind": {
+              "const": "reference"
+            },
+            "source_id": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      ]
+    },
+    "unit": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "location",
+        "kind",
+        "original",
+        "approval",
+        "action"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "location": {
+          "type": "string"
+        },
+        "kind": {
+          "enum": [
+            "filename",
+            "asset",
+            "key",
+            "string",
+            "number",
+            "boolean",
+            "null",
+            "layout",
+            "media",
+            "empty_object",
+            "empty_array"
+          ]
+        },
+        "original": {
+          "type": "string"
+        },
+        "entity": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "approval": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "action": {
+          "$ref": "#/$defs/action"
+        }
+      }
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path",
+        "sha256",
+        "bytes",
+        "format",
+        "group",
+        "review",
+        "units"
+      ],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "path": {
+          "type": "string",
+          "minLength": 1
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "format": {
+          "enum": [
+            "text",
+            "json",
+            "jsonl",
+            "asset"
+          ]
+        },
+        "group": {
+          "type": "string",
+          "minLength": 1
+        },
+        "review": {
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "$ref": "#/$defs/review"
+            }
+          ]
+        },
+        "units": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/unit"
+          }
+        }
+      }
+    },
+    "plan": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "scope",
+        "seed",
+        "sources"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "scope": {
+          "enum": [
+            "session",
+            "full"
+          ]
+        },
+        "seed": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 18446744073709551615
+        },
+        "sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/source"
+          }
+        }
+      }
+    },
+    "output": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path",
+        "sha256",
+        "bytes",
+        "values"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "ledger": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "plan",
+        "outputs"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "plan": {
+          "$ref": "#/$defs/plan"
+        },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/output"
+          }
+        }
+      }
+    },
+    "declaration": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sources",
+        "units",
+        "declared_decisions_complete",
+        "anonymity_guaranteed",
+        "rights_verified_by_nym",
+        "dry_run"
+      ],
+      "properties": {
+        "sources": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "units": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "declared_decisions_complete": {
+          "const": true
+        },
+        "anonymity_guaranteed": {
+          "const": false
+        },
+        "rights_verified_by_nym": {
+          "const": false
+        },
+        "dry_run": {
+          "const": false
+        }
+      }
+    },
+    "label_source": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "id",
+        "path",
+        "sha256",
+        "bytes"
+      ],
+      "properties": {
+        "id": {
+          "type": "string"
+        },
+        "path": {
+          "type": "string"
+        },
+        "sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "manifest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "version",
+        "declaration",
+        "label_sources"
+      ],
+      "properties": {
+        "version": {
+          "const": 1
+        },
+        "declaration": {
+          "$ref": "#/$defs/declaration"
+        },
+        "label_sources": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/label_source"
+          }
+        }
+      }
+    }
   }
 }

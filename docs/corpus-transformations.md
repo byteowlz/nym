@@ -5,7 +5,8 @@
 ## Workflow
 
 ```bash
-nym corpus inventory WORKING_INPUT -o PRIVATE_PLAN.json --scope session
+nym corpus inventory WORKING_INPUT -o PRIVATE_PLAN.json --scope session \
+  --deny-file deny.txt   # optional: a match disqualifies the source
 nym corpus status PRIVATE_PLAN.json --json
 nym corpus schema > corpus-schema.json
 # Review/edit PRIVATE_PLAN.json against immutable working sources.
@@ -14,7 +15,7 @@ nym corpus apply PRIVATE_PLAN.json --source WORKING_INPUT \
   -o CANDIDATE --ledger PRIVATE_LEDGER.json --dry-run
 nym corpus apply PRIVATE_PLAN.json --source WORKING_INPUT \
   -o CANDIDATE --ledger PRIVATE_LEDGER.json
-nym corpus verify PRIVATE_LEDGER.json --source WORKING_INPUT --bundle CANDIDATE
+nym corpus verify --ledger PRIVATE_LEDGER.json --source WORKING_INPUT --bundle CANDIDATE
 ```
 
 Plans and ledgers contain originals and private hashes/context. Keep them outside input and candidate trees, outside git, and never distribute them. Files are owner-only. Candidate output is also private by default; publishing remains a separate authorized action. Existing destinations are never overwritten. `apply --resume` verifies an existing matching bundle or reconstructs an interrupted ledger-only commit. Different plans, source changes and corrupt artifacts block resume.
@@ -27,7 +28,7 @@ Session and full scopes are peer choices, not quality levels:
 - `full`: aliases are shared across the whole reviewed corpus.
 - Optional unit `entity` distinguishes identical literals with different meanings or identities. Use the same namespace for linked occurrences; namespaces do not establish identity automatically.
 
-Every unit starts `unresolved`. Neither discovery omissions, no findings, an allowlist, nor ownership establish safety. Every source needs an explicit `review` with declared `basis` (`owned`, `licensed`, `synthetic`), external `evidence`, `privacy_review`, and `serialization_reviewed`/`media_reviewed` acknowledgments. These are operator declarations, not nym verification. Every unit needs a nonempty `approval` receipt and an action:
+Every unit starts `unresolved`. Neither discovery omissions, no findings, an allowlist, nor ownership establish safety. Every source needs an explicit `review` with declared `basis` (`owned`, `licensed`, `synthetic`), external `evidence`, `privacy_review`, and `serialization_reviewed`/`media_reviewed` acknowledgments. These are operator declarations, not nym verification. A source whose transformed bytes equal its input bytes also needs `publish_verbatim: true`: retaining every unit publishes the original file, so that is a decision rather than a side effect. Every unit needs a nonempty `approval` receipt and an action:
 
 ```json
 {"kind":"retain"}

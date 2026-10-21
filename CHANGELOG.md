@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Corpus sources that survive transformation byte-identical now require `publish_verbatim: true` in their review; `apply` refuses otherwise. Retaining every unit publishes the original file, so that is a declared decision rather than a side effect of approval. The public manifest still carries the output hash (needed to bind teacher labels), which for an unchanged source equals the input hash — the declaration is what makes that deliberate.
+
+- Surface the value-free reason for a blocked corpus operation (`corpus_blocked` now carries `reason`, and `-v` prints it) instead of a generic message, so an operator learns which source, index or deny rule blocked the run. `corpus verify` now takes `--ledger` like `apply`, rather than a positional path.
+
 - Placeholders can be numbered, with a configurable scope: `--placeholder-scope file` gives `<EMAIL_1>`, `<EMAIL_2>` per class within one input file (same value keeps its index), and `--placeholder-scope corpus` gives `<EMAIL_8f3a2b>` derived from the value itself, so files processed in any order or in parallel produce identical tokens. Default stays `<EMAIL>`, so existing pipelines keep working; configure with `[replacement] placeholder_scope`. Numbering is what makes placeholders usable as training data: the model learns an identifier shape instead of a plausible-looking fake, and one person is one token across the corpus.
 
 - Corpus deny policy: `corpus inventory --deny-file` evaluates regexes against every source and marks a match as **disqualified** rather than something to redact. `validate`, `apply` and `verify` refuse a plan containing a denied source, so a project that must never be published cannot be "cleaned" into acceptability. Invalid regexes fail closed, the plan records which rule fired, and diagnostics name only the source id and rule index. See `docs/corpus-pipeline.md` for the consolidated pipeline and what it borrows from pi-brain and pi-share-hf.
