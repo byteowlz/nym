@@ -1023,3 +1023,51 @@ fn seeded_build_is_reproducible_across_runs() {
         "same seed+input+strategy must yield identical pseudonyms"
     );
 }
+
+#[test]
+fn placeholder_numbering_is_opt_in_and_scope_aware() {
+    let dir = tempfile::tempdir().unwrap();
+    let cfg = dir.path().join("config.toml");
+    fs::write(&cfg, "[ner]\nenabled = false\n").unwrap();
+    let run = |extra: &[&str]| {
+        let mut cmd = Command::new(env!("CARGO_BIN_EXE_nym"));
+        cmd.arg("--config").arg(&cfg).args([
+            "anon",
+            "--no-ner",
+            "--patterns",
+            "email",
+            "--strategy",
+            "placeholder",
+        ]);
+        cmd.args(extra);
+        cmd.stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        let mut child = cmd.spawn().unwrap();
+        child
+            .stdin
+            .take()
+            .unwrap()
+            .write_all(b"ada@example.invalid and grace@example.invalid\n")
+            .unwrap();
+        String::from_utf8(child.wait_with_output().unwrap().stdout).unwrap()
+    };
+    let plain = run(&[]);
+    assert!(
+        plain.contains("<EMAIL>"),
+        "default stays un-numbered: {plain}"
+    );
+    let session = run(&["--placeholder-scope", "session"]);
+    assert!(
+        session.contains("<EMAIL_1>") && session.contains("<EMAIL_2>"),
+        "{session}"
+    );
+    let corpus = run(&["--placeholder-scope", "corpus"]);
+    assert!(corpus.contains("<EMAIL_"), "{corpus}");
+    assert!(
+        !corpus.contains("<EMAIL>"),
+        "corpus scope must be numbered: {corpus}"
+    );
+    // Content-derived ids are stable across separate runs.
+    assert_eq!(corpus, run(&["--placeholder-scope", "corpus"]));
+}

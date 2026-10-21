@@ -173,6 +173,9 @@ pub struct ReplacementConfig {
     pub seed: Option<u64>,
     /// Domain for email replacements
     pub email_domain: String,
+    /// Placeholder numbering: sequential per session, or stable per corpus.
+    #[serde(default)]
+    pub placeholder_scope: crate::engine::PlaceholderScope,
 }
 
 impl Default for ReplacementConfig {
@@ -181,6 +184,7 @@ impl Default for ReplacementConfig {
             strategy: StrategyConfig::Placeholder,
             seed: None,
             email_domain: "example.com".to_string(),
+            placeholder_scope: crate::engine::PlaceholderScope::None,
         }
     }
 }

@@ -60,7 +60,7 @@ pub use keyfile::{KeyHeader, load_key_file, save_key_file};
 #[expect(unused_imports, reason = "Conditionally used with ner feature")]
 pub use ner::set_exit_code;
 pub use patterns::{BUILTIN_PATTERNS, Confidence, PiiCategory, PiiPattern, get_pattern};
-pub use replacer::{Replacement, ReplacementStrategy, Replacer, ReplacerConfig};
+pub use replacer::{PlaceholderScope, Replacement, ReplacementStrategy, Replacer, ReplacerConfig};
 pub use selector::{CoverageReport, PathSelector};
 #[allow(
     unused_imports,

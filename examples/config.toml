@@ -41,6 +41,10 @@ builtin_benign_terms = true
 # Benign lists require the profile and never suppress regex/private-cue matches.
 
 [replacement]
+# --strategy placeholder numbering. "none" (default) keeps <EMAIL>; "session"
+# numbers per class within one input (<EMAIL_1>); "corpus" derives a stable id
+# from the value (<EMAIL_8f3a2b>) so parallel sessions agree (training data).
+placeholder_scope = "none"
 # Strategy: "placeholder", "mask", "hash", "random", "consistent"
 # - placeholder: Use fixed placeholders like <EMAIL>, <PHONE>
 # - mask: Preserve length with X characters (user@example.com -> XXXX@XXXXXXX.XXX)

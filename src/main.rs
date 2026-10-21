@@ -674,6 +674,11 @@ struct AnonCommand {
     #[arg(long)]
     seed: Option<u64>,
 
+    /// Placeholder numbering for --strategy placeholder: session (sequential)
+    /// or corpus (stable id derived from the value)
+    #[arg(long, value_enum)]
+    placeholder_scope: Option<PlaceholderScopeArg>,
+
     /// Session tag for tracking (auto-generated if not specified)
     #[arg(long)]
     tag: Option<String>,
@@ -730,6 +735,23 @@ enum StrategyArg {
     Consistent,
     #[default]
     Fake,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum PlaceholderScopeArg {
+    /// Number inside one session: <EMAIL_1>, <EMAIL_2>
+    Session,
+    /// Stable id derived from the value: <EMAIL_8f3a2b>
+    Corpus,
+}
+
+impl From<PlaceholderScopeArg> for engine::PlaceholderScope {
+    fn from(arg: PlaceholderScopeArg) -> Self {
+        match arg {
+            PlaceholderScopeArg::Session => Self::Session,
+            PlaceholderScopeArg::Corpus => Self::Corpus,
+        }
+    }
 }
 
 impl From<StrategyArg> for ReplacementStrategy {
@@ -1184,6 +1206,9 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
         strategy,
         seed,
         email_domain: config.replacement.email_domain.clone(),
+        placeholder_scope: cmd
+            .placeholder_scope
+            .map_or(config.replacement.placeholder_scope, Into::into),
     };
 
     let mut replacer = Replacer::new(replacer_config.clone()).with_session_id(session.id.clone());
@@ -1540,6 +1565,9 @@ fn handle_anon_streaming(
         strategy,
         seed,
         email_domain: config.replacement.email_domain.clone(),
+        placeholder_scope: cmd
+            .placeholder_scope
+            .map_or(config.replacement.placeholder_scope, Into::into),
     };
 
     // Generate session

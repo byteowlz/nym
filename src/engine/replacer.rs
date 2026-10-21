@@ -65,6 +65,22 @@ pub struct Replacement {
     pub components: Vec<ComponentMapping>,
 }
 
+/// Numbering for placeholder replacements.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "lowercase")]
+pub enum PlaceholderScope {
+    /// Un-numbered placeholder: `<EMAIL>`. The long-standing default, kept so an
+    /// existing pipeline matching `<EMAIL>` does not break.
+    #[default]
+    None,
+    /// Sequential per class within one input/session: `<EMAIL_1>`, `<EMAIL_2>`.
+    /// Deterministic because a session is processed in order.
+    Session,
+    /// Stable per value across a corpus: `<EMAIL_8f3a2b>`, derived from the
+    /// value itself so parallel sessions cannot disagree about the numbering.
+    Corpus,
+}
+
 /// Configuration for the replacer.
 #[derive(Debug, Clone)]
 pub struct ReplacerConfig {
@@ -74,6 +90,8 @@ pub struct ReplacerConfig {
     pub seed: Option<u64>,
     /// Domain to use for email replacements
     pub email_domain: String,
+    /// Numbering scheme for `Placeholder`: per session or stable per corpus.
+    pub placeholder_scope: PlaceholderScope,
 }
 
 impl Default for ReplacerConfig {
@@ -82,6 +100,7 @@ impl Default for ReplacerConfig {
             strategy: ReplacementStrategy::Placeholder,
             seed: None,
             email_domain: "example.com".to_string(),
+            placeholder_scope: PlaceholderScope::None,
         }
     }
 }
@@ -178,6 +197,10 @@ pub struct Replacer {
     component_cache: HashMap<String, String>,
     /// Counter for generating unique placeholders
     counter: usize,
+    /// Sequential placeholder index per (class, value) within this replacer.
+    placeholder_ids: HashMap<(String, String), usize>,
+    /// Next index per class for sequential placeholders.
+    placeholder_next: HashMap<String, usize>,
     /// RNG for random replacements (uses fake's rand for compatibility)
     rng: StdRng,
     /// Session ID for embedding in replacements
@@ -198,6 +221,8 @@ impl Replacer {
             reserved_aliases: HashMap::new(),
             component_cache: HashMap::new(),
             counter: 0,
+            placeholder_ids: HashMap::new(),
+            placeholder_next: HashMap::new(),
             rng,
             session_id: None,
         }
@@ -238,7 +263,7 @@ impl Replacer {
     /// Generate a replacement for a PII match.
     pub fn replace(&mut self, pii_match: &PiiMatch) -> Replacement {
         let (replacement, components) = match self.config.strategy {
-            ReplacementStrategy::Placeholder => (Self::placeholder_replacement(pii_match), vec![]),
+            ReplacementStrategy::Placeholder => (self.placeholder_replacement(pii_match), vec![]),
             ReplacementStrategy::Mask => (Self::mask_replacement(pii_match), vec![]),
             ReplacementStrategy::Hash => (self.hash_replacement(pii_match), vec![]),
             ReplacementStrategy::Random => (self.random_replacement(pii_match), vec![]),
@@ -297,7 +322,44 @@ impl Replacer {
     // Private replacement methods
     // -------------------------------------------------------------------------
 
-    fn placeholder_replacement(pii_match: &PiiMatch) -> String {
+    /// Placeholder with a numbering scheme that makes it usable as training data:
+    /// the same value maps to the same token, so a model learns an identifier
+    /// shape rather than a plausible-looking fake.
+    fn placeholder_replacement(&mut self, pii_match: &PiiMatch) -> String {
+        let class = Self::placeholder_class(pii_match);
+        let value = &pii_match.matched_text;
+        let index = match self.config.placeholder_scope {
+            PlaceholderScope::None => return Self::placeholder_bare(pii_match),
+            PlaceholderScope::Session => {
+                let key = (class.clone(), value.clone());
+                if let Some(existing) = self.placeholder_ids.get(&key) {
+                    *existing
+                } else {
+                    let next = self.placeholder_next.entry(class.clone()).or_insert(1);
+                    let assigned = *next;
+                    *next += 1;
+                    self.placeholder_ids.insert(key, assigned);
+                    assigned
+                }
+            }
+            PlaceholderScope::Corpus => {
+                // Content-derived, so independent sessions cannot disagree.
+                let digest = Sha256::digest(value.as_bytes());
+                let hex = format!("{:x}", digest);
+                return format!("<{class}_{}>", &hex[..6]);
+            }
+        };
+        format!("<{class}_{index}>")
+    }
+
+    fn placeholder_class(pii_match: &PiiMatch) -> String {
+        Self::placeholder_bare(pii_match)
+            .trim_start_matches('<')
+            .trim_end_matches('>')
+            .to_string()
+    }
+
+    fn placeholder_bare(pii_match: &PiiMatch) -> String {
         // Use pattern-specific placeholders
         match pii_match.pattern_name.as_str() {
             "email" => "<EMAIL>".to_string(),
@@ -1723,6 +1785,81 @@ mod tests {
     }
 
     #[test]
+    fn placeholders_are_stable_within_a_session_and_per_class() {
+        let mut replacer = Replacer::new(ReplacerConfig {
+            strategy: ReplacementStrategy::Placeholder,
+            placeholder_scope: PlaceholderScope::Session,
+            ..Default::default()
+        });
+        let first = replacer
+            .replace(&make_match("email", "ada@example.invalid"))
+            .replacement;
+        let again = replacer
+            .replace(&make_match("email", "ada@example.invalid"))
+            .replacement;
+        let other = replacer
+            .replace(&make_match("email", "grace@example.invalid"))
+            .replacement;
+        let phone = replacer
+            .replace(&make_match("phone_us", "415-555-7012"))
+            .replacement;
+        assert_eq!(first, "<EMAIL_1>");
+        assert_eq!(again, "<EMAIL_1>", "same value keeps its index");
+        assert_eq!(other, "<EMAIL_2>", "distinct values get distinct indices");
+        assert_eq!(phone, "<PHONE_1>", "classes number independently");
+        // Two sessions agree on the numbering because each processes in order.
+        let mut second = Replacer::new(ReplacerConfig {
+            strategy: ReplacementStrategy::Placeholder,
+            placeholder_scope: PlaceholderScope::Session,
+            ..Default::default()
+        });
+        assert_eq!(
+            second
+                .replace(&make_match("email", "ada@example.invalid"))
+                .replacement,
+            "<EMAIL_1>"
+        );
+    }
+
+    #[test]
+    fn corpus_placeholders_are_content_derived_and_order_independent() {
+        let mut a = Replacer::new(ReplacerConfig {
+            strategy: ReplacementStrategy::Placeholder,
+            placeholder_scope: PlaceholderScope::Corpus,
+            ..Default::default()
+        });
+        let mut b = Replacer::new(ReplacerConfig {
+            strategy: ReplacementStrategy::Placeholder,
+            placeholder_scope: PlaceholderScope::Corpus,
+            ..Default::default()
+        });
+        // Different processing order, same corpus, same tokens.
+        let a_first = a
+            .replace(&make_match("email", "ada@example.invalid"))
+            .replacement;
+        let b_first = b
+            .replace(&make_match("email", "grace@example.invalid"))
+            .replacement;
+        let a_second = a
+            .replace(&make_match("email", "grace@example.invalid"))
+            .replacement;
+        let b_second = b
+            .replace(&make_match("email", "ada@example.invalid"))
+            .replacement;
+        assert_eq!(a_first, b_second, "same value, same token across sessions");
+        assert_eq!(b_first, a_second);
+        assert_ne!(a_first, a_second);
+        assert!(a_first.starts_with("<EMAIL_") && a_first.ends_with('>'));
+        assert_eq!(a_first.len(), "<EMAIL_".len() + 6 + 1);
+        // Repeated use inside one replacer is still stable.
+        assert_eq!(
+            a.replace(&make_match("email", "ada@example.invalid"))
+                .replacement,
+            a_first
+        );
+    }
+
+    #[test]
     fn test_placeholder_replacement() {
         let mut replacer = Replacer::new(ReplacerConfig::placeholder());
 
@@ -1936,6 +2073,7 @@ mod tests {
             strategy: ReplacementStrategy::Fake,
             seed: Some(42),
             email_domain: "example.com".to_string(),
+            placeholder_scope: PlaceholderScope::Session,
         });
 
         // First process a name
@@ -1979,6 +2117,7 @@ mod tests {
             strategy: ReplacementStrategy::Fake,
             seed: Some(42),
             email_domain: "example.com".to_string(),
+            placeholder_scope: PlaceholderScope::Session,
         });
 
         // Process a name with umlauts

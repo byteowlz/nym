@@ -173,6 +173,15 @@
           "type": "string",
           "description": "Domain to use for email replacements",
           "default": "example.com"
+        },
+        "placeholder_scope": {
+          "type": "string",
+          "enum": [
+            "session",
+            "corpus"
+          ],
+          "default": "session",
+          "description": "Placeholder numbering for --strategy placeholder: sequential per session, or a stable id derived from the value."
         }
       },
       "additionalProperties": false
