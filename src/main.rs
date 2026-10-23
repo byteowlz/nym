@@ -742,7 +742,7 @@ enum StrategyArg {
 enum PlaceholderScopeArg {
     /// Number inside one file: <EMAIL_1>, <EMAIL_2>
     File,
-    /// Stable id derived from the value: <EMAIL_8f3a2b>
+    /// Stable id derived from the value: <EMAIL_8f3a2b9c1d4e>
     Corpus,
 }
 

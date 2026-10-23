@@ -43,7 +43,7 @@ builtin_benign_terms = true
 [replacement]
 # --strategy placeholder numbering. "none" (default) keeps <EMAIL>; "file"
 # numbers per class within one input file (<EMAIL_1>); "corpus" derives a stable
-# id from the value (<EMAIL_8f3a2b>) so files processed in any order agree.
+# id from the value (<EMAIL_8f3a2b9c1d4e>) so files processed in any order agree.
 placeholder_scope = "none"
 # Strategy: "placeholder", "mask", "hash", "random", "consistent"
 # - placeholder: Use fixed placeholders like <EMAIL>, <PHONE>

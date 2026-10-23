@@ -55,7 +55,7 @@ and both projects' hash-keyed incremental state (already the ledger's basis).
 1. **Source adapters** — accept pi / claude / codex / opencode / cursor session
    directories and normalise them into the inventory (pi is already parsed).
 2. **Stable placeholders** — indexed per file (`<EMAIL_1>`) or bound to the value
-   across the corpus (`<EMAIL_8f3a2b>`), for training data where realistic fakes
+   across the corpus (`<EMAIL_8f3a2b9c1d4e>`), for training data where realistic fakes
    would teach the wrong thing.
 3. **External secret verifier** — `verify --secrets-cmd`, blocking on any
    finding, so a third-party scanner can veto a bundle nym believes is clean.

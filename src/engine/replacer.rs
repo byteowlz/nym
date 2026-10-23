@@ -76,7 +76,7 @@ pub enum PlaceholderScope {
     /// Sequential per class within one input (file): `<EMAIL_1>`, `<EMAIL_2>`.
     /// Deterministic because a file is processed in order.
     File,
-    /// Stable per value across a corpus: `<EMAIL_8f3a2b>`, derived from the
+    /// Stable per value across a corpus: `<EMAIL_8f3a2b9c1d4e>`, derived from the
     /// value itself so parallel sessions cannot disagree about the numbering.
     Corpus,
 }
@@ -343,10 +343,12 @@ impl Replacer {
                 }
             }
             PlaceholderScope::Corpus => {
-                // Content-derived, so independent sessions cannot disagree.
+                // Content-derived, so independent files cannot disagree. 48 bits keeps
+                // the chance that two distinct values share a token negligible
+                // (about 1e-5 at 100k values per class; 24 bits was ~50% at 5k).
                 let digest = Sha256::digest(value.as_bytes());
                 let hex = format!("{:x}", digest);
-                return format!("<{class}_{}>", &hex[..6]);
+                return format!("<{class}_{}>", &hex[..12]);
             }
         };
         format!("<{class}_{index}>")
@@ -1850,7 +1852,7 @@ mod tests {
         assert_eq!(b_first, a_second);
         assert_ne!(a_first, a_second);
         assert!(a_first.starts_with("<EMAIL_") && a_first.ends_with('>'));
-        assert_eq!(a_first.len(), "<EMAIL_".len() + 6 + 1);
+        assert_eq!(a_first.len(), "<EMAIL_".len() + 12 + 1);
         // Repeated use inside one replacer is still stable.
         assert_eq!(
             a.replace(&make_match("email", "ada@example.invalid"))
