@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Known-vocabulary filtering for `terms discover`: `--dict` (the OS word list or downloaded lists), `--exclude-words FILE` (your own), `--demote-words FILE` (rank last without removing, for large registries) and `--exclude-shapes` (numbers, hashes, versions). Exclusion runs before counting, so dictionary words no longer crowd rare recurring strings out of the candidate cap, and matching is case-aware so names that are also words survive. `nym terms dict pull|list|path` downloads pinned, hash-verified CC-BY-SA word lists for 14 languages on request; nothing is bundled or fetched implicitly. On the frozen benchmark, planted name components reaching the review list rose from 13 to 29 (25 in the top 1,000 with `--ner-rank`, previously 0) with none lost to the filter. Exclusion only shortens review; it never exempts a term from redaction.
+
 - Corpus sources that survive transformation byte-identical now require `publish_verbatim: true` in their review; `apply` refuses otherwise. Retaining every unit publishes the original file, so that is a declared decision rather than a side effect of approval. The public manifest still carries the output hash (needed to bind teacher labels), which for an unchanged source equals the input hash — the declaration is what makes that deliberate.
 
 - Surface the value-free reason for a blocked corpus operation (`corpus_blocked` now carries `reason`, and `-v` prints it) instead of a generic message, so an operator learns which source, index or deny rule blocked the run. `corpus verify` now takes `--ledger` like `apply`, rather than a positional path.

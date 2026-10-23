@@ -39,6 +39,7 @@ mod terms_progress;
 mod terms_runs;
 mod terms_sketch;
 mod terms_unicode;
+mod terms_vocab;
 mod traces;
 mod traces_cache;
 mod unique_json;

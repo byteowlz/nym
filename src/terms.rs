@@ -174,6 +174,9 @@ pub struct Discovery {
     pub projection: Option<Projection>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub ner_ranking: Option<crate::terms_ner::NerRanking>,
+    /// Dictionaries, user word lists and shape rules applied before ranking.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub vocabulary: Option<crate::terms_vocab::VocabularyFilter>,
     pub candidates: Vec<Candidate>,
 }
 
@@ -201,6 +204,9 @@ impl Discovery {
             bail!("invalid vocabulary discovery artifact");
         }
         crate::terms_ner::validate(self)?;
+        if let Some(vocabulary) = &self.vocabulary {
+            vocabulary.validate()?;
+        }
         let mut ids = HashSet::new();
         for candidate in &self.candidates {
             if !valid_term(&candidate.term)
@@ -316,6 +322,10 @@ pub struct Builder {
     projection: Option<Projection>,
     record_projected: bool,
     specific: bool,
+    vocabulary: Option<std::sync::Arc<crate::terms_vocab::KnownVocabulary>>,
+    /// Lowercase forms of known words the corpus actually writes in lowercase.
+    lower_seen: HashSet<String>,
+    vocabulary_excluded: u64,
     failed: bool,
 }
 
@@ -358,8 +368,22 @@ impl Builder {
             projection: None,
             record_projected: false,
             specific: false,
+            vocabulary: None,
+            lower_seen: HashSet::new(),
+            vocabulary_excluded: 0,
             failed: false,
         })
+    }
+
+    /// Exclude known vocabulary before counting, so dictionary words never
+    /// occupy the bounded candidate pool. Shortens review only; not a privacy decision.
+    pub fn with_vocabulary(
+        &mut self,
+        vocabulary: std::sync::Arc<crate::terms_vocab::KnownVocabulary>,
+    ) {
+        if vocabulary.is_active() {
+            self.vocabulary = Some(vocabulary);
+        }
     }
 
     /// Bounded proposals contain no examples, source-pair sets or exact duplicate accounting.
@@ -395,6 +419,7 @@ impl Builder {
             builder.enable_unicode_projection();
         }
         builder.specific = self.specific;
+        builder.vocabulary = self.vocabulary.clone();
         builder.expected_corpus = Some(format!("{:x}", self.digest.finalize()));
         builder.selected = Some(terms);
         builder.selection = Some(selection);
@@ -592,6 +617,21 @@ impl Builder {
         if !valid_term(term) {
             return Ok(());
         }
+        let verdict = self.vocabulary.as_ref().map(|v| v.classify(term));
+        match verdict {
+            Some(crate::terms_vocab::Verdict::Noise) => {
+                self.vocabulary_excluded += 1;
+                return Ok(());
+            }
+            Some(crate::terms_vocab::Verdict::KnownLowercase) => {
+                if self.lower_seen.len() < MAX_IDENTITIES {
+                    self.lower_seen.insert(term.to_lowercase());
+                }
+                self.vocabulary_excluded += 1;
+                return Ok(());
+            }
+            _ => {}
+        }
         if let Some(sketch) = &mut self.sketch {
             return sketch.observe(term);
         }
@@ -715,10 +755,19 @@ impl Builder {
                     .filter(|term| !self.counts.contains_key(*term))
                     .count()
             })) as f64;
+        let mut excluded_capitalized = 0u64;
         let mut candidates: Vec<_> = self
             .counts
             .iter()
             .filter(|(_, c)| c.occurrences >= self.settings.min_count)
+            .filter(|(term, _)| {
+                let drop = self.vocabulary.as_ref().is_some_and(|v| {
+                    v.classify(term) == crate::terms_vocab::Verdict::KnownCapitalized
+                        && self.lower_seen.contains(&term.to_lowercase())
+                });
+                excluded_capitalized += u64::from(drop);
+                !drop
+            })
             .map(|(term, c)| {
                 // Laplace-smoothed log lift; ranking only, never an automatic privacy decision.
                 let score = self.background.as_ref().map_or_else(
@@ -740,9 +789,19 @@ impl Builder {
                 (term, c, score, None)
             })
             .collect();
+        // Demotion lists (large public registries) rank later but never remove.
+        let demoted: HashSet<&str> = self.vocabulary.as_ref().map_or_else(HashSet::new, |v| {
+            candidates
+                .iter()
+                .filter(|c| v.demoted(c.0))
+                .map(|c| c.0.as_str())
+                .collect()
+        });
         candidates.sort_by(|(a, ac, score_a, _), (b, bc, score_b, _)| {
-            score_b
-                .total_cmp(score_a)
+            demoted
+                .contains(a.as_str())
+                .cmp(&demoted.contains(b.as_str()))
+                .then(score_b.total_cmp(score_a))
                 .then(bc.sources.len().cmp(&ac.sources.len()))
                 .then(bc.occurrences.cmp(&ac.occurrences))
                 .then(a.cmp(b))
@@ -786,6 +845,13 @@ impl Builder {
             selection: self.selection,
             projection: self.projection,
             ner_ranking,
+            vocabulary: self.vocabulary.as_ref().map(|v| {
+                let mut provenance = v.provenance();
+                provenance.excluded_occurrences = self.vocabulary_excluded;
+                provenance.excluded_capitalized = excluded_capitalized;
+                provenance.demoted = demoted.len() as u64;
+                provenance
+            }),
             candidates,
         };
         discovery.validate()?;

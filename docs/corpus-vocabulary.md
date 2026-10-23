@@ -104,11 +104,61 @@ Native discovery stays model-free by default. Add `--ner-rank` to recognize **ba
 
 Positive matches come first, ordered by exact distinct-text counts, with original ranking as the tie-break; unmatched candidates retain their previous ranking. This is suggestion priority only: no match is not benign, no match auto-approves anything, and omitted proposal terms are still unmeasured. The artifact binds `ner_ranking` method, model/config/tokenizer file SHA-256s, threshold and scored/recognized counts; each displayed candidate has `ner_match`. Asset checks repeat after loading/scoring. These file hashes do not attest auxiliary files of third-party external-data ONNX models. Source-bound reviews/export remain explicit; old model-free artifacts retain their format/fingerprints.
 
+## Known vocabulary: dictionaries and your own lists
+
+Recurring dictionary words crowd rare recurring strings out of the candidate list
+before any ranking sees them. Known-vocabulary filtering removes them **before
+counting**, so they never occupy the bounded pool or the `--limit` cutoff:
+
+```bash
+nym terms dict pull en de fr es it nl pl     # pinned, hash-verified, explicit download
+nym terms dict list                          # installed lists, catalog, system list
+nym terms discover SESSIONS --recursive --bounded \
+  --dict system,en,de,fr,es,it,nl,pl --exclude-shapes \
+  --exclude-words my-glossary.txt --demote-words pypi-names.txt \
+  --ner-rank --output discovery.json
+```
+
+- `--dict NAME` uses `system` (the OS word list, no download) or an installed
+  `NAME.txt` in `nym terms dict path`. Place your own lists there to use them by
+  name. Missing lists fail with a `pull` hint; nothing downloads implicitly.
+- `--exclude-words FILE` (repeatable) adds your own exclusions: a company
+  glossary, public product names, vocabulary you have decided is fine.
+- `--demote-words FILE` (repeatable) ranks matches last **without removing**
+  them. Use it for large public registries (package or domain names): they
+  contain people's names and handles, so excluding them loses names.
+- `--exclude-shapes` drops numbers, hex digests and version strings.
+- Matching is **case-aware**: a dictionary hit written with capitals is excluded
+  only if the corpus also writes it lowercase, so names that are also words
+  ("Grace", German or Polish surnames) stay. `--dict-case-insensitive` trades
+  that protection for more reduction.
+- Formats: plain one-per-line, frequency lists (`word count`) and hunspell
+  (`word/FLAGS`, numeric header) all reduce to the first token; `#` comments.
+
+The catalog lists are the OpenSubtitles 2018 top-50k frequency lists from
+hermitdave/FrequencyWords (CC-BY-SA-4.0), pinned to a commit and SHA-256. nym
+downloads them on request and never bundles them. `dict list` reports
+`catalog_verified` per installed list, so a modified file is visible.
+
+Measured on the frozen 60-session benchmark (planted name, username and address
+components): English plus seven languages, case-aware, excluded 45% of recurring
+terms while keeping every planted component; case-insensitive matching lost 8 of
+91. Large registries lost names when used for exclusion (PyPI and top-1M domain
+labels: 5 of 91 each). With the filter and `--ner-rank`, planted components in the
+top 1,000 rose from 0 to 25. The planted values occur in only one to three sessions
+each, so this cannot validate how well strings that recur across many sessions
+rank; that needs review on your own corpus.
+
+The artifact records every list by name, role, entry count and SHA-256, the
+case mode, and how many occurrences were excluded, capitalised hits dropped and
+candidates demoted. **Exclusion only shortens the review queue. It never exempts
+a term from redaction**, and an excluded or unreviewed term is not "safe".
+
 ## Source-specific suggestions
 
 `terms discover --specific` ranks repeated literals by `ln(1 + distinct_texts) × ln((source_count + 1) / (term_sources + 1))`. Terms spread across almost every source fall below repeatedly mentioned, more localized vocabulary. Counts are still exact for the recounted pool; ranking is not a privacy classifier. With one contributing source there is no source contrast, so ranking falls back to logarithmic distinct-text frequency. Background ranking is a separate, mutually exclusive option.
 
-Bounded specificity widens the proposal/recount pool from 10× to 100× the display limit, capped by `--max-distinct`, and records `selection.pool_factor: 100`. This costs more recount memory/time and gives localized terms more opportunity to enter review, but occurrence-heavy proposals can still omit rare terms. It is not exhaustive. No dictionary, embeddings, external service or automatic benign exemption is added.
+Bounded specificity widens the proposal/recount pool from 10× to 100× the display limit, capped by `--max-distinct`, and records `selection.pool_factor: 100`. This costs more recount memory/time and gives localized terms more opportunity to enter review, but occurrence-heavy proposals can still omit rare terms. It is not exhaustive. No embeddings, external service or automatic benign exemption is added; dictionary filtering is the separate, explicit option above.
 
 The Pi launcher now explicitly requests this mode. `--frequency-ranking` restores its old spread ranking and 10× proposal pool. Existing native discovery defaults and older artifacts/reviews remain unchanged. Widely shared personal names, usernames or other sensitive values can rank low; omitted literals remain unmeasured, not safe. Human review must still decide whether any displayed literal is private. Review source-specific output before considering embeddings or a language-model triage layer.
 

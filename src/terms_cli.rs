@@ -29,9 +29,28 @@ impl std::fmt::Debug for TermsCommand {
 }
 
 #[derive(Subcommand)]
+enum DictAction {
+    /// Download pinned word lists (hash-verified) into the dictionary directory
+    Pull {
+        /// Catalog names, e.g. en de fr pl
+        #[arg(required = true)]
+        names: Vec<String>,
+    },
+    /// Show installed lists, the catalog and the system word list
+    List,
+    /// Print the dictionary directory; place your own NAME.txt there for --dict NAME
+    Path,
+}
+
+#[derive(Subcommand)]
 enum Action {
     /// List, inspect, open, register or privately serve saved review runs
     Runs(crate::terms_runs::RunsCommand),
+    /// Manage word lists that shorten discovery review (never exempt from redaction)
+    Dict {
+        #[command(subcommand)]
+        action: DictAction,
+    },
     /// Discover recurring literal candidates; never automatically classify privacy
     Discover(DiscoverArgs),
     /// Create or update source-bound decisions, or emit a self-contained browser review
@@ -111,6 +130,22 @@ struct DiscoverArgs {
     /// JSON map of public/reference literal frequency counts; ranking only
     #[arg(long)]
     background: Option<PathBuf>,
+    /// Exclude words in these dictionaries before ranking (`system`, or installed
+    /// names such as en,de,fr); comma-separated or repeated
+    #[arg(long, value_delimiter = ',')]
+    dict: Vec<String>,
+    /// Exclude words from your own list (one per line); repeatable
+    #[arg(long, value_name = "FILE")]
+    exclude_words: Vec<PathBuf>,
+    /// Rank terms in this list last without removing them (large registries); repeatable
+    #[arg(long, value_name = "FILE")]
+    demote_words: Vec<PathBuf>,
+    /// Drop numbers, hex digests and version strings before ranking
+    #[arg(long)]
+    exclude_shapes: bool,
+    /// Match dictionaries case-insensitively (more reduction, but drops names that are also words)
+    #[arg(long)]
+    dict_case_insensitive: bool,
     #[arg(long)]
     force: bool,
 }
@@ -137,6 +172,7 @@ pub fn run(
 ) -> Result<()> {
     let summary = match command.action {
         Action::Runs(command) => return crate::terms_runs::run(common, config, command),
+        Action::Dict { action } => return dict(common, action),
         Action::Discover(args) => discover(args, config, common.quiet)?,
         Action::Review {
             discovery,
@@ -297,11 +333,12 @@ fn discover(args: DiscoverArgs, config: &crate::config::Config, quiet: bool) -> 
     if args.bounded && (inputs.paths.is_empty() || background.is_some()) {
         bail!("bounded discovery requires named inputs and does not support background ranking");
     }
-    let builder = if args.bounded {
+    let mut builder = if args.bounded {
         Builder::bounded(settings)?
     } else {
         Builder::new(settings, background)?
     };
+    builder.with_vocabulary(std::sync::Arc::new(args.vocabulary()?));
     let builder = args.collect(builder, &inputs.paths, &selector, limit, quiet)?;
     let discovery = if let Some(ranker) = &mut ranker {
         builder.finish_ranked(Some(ranker.as_mut()))?
@@ -322,6 +359,24 @@ fn discover(args: DiscoverArgs, config: &crate::config::Config, quiet: bool) -> 
 }
 
 impl DiscoverArgs {
+    fn vocabulary(&self) -> Result<crate::terms_vocab::KnownVocabulary> {
+        let mut vocabulary = crate::terms_vocab::KnownVocabulary::new(
+            !self.dict_case_insensitive,
+            self.exclude_shapes,
+        );
+        for name in &self.dict {
+            let path = crate::terms_vocab::resolve_dict(name)?;
+            vocabulary.add_exclusions(name, &path)?;
+        }
+        for path in &self.exclude_words {
+            vocabulary.add_exclusions(&list_label(path), path)?;
+        }
+        for path in &self.demote_words {
+            vocabulary.add_demotions(&list_label(path), path)?;
+        }
+        Ok(vocabulary)
+    }
+
     fn collect(
         &self,
         mut builder: Builder,
@@ -581,5 +636,58 @@ pub(crate) fn private_write(path: &Path, bytes: &[u8], force: bool) -> Result<()
             "failed to publish vocabulary artifact; destination preserved (use --force to replace)"
         )
     })?;
+    Ok(())
+}
+
+/// A provenance label for a user list: its file name, never its full path.
+fn list_label(path: &Path) -> String {
+    path.file_name().and_then(|name| name.to_str()).map_or_else(
+        || "list".to_owned(),
+        |name| name.chars().take(128).collect(),
+    )
+}
+
+fn dict(common: &crate::CommonOpts, action: DictAction) -> Result<()> {
+    let value = match action {
+        DictAction::Pull { names } => {
+            let installed = crate::terms_vocab::pull(&names)?;
+            if !common.quiet && !common.json {
+                eprintln!(
+                    "Installed {} list(s) into {}. Content: {}.",
+                    installed.len(),
+                    crate::terms_vocab::dict_dir().display(),
+                    crate::terms_vocab::CATALOG_LICENSE
+                );
+            }
+            serde_json::json!({
+                "installed": installed.iter().map(|(name, sha)| serde_json::json!({"name": name, "sha256": sha})).collect::<Vec<_>>(),
+                "directory": crate::terms_vocab::dict_dir(),
+                "license": crate::terms_vocab::CATALOG_LICENSE,
+            })
+        }
+        DictAction::List => {
+            let installed = crate::terms_vocab::installed()?;
+            let system = crate::terms_vocab::resolve_dict("system").ok();
+            serde_json::json!({
+                "directory": crate::terms_vocab::dict_dir(),
+                "system": system,
+                "installed": installed.iter().map(|(name, sha, bytes)| {
+                    let pinned = crate::terms_vocab::CATALOG.iter().any(|entry| entry.name == name && entry.sha256 == sha);
+                    serde_json::json!({"name": name, "sha256": sha, "bytes": bytes, "catalog_verified": pinned})
+                }).collect::<Vec<_>>(),
+                "catalog": crate::terms_vocab::CATALOG.iter().map(|entry| entry.name).collect::<Vec<_>>(),
+                "catalog_license": crate::terms_vocab::CATALOG_LICENSE,
+            })
+        }
+        DictAction::Path => {
+            println!("{}", crate::terms_vocab::dict_dir().display());
+            return Ok(());
+        }
+    };
+    if common.yaml {
+        print!("{}", serde_yaml::to_string(&value)?);
+    } else {
+        println!("{}", serde_json::to_string_pretty(&value)?);
+    }
     Ok(())
 }
