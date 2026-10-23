@@ -636,3 +636,45 @@ fn apply_plan_replaces_exactly_the_reviewed_values_everywhere() {
     );
     assert_eq!(both.status.code(), Some(2));
 }
+
+#[test]
+fn a_longer_value_failing_its_boundary_does_not_hide_a_shorter_one() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let input = root.join("in");
+    fs::create_dir_all(&input).unwrap();
+    let lines = [
+        r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"cd rookvale-q1/src and ping rookvale-b"}]}}"#,
+    ];
+    fs::write(input.join("s.jsonl"), session(&lines)).unwrap();
+    let plan = root.join("approved.json");
+    // `rookvale-q` is followed by `1` everywhere, so only `rookvale` can match there.
+    let approved = serde_json::json!({"sessions": [{"session": "s.jsonl", "candidates": [
+        {"value": "rookvale", "class": "username"},
+        {"value": "rookvale-q", "class": "username"}
+    ]}]});
+    fs::write(&plan, approved.to_string()).unwrap();
+    let out = root.join("out");
+    let result = nym(
+        root,
+        &[
+            "traces",
+            "anon",
+            input.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--apply-plan",
+            plan.to_str().unwrap(),
+            "--no-progress",
+        ],
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let r = records(&out.join("s.jsonl"));
+    let text = r[0]["message"]["content"][0]["text"].as_str().unwrap();
+    assert!(!text.contains("rookvale"), "reviewed value left behind");
+    assert!(text.contains("-q1/src") && text.ends_with("-b"));
+}

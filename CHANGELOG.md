@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Fix: a reviewed or propagated value could survive when a longer value starting at the same position failed its word-boundary check (`abc` inside `abc-de1` with both `abc` and `abc-d` listed): matching picked the longest candidate before checking boundaries, so the valid shorter one was never tried. Literal matching (`traces anon --apply-plan`, identity literals, session propagation, `corpus propose`) now checks boundaries on all overlapping occurrences first. Found in the session-corpus pilot, where it left 11 occurrences of one reviewed username in a single session.
+
 - `corpus propose`, `corpus approve` and `corpus review` connect detection to the reviewed corpus workflow, so large session corpora no longer need unit-by-unit decisions. `propose` turns a reviewed `traces anon --plan` values file into placeholder edits on every occurrence (new `placeholder` action, `<EMAIL_1>` numbered per identity namespace, one class per value) and proposes retention elsewhere, recording the basis of each proposal; sources the values file does not cover stay unresolved. `approve` writes one receipt on proposals selected by class or basis and reports what remains pending; `review` records source-level rights and privacy receipts in bulk. Proposals never approve anything.
 - The corpus JSON schema now declares `deny` and `denied_by`, which plans have carried since the deny gate was added; plans with a deny list did not validate against the published schema. A test now checks that every key nym writes is declared.
 

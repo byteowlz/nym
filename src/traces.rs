@@ -381,7 +381,6 @@ pub(crate) fn reviewed_sessions(path: &Path) -> Result<HashMap<String, ReviewedS
             } else {
                 Some(
                     AhoCorasickBuilder::new()
-                        .match_kind(MatchKind::LeftmostLongest)
                         .build(literals.iter().map(|l| &l.text))
                         .map_err(|_| anyhow!("reviewed value matcher failed"))?,
                 )
@@ -804,7 +803,6 @@ impl Identity {
         }
         let matcher = AhoCorasickBuilder::new()
             .ascii_case_insensitive(true)
-            .match_kind(MatchKind::LeftmostLongest)
             .build(literals.iter().map(|l| &l.text))
             .map_err(|_| anyhow!("failed to build identity matcher"))?;
         Ok(Self {
@@ -824,11 +822,28 @@ fn bounded(text: &str, start: usize, end: usize) -> bool {
         && !after.is_some_and(char::is_alphanumeric)
 }
 
+/// Leftmost-longest among occurrences that passed their boundary check. Picking
+/// before checking would let a longer value that fails its boundary hide a
+/// shorter valid value starting at the same position (`abc` inside `abc-de1`).
+/// Matchers must use `MatchKind::Standard` for overlapping search.
+fn leftmost_longest(mut hits: Vec<PiiMatch>) -> Vec<PiiMatch> {
+    hits.sort_by(|a, b| a.start.cmp(&b.start).then(b.end.cmp(&a.end)));
+    let mut end = 0;
+    hits.retain(|m| {
+        let free = m.start >= end;
+        if free {
+            end = m.end;
+        }
+        free
+    });
+    hits
+}
+
 /// Reviewed values match wherever they occur, except inside a longer word:
 /// boundaries are only required on alphanumeric value edges.
 fn approved_matches(matcher: &AhoCorasick, literals: &[Literal], text: &str) -> Vec<PiiMatch> {
-    matcher
-        .find_iter(text)
+    let hits = matcher
+        .find_overlapping_iter(text)
         .filter(|m| {
             let value = &text[m.start()..m.end()];
             let first = value.chars().next().is_some_and(char::is_alphanumeric);
@@ -855,12 +870,13 @@ fn approved_matches(matcher: &AhoCorasick, literals: &[Literal], text: &str) -> 
             confidence: crate::engine::patterns::Confidence::High,
             category: crate::engine::patterns::PiiCategory::Identity,
         })
-        .collect()
+        .collect();
+    leftmost_longest(hits)
 }
 
 fn literal_matches(matcher: &AhoCorasick, literals: &[Literal], text: &str) -> Vec<PiiMatch> {
-    matcher
-        .find_iter(text)
+    let hits = matcher
+        .find_overlapping_iter(text)
         .filter(|m| bounded(text, m.start(), m.end()))
         .map(|m| PiiMatch {
             pattern_name: literals[m.pattern().as_usize()].class.clone(),
@@ -870,7 +886,8 @@ fn literal_matches(matcher: &AhoCorasick, literals: &[Literal], text: &str) -> V
             confidence: crate::engine::patterns::Confidence::High,
             category: crate::engine::patterns::PiiCategory::Identity,
         })
-        .collect()
+        .collect();
+    leftmost_longest(hits)
 }
 
 /// A JSON pointer to a string leaf plus its classification.
@@ -1665,7 +1682,6 @@ fn process(
     } else {
         Some(
             AhoCorasickBuilder::new()
-                .match_kind(MatchKind::LeftmostLongest)
                 .build(session_literals.iter().map(|l| &l.text))
                 .map_err(|_| failure("propagation matcher failed"))?,
         )
