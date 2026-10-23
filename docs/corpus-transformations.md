@@ -43,6 +43,12 @@ nym corpus review PRIVATE_APPROVED.json -o PRIVATE_REVIEWED.json --basis owned \
   becomes a `placeholder` edit, `<EMAIL_1>`, numbered per identity namespace: per
   file with `session` scope, across the corpus with `full` scope. One value gets
   one class per namespace (the first in plan order), so it never gets two tokens.
+- By default a reviewed value is replaced in every covered source, not only in the
+  session it was detected in (`--values-scope corpus`): a name caught in one
+  session is sensitive in the next one too, where detection may have missed it.
+  In the 20-session pilot, values listed for one session occurred 8,753 times in
+  others. `--values-scope session` restricts each value to its own session. This
+  is independent of placeholder numbering, which follows the plan `scope`.
 - Each changed unit records a `proposal` with its basis: `values` (placeholders),
   `unflagged` (no reviewed value occurs, retain), `rename` (opaque file name
   `f00003.jsonl`; always used when a name contains a value, for every file with

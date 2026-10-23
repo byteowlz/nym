@@ -393,6 +393,33 @@ pub(crate) fn reviewed_sessions(path: &Path) -> Result<HashMap<String, ReviewedS
         .collect()
 }
 
+/// Every session's reviewed values as one set: a value judged sensitive in one
+/// session is replaced wherever it occurs. Sessions in path order; the first
+/// class listed for a value wins.
+pub(crate) fn reviewed_union(
+    sessions: &HashMap<String, ReviewedSession>,
+) -> Result<ReviewedSession> {
+    let mut names: Vec<&String> = sessions.keys().collect();
+    names.sort();
+    let mut seen = HashSet::new();
+    let literals: Vec<Literal> = names
+        .into_iter()
+        .flat_map(|name| sessions[name].literals.iter())
+        .filter(|l| seen.insert(l.text.clone()))
+        .cloned()
+        .collect();
+    let matcher = if literals.is_empty() {
+        None
+    } else {
+        Some(
+            AhoCorasickBuilder::new()
+                .build(literals.iter().map(|l| &l.text))
+                .map_err(|_| anyhow!("reviewed value matcher failed"))?,
+        )
+    };
+    Ok(ReviewedSession { literals, matcher })
+}
+
 /// Everything `process` needs besides the session itself.
 struct Shared<'a> {
     regex: &'a Detector,

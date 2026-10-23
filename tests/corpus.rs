@@ -889,3 +889,52 @@ fn reviewed_values_become_approved_placeholders_without_unit_by_unit_review() {
     assert!(b_out.contains("<PERSON_2>") && b_out.contains("<EMAIL_1>"));
     assert!(!b_out.contains("USERNAME"));
 }
+
+#[test]
+fn reviewed_values_apply_across_sessions_unless_scoped_to_their_session() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("input");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("a.jsonl"), "{\"text\":\"Quillon wrote this\"}\n").unwrap();
+    // Detection missed the name here; the review of session a still applies.
+    fs::write(root.join("b.jsonl"), "{\"text\":\"ask Quillon later\"}\n").unwrap();
+    let values = dir.path().join("values.json");
+    save(
+        &values,
+        &json!({"sessions": [
+            {"session": "a.jsonl", "candidates": [{"value": "Quillon", "class": "first_name"}]},
+            {"session": "b.jsonl", "candidates": []}
+        ]}),
+    );
+    let p = |name: &str| dir.path().join(name).to_str().unwrap().to_owned();
+    snapshot(&root, Path::new(&p("plan.json")), "session");
+    let mut texts = Vec::new();
+    for scope in ["corpus", "session"] {
+        let proposed = p(&format!("proposed-{scope}.json"));
+        let summary = ok(run(&[
+            "corpus",
+            "propose",
+            &p("plan.json"),
+            "--source",
+            root.to_str().unwrap(),
+            "--values",
+            values.to_str().unwrap(),
+            "-o",
+            &proposed,
+            "--values-scope",
+            scope,
+            "--json",
+        ]));
+        assert_eq!(summary["uncovered_sources"], 0);
+        let plan: Value = serde_json::from_slice(&fs::read(&proposed).unwrap()).unwrap();
+        assert_eq!(plan["proposed"]["values_scope"], scope);
+        let b = &plan["sources"][1]["units"];
+        texts.push(
+            b.as_array()
+                .unwrap()
+                .iter()
+                .any(|u| u["proposal"]["basis"] == "values"),
+        );
+    }
+    assert_eq!(texts, vec![true, false]);
+}

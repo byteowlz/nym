@@ -556,12 +556,20 @@
       "additionalProperties": false,
       "required": [
         "values_sha256",
+        "values_scope",
         "nym_version"
       ],
       "description": "Provenance of `corpus propose`: digest of the private reviewed-values file.",
       "properties": {
         "values_sha256": {
           "$ref": "#/$defs/digest"
+        },
+        "values_scope": {
+          "enum": [
+            "corpus",
+            "session"
+          ],
+          "description": "corpus: reviewed values are replaced in every covered source; session: only where listed."
         },
         "nym_version": {
           "type": "string"

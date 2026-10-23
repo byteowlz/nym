@@ -54,6 +54,10 @@ enum Command {
         /// Rename every source to its opaque id, not only names that contain values
         #[arg(long)]
         rename_files: bool,
+        /// Where a reviewed value is replaced: in every covered source (default),
+        /// or only in the session it was listed for
+        #[arg(long, value_enum, default_value_t = ValuesScope::Corpus)]
+        values_scope: ValuesScope,
     },
     /// Approve proposals in bulk, by class or basis, with one receipt
     Approve {
@@ -133,6 +137,12 @@ enum Command {
         bundle: PathBuf,
     },
 }
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+enum ValuesScope {
+    Corpus,
+    Session,
+}
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 enum Scope {
@@ -158,6 +168,7 @@ struct Plan {
 #[serde(deny_unknown_fields)]
 struct Proposed {
     values_sha256: String,
+    values_scope: ValuesScope,
     nym_version: String,
 }
 /// Why `corpus propose` suggested a unit's action. Approval stays explicit.
@@ -627,6 +638,7 @@ fn propose(
     root: &Path,
     values: &Path,
     rename_files: bool,
+    values_scope: ValuesScope,
 ) -> Result<serde_json::Value> {
     check_sources(plan, root)?;
     outside(values, root)?;
@@ -634,6 +646,12 @@ fn propose(
         .map_err(|_| anyhow!("reviewed values file cannot be read"))?;
     let sessions = crate::traces::reviewed_sessions(values)
         .map_err(|_| anyhow!("invalid reviewed values file"))?;
+    // Coverage still needs the source's own entry: the union only adds values,
+    // it is not evidence that detection ran on an unlisted source.
+    let union = match values_scope {
+        ValuesScope::Corpus => Some(crate::traces::reviewed_union(&sessions)?),
+        ValuesScope::Session => None,
+    };
     // One class per value and namespace, first occurrence in plan order, so a
     // value never gets two different placeholders.
     let mut classes: HashMap<(String, String), String> = HashMap::new();
@@ -646,7 +664,9 @@ fn propose(
             denied += 1;
             continue;
         }
-        let session = sessions.get(&source.path);
+        let session = sessions
+            .get(&source.path)
+            .map(|own| union.as_ref().unwrap_or(own));
         if session.is_some() {
             covered += 1;
         } else {
@@ -724,6 +744,7 @@ fn propose(
     }
     plan.proposed = Some(Proposed {
         values_sha256: digest(&values_bytes),
+        values_scope,
         nym_version: env!("CARGO_PKG_VERSION").into(),
     });
     Ok(serde_json::json!({
@@ -1533,11 +1554,12 @@ pub(crate) fn run(common: &crate::CommonOpts, command: CorpusCommand) -> Result<
             values,
             output,
             rename_files,
+            values_scope,
         } => {
             let root = source.canonicalize()?;
             outside(&output, &root)?;
             let mut plan = read_plan(&plan_path)?;
-            let summary = propose(&mut plan, &root, &values, rename_files)?;
+            let summary = propose(&mut plan, &root, &values, rename_files, values_scope)?;
             write_plan(&output, &plan)?;
             Ok(summary)
         }
