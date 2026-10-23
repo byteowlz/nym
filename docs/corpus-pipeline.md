@@ -1,5 +1,9 @@
 # The corpus pipeline
 
+The agent-facing recipe for this pipeline is the `nym-corpus` skill in
+[byteowlz/skillissues](https://github.com/byteowlz/skillissues/tree/main/skills/nym-corpus).
+Keep it there as the single copy.
+
 One package, one ledger, gates at the end. nym owns collection, transformation and
 accounting; publication decisions stay explicit, and nothing certifies anonymity.
 
