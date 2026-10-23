@@ -660,6 +660,11 @@ fn field_key(location: &str) -> String {
         .replace("~1", "/")
         .replace("~0", "~")
 }
+/// Replaced fields get their own identity namespace: an id `"1"` is not the
+/// number `1` kept elsewhere. A declared entity wins.
+fn field_entity(unit: &Unit) -> Option<String> {
+    unit.entity.clone().or_else(|| Some("field".into()))
+}
 /// `thinkingSignature` -> `thinking_signature`, valid as a placeholder class.
 fn field_class(key: &str) -> String {
     let mut class = String::new();
@@ -731,7 +736,7 @@ fn propose(
         for unit in &source.units {
             let key = field_key(&unit.location);
             if unit.kind == "string" && !unit.original.is_empty() && fields.contains(key.as_str()) {
-                let namespace = serde_json::to_string(&(group_of(source), &unit.entity))?;
+                let namespace = serde_json::to_string(&(group_of(source), field_entity(unit)))?;
                 let id = (namespace, unit.original.clone());
                 classes
                     .entry(id.clone())
@@ -786,9 +791,13 @@ fn propose(
                 continue;
             };
             let namespace = serde_json::to_string(&(&group, &unit.entity))?;
-            let whole = (namespace.clone(), unit.original.clone());
+            let whole = (
+                serde_json::to_string(&(&group, field_entity(unit)))?,
+                unit.original.clone(),
+            );
             if matches!(unit.kind.as_str(), "string" | "key") && field_values.contains(&whole) {
                 let class = classes[&whole].clone();
+                unit.entity = field_entity(unit);
                 count(&mut by_class, class.clone());
                 count(&mut by_basis, basis_name(Basis::Field));
                 unit.action = Action::Placeholder {

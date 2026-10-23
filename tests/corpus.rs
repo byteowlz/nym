@@ -954,6 +954,8 @@ fn replaced_fields_keep_id_links_and_stripped_media_needs_no_media_review() {
             {"type":"image","mimeType":"image/png","data":png},
             {"type":"image","mimeType":"image/jpeg","data":png}]}}),
         json!({"type":"leaf","currentLeafId":"e5f6a7b8"}),
+        // A short id equal to a kept number must not conflict with it.
+        json!({"message":{"content":[{"type":"text","id":"1","text":"hi"}]},"details":{"firstChangedLine":1}}),
     ];
     let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
     fs::write(root.join("s.jsonl"), text).unwrap();
@@ -1032,6 +1034,13 @@ fn replaced_fields_keep_id_links_and_stripped_media_needs_no_media_review() {
     assert_eq!(
         r[1]["id"], r[2]["currentLeafId"],
         "an equal value elsewhere must share the token"
+    );
+    assert_eq!(r[3]["details"]["firstChangedLine"], 1);
+    assert!(
+        r[3]["message"]["content"][0]["id"]
+            .as_str()
+            .unwrap()
+            .starts_with("<ID_")
     );
     assert!(
         r[0]["message"]["content"][0]["thinkingSignature"]
