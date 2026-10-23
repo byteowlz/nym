@@ -938,3 +938,112 @@ fn reviewed_values_apply_across_sessions_unless_scoped_to_their_session() {
     }
     assert_eq!(texts, vec![true, false]);
 }
+
+#[test]
+fn replaced_fields_keep_id_links_and_stripped_media_needs_no_media_review() {
+    use base64::Engine;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("input");
+    fs::create_dir(&root).unwrap();
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let lines = [
+        json!({"id":"a1b2c3d4","parentId":null,"message":{"role":"assistant","content":[
+            {"type":"thinking","thinking":"plan","thinkingSignature":"EqQBCkYIBxgCKkDsecretsig"},
+            {"type":"toolCall","id":"toolu_01XYZ","name":"read"}]}}),
+        json!({"id":"e5f6a7b8","parentId":"a1b2c3d4","message":{"role":"toolResult","toolCallId":"toolu_01XYZ","content":[
+            {"type":"image","mimeType":"image/png","data":png},
+            {"type":"image","mimeType":"image/jpeg","data":png}]}}),
+        json!({"type":"leaf","currentLeafId":"e5f6a7b8"}),
+    ];
+    let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
+    fs::write(root.join("s.jsonl"), text).unwrap();
+    let values = dir.path().join("values.json");
+    save(
+        &values,
+        &json!({"sessions": [{"session": "s.jsonl", "candidates": []}]}),
+    );
+    let p = |name: &str| dir.path().join(name).to_str().unwrap().to_owned();
+    snapshot(&root, Path::new(&p("plan.json")), "session");
+    let summary = ok(run(&[
+        "corpus",
+        "propose",
+        &p("plan.json"),
+        "--source",
+        root.to_str().unwrap(),
+        "--values",
+        values.to_str().unwrap(),
+        "-o",
+        &p("proposed.json"),
+        "--replace-field",
+        "thinkingSignature,id,parentId,toolCallId",
+        "--strip-media",
+        "--json",
+    ]));
+    assert_eq!(summary["proposed_units"]["media_replaced"], 2);
+    let proposed: Value = serde_json::from_slice(&fs::read(p("proposed.json")).unwrap()).unwrap();
+    assert_schema_declares(&proposed);
+    ok(run(&[
+        "corpus",
+        "approve",
+        &p("proposed.json"),
+        "-o",
+        &p("approved.json"),
+        "--receipt",
+        "fixture",
+        "--unflagged",
+        "--fields",
+        "--media",
+        "--json",
+    ]));
+    // No --media-reviewed: replaced images keep nothing of the original.
+    ok(run(&[
+        "corpus",
+        "review",
+        &p("approved.json"),
+        "-o",
+        &p("reviewed.json"),
+        "--basis",
+        "synthetic",
+        "--evidence",
+        "fixture",
+        "--privacy-review",
+        "fixture",
+        "--serialization-reviewed",
+        "--json",
+    ]));
+    let out = dir.path().join("bundle");
+    ok(applied(
+        Path::new(&p("reviewed.json")),
+        &root,
+        &out,
+        Path::new(&p("ledger.json")),
+    ));
+    let text = fs::read_to_string(out.join("sources/s.jsonl")).unwrap();
+    for original in ["secretsig", "toolu_01XYZ", "a1b2c3d4", "e5f6a7b8", png] {
+        assert!(!text.contains(original));
+    }
+    let r: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let call = &r[0]["message"]["content"][1]["id"];
+    assert_eq!(call, &r[1]["message"]["toolCallId"], "tool call link lost");
+    assert_eq!(r[0]["id"], r[1]["parentId"], "parent link lost");
+    assert_eq!(
+        r[1]["id"], r[2]["currentLeafId"],
+        "an equal value elsewhere must share the token"
+    );
+    assert!(
+        r[0]["message"]["content"][0]["thinkingSignature"]
+            .as_str()
+            .unwrap()
+            .starts_with("<THINKING_SIGNATURE_")
+    );
+    let images = &r[1]["message"]["content"];
+    let decode = |i: usize| {
+        base64::engine::general_purpose::STANDARD
+            .decode(images[i]["data"].as_str().unwrap())
+            .unwrap()
+    };
+    assert!(decode(0).starts_with(b"\x89PNG") && decode(1).starts_with(&[0xff, 0xd8]));
+}

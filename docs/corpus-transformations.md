@@ -49,16 +49,27 @@ nym corpus review PRIVATE_APPROVED.json -o PRIVATE_REVIEWED.json --basis owned \
   In the 20-session pilot, values listed for one session occurred 8,753 times in
   others. `--values-scope session` restricts each value to its own session. This
   is independent of placeholder numbering, which follows the plan `scope`.
+- `--replace-field KEY` (repeatable or comma-separated) replaces every string under
+  that JSON key with one placeholder, for structure that detection skips on purpose
+  but publication must not keep. For agent sessions, use
+  `thinkingSignature,textSignature,id,parentId,toolCallId,responseId`: signatures
+  are the provider's encrypted copy of the reasoning (the pilot's reviewer flagged
+  them, and they were 17.5% of all retained characters), and ids link to provider
+  logs. Equal values share one token and one class, also in units under other
+  keys, so `toolCallId` still matches its call and `parentId` its parent.
+- `--strip-media` replaces embedded PNG and JPEG images with a neutral 1x1 image of
+  the same type. Replaced images need no media review; retained ones still do.
 - Each changed unit records a `proposal` with its basis: `values` (placeholders),
   `unflagged` (no reviewed value occurs, retain), `rename` (opaque file name
   `f00003.jsonl`; always used when a name contains a value, for every file with
-  `--rename-files`), `media` (embedded images, retention proposed but never
-  inspected), `manual` (a value occurs in a number or other typed unit, which
+  `--rename-files`), `field` (whole value under or equal to a replaced field),
+  `media` (embedded images, retention proposed but never inspected),
+  `media_replaced` (neutral image), `manual` (a value occurs in a number or other typed unit, which
   only takes a literal) and `uncovered` (the values file has no entry for the
   source; nothing is proposed). Units that already have a decision are left alone.
 - A proposal is not an approval. `approve` writes the receipt on proposals you
   select by class (`--class email`, repeatable, or `--all-classes`) and by basis
-  (`--unflagged`, `--renames`, `--media`). Unselected, `manual` and `uncovered`
+  (`--unflagged`, `--renames`, `--fields`, `--media`). Unselected, `manual` and `uncovered`
   units stay pending, and the summary reports what remains by basis and class,
   plus any `--class` that matched nothing (usually a typo).
 - `review` writes one source review on every source that has none.

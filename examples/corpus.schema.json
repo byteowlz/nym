@@ -538,7 +538,9 @@
             "values",
             "unflagged",
             "rename",
+            "field",
             "media",
+            "media_replaced",
             "manual",
             "uncovered"
           ]
@@ -570,6 +572,17 @@
             "session"
           ],
           "description": "corpus: reviewed values are replaced in every covered source; session: only where listed."
+        },
+        "replace_fields": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "JSON keys whose string values were replaced whole by placeholders."
+        },
+        "strip_media": {
+          "type": "boolean",
+          "description": "Embedded PNG/JPEG images were proposed for replacement by neutral 1x1 images."
         },
         "nym_version": {
           "type": "string"
