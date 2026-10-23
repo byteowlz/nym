@@ -20,6 +20,49 @@ nym corpus verify --ledger PRIVATE_LEDGER.json --source WORKING_INPUT --bundle C
 
 Plans and ledgers contain originals and private hashes/context. Keep them outside input and candidate trees, outside git, and never distribute them. Files are owner-only. Candidate output is also private by default; publishing remains a separate authorized action. Existing destinations are never overwritten. `apply --resume` verifies an existing matching bundle or reconstructs an interrupted ledger-only commit. Different plans, source changes and corrupt artifacts block resume.
 
+## Proposing decisions from reviewed values
+
+Deciding every unit by hand works for a handful of files. For agent sessions, let
+detection and value review do the work and approve the result in bulk:
+
+```bash
+nym traces anon WORKING_INPUT --plan PRIVATE_VALUES.json   # detection, NER, profiles
+# review the values (pi-nym, scripts/review_trace_anon.py); remove false positives
+nym corpus inventory WORKING_INPUT -o PRIVATE_PLAN.json --scope session
+nym corpus propose PRIVATE_PLAN.json --source WORKING_INPUT \
+  --values PRIVATE_VALUES.json -o PRIVATE_PROPOSED.json [--rename-files]
+nym corpus approve PRIVATE_PROPOSED.json -o PRIVATE_APPROVED.json \
+  --receipt "values reviewed by <who> on <date>" --all-classes --unflagged --renames
+nym corpus review PRIVATE_APPROVED.json -o PRIVATE_REVIEWED.json --basis owned \
+  --evidence "<rights statement>" --privacy-review "<who, how, when>" --serialization-reviewed
+```
+
+- `propose` reads the reviewed values per session (the `traces anon --plan`
+  format, keyed by the path relative to the input directory) and matches them
+  exactly like `traces anon --apply-plan`. Every occurrence in a string or key
+  becomes a `placeholder` edit, `<EMAIL_1>`, numbered per identity namespace: per
+  file with `session` scope, across the corpus with `full` scope. One value gets
+  one class per namespace (the first in plan order), so it never gets two tokens.
+- Each changed unit records a `proposal` with its basis: `values` (placeholders),
+  `unflagged` (no reviewed value occurs, retain), `rename` (opaque file name
+  `f00003.jsonl`; always used when a name contains a value, for every file with
+  `--rename-files`), `media` (embedded images, retention proposed but never
+  inspected), `manual` (a value occurs in a number or other typed unit, which
+  only takes a literal) and `uncovered` (the values file has no entry for the
+  source; nothing is proposed). Units that already have a decision are left alone.
+- A proposal is not an approval. `approve` writes the receipt on proposals you
+  select by class (`--class email`, repeatable, or `--all-classes`) and by basis
+  (`--unflagged`, `--renames`, `--media`). Unselected, `manual` and `uncovered`
+  units stay pending, and the summary reports what remains by basis and class,
+  plus any `--class` that matched nothing (usually a typo).
+- `review` writes one source review on every source that has none.
+- `unflagged` means no *reviewed value* occurs there, not that the text is clean:
+  values detection missed are retained. Sample unflagged units before approving
+  them, and run detection on the candidate bundle as a residual check.
+- `propose`, `approve` and `review` write a new plan each time and never
+  overwrite, so the sequence of plans is the audit trail. `plan.proposed` records
+  the digest of the values file the proposals came from.
+
 ## Scope and decisions
 
 Session and full scopes are peer choices, not quality levels:
@@ -34,6 +77,7 @@ Every unit starts `unresolved`. Neither discovery omissions, no findings, an all
 {"kind":"retain"}
 {"kind":"literal","value":"reviewed synthetic value"}
 {"kind":"fake","pattern":"first_name"}
+{"kind":"placeholder","class":"email"}
 {"kind":"spans","edits":[{"start":0,"end":5,"action":{"kind":"fake","pattern":"first_name"}}]}
 {"kind":"asset","path":"/private/owned-replacement.png","sha256":"<replacement-byte-sha256>"}
 {"kind":"reference","source_id":"f00001"}

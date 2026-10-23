@@ -351,6 +351,49 @@ fn load_plan(path: &Path) -> Result<HashMap<String, Vec<Literal>>> {
         .collect())
 }
 
+/// Reviewed values of one session, matched exactly as `--apply-plan` matches them.
+pub(crate) struct ReviewedSession {
+    literals: Vec<Literal>,
+    matcher: Option<AhoCorasick>,
+}
+
+impl ReviewedSession {
+    /// Non-overlapping `(start, end, class)` occurrences of reviewed values in `text`.
+    pub(crate) fn find(&self, text: &str) -> Vec<(usize, usize, String)> {
+        let Some(matcher) = &self.matcher else {
+            return Vec::new();
+        };
+        resolve_overlaps(text, approved_matches(matcher, &self.literals, text))
+            .into_iter()
+            .map(|m| (m.start, m.end, m.pattern_name))
+            .collect()
+    }
+}
+
+/// Reviewed values per session from a `--plan` file, keyed by the session's
+/// `/`-separated path relative to the input directory.
+pub(crate) fn reviewed_sessions(path: &Path) -> Result<HashMap<String, ReviewedSession>> {
+    load_plan(path)?
+        .into_iter()
+        .map(|(session, literals)| {
+            let matcher = if literals.is_empty() {
+                None
+            } else {
+                Some(
+                    AhoCorasickBuilder::new()
+                        .match_kind(MatchKind::LeftmostLongest)
+                        .build(literals.iter().map(|l| &l.text))
+                        .map_err(|_| anyhow!("reviewed value matcher failed"))?,
+                )
+            };
+            Ok((
+                session.replace('\\', "/"),
+                ReviewedSession { literals, matcher },
+            ))
+        })
+        .collect()
+}
+
 /// Everything `process` needs besides the session itself.
 struct Shared<'a> {
     regex: &'a Detector,

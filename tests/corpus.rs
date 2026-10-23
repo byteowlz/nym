@@ -625,3 +625,267 @@ fn unchanged_sources_require_an_explicit_verbatim_declaration() {
         serde_json::from_slice(&fs::read(out.join("manifest.json")).unwrap()).unwrap();
     assert!(manifest["label_sources"][0]["sha256"].is_string());
 }
+
+/// Every key nym writes must be declared, because the schema forbids extras.
+fn assert_schema_declares(plan: &Value) {
+    let schema: Value =
+        serde_json::from_str(include_str!("../examples/corpus.schema.json")).unwrap();
+    let defs = &schema["$defs"];
+    let declared = |def: &str, value: &Value| {
+        for key in value.as_object().unwrap().keys() {
+            assert!(
+                defs[def]["properties"].get(key).is_some(),
+                "schema {def} does not declare {key}"
+            );
+        }
+    };
+    let kinds: Vec<&str> = defs["action"]["oneOf"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|a| a["properties"]["kind"]["const"].as_str().unwrap())
+        .collect();
+    fn actions<'a>(action: &'a Value, out: &mut Vec<&'a Value>) {
+        out.push(action);
+        for edit in action["edits"].as_array().into_iter().flatten() {
+            actions(&edit["action"], out);
+        }
+    }
+    declared("plan", plan);
+    if let Some(proposed) = plan.get("proposed") {
+        declared("proposed", proposed);
+    }
+    for source in plan["sources"].as_array().unwrap() {
+        declared("source", source);
+        if !source["review"].is_null() {
+            declared("review", &source["review"]);
+        }
+        for unit in source["units"].as_array().unwrap() {
+            declared("unit", unit);
+            if let Some(proposal) = unit.get("proposal") {
+                declared("proposal", proposal);
+            }
+            let mut found = Vec::new();
+            actions(&unit["action"], &mut found);
+            for action in found {
+                assert!(kinds.contains(&action["kind"].as_str().unwrap()));
+            }
+        }
+    }
+}
+
+#[test]
+fn reviewed_values_become_approved_placeholders_without_unit_by_unit_review() {
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("input");
+    fs::create_dir_all(root.join("project")).unwrap();
+    let email = "alice.example@example.invalid";
+    fs::write(
+        root.join("project/a.jsonl"),
+        format!(
+            "{{\"role\":\"user\",\"content\":\"mail {email} and ask Alice Example\"}}\n{{\"role\":\"toolResult\",\"content\":\"to: {email}\",\"n\":3}}\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("project/b.jsonl"),
+        format!("{{\"role\":\"user\",\"content\":\"Bob Sample cc {email}\"}}\n"),
+    )
+    .unwrap();
+    let values = dir.path().join("values.json");
+    let session =
+        |name: &str, candidates: Value| json!({"session": name, "candidates": candidates});
+    let a = session(
+        "project/a.jsonl",
+        json!([{"value": email, "class": "email"}, {"value": "Alice Example", "class": "person"}]),
+    );
+    // The same value under another class elsewhere must not get a second token.
+    let b = session(
+        "project/b.jsonl",
+        json!([{"value": "Bob Sample", "class": "person"}, {"value": email, "class": "username"}]),
+    );
+    save(&values, &json!({"sessions": [a.clone()]}));
+    let p = |name: &str| dir.path().join(name);
+    let s = |path: &Path| path.to_str().unwrap().to_owned();
+    snapshot(&root, &p("plan.json"), "full");
+
+    // Uncovered sources stay unresolved and block, even after bulk approval.
+    let summary = ok(run(&[
+        "corpus",
+        "propose",
+        &s(&p("plan.json")),
+        "--source",
+        &s(&root),
+        "--values",
+        &s(&values),
+        "-o",
+        &s(&p("partial.json")),
+        "--json",
+    ]));
+    assert_eq!(
+        (
+            summary["covered_sources"].as_u64(),
+            summary["uncovered_sources"].as_u64()
+        ),
+        (Some(1), Some(1))
+    );
+    ok(run(&[
+        "corpus",
+        "approve",
+        &s(&p("partial.json")),
+        "-o",
+        &s(&p("partial-approved.json")),
+        "--receipt",
+        "fixture",
+        "--all-classes",
+        "--unflagged",
+        "--renames",
+        "--json",
+    ]));
+    ok(run(&[
+        "corpus",
+        "review",
+        &s(&p("partial-approved.json")),
+        "-o",
+        &s(&p("partial-reviewed.json")),
+        "--basis",
+        "synthetic",
+        "--evidence",
+        "fixture",
+        "--privacy-review",
+        "fixture",
+        "--serialization-reviewed",
+        "--json",
+    ]));
+    let blocked = run(&[
+        "corpus",
+        "validate",
+        &s(&p("partial-reviewed.json")),
+        "--source",
+        &s(&root),
+        "--json",
+    ]);
+    assert!(!blocked.status.success());
+    assert!(String::from_utf8_lossy(&blocked.stdout).contains("unit decisions unresolved"));
+
+    save(&values, &json!({"sessions": [a, b]}));
+    ok(run(&[
+        "corpus",
+        "propose",
+        &s(&p("plan.json")),
+        "--source",
+        &s(&root),
+        "--values",
+        &s(&values),
+        "-o",
+        &s(&p("proposed.json")),
+        "--rename-files",
+        "--json",
+    ]));
+    let proposed: Value = serde_json::from_slice(&fs::read(p("proposed.json")).unwrap()).unwrap();
+    assert_schema_declares(&proposed);
+    let units: Vec<&Value> = proposed["sources"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .flat_map(|s| s["units"].as_array().unwrap())
+        .collect();
+    assert!(
+        units.iter().all(|u| u["approval"].is_null()),
+        "proposals must not approve"
+    );
+
+    // Approving one class leaves the others pending, and typos are reported.
+    let partial = ok(run(&[
+        "corpus",
+        "approve",
+        &s(&p("proposed.json")),
+        "-o",
+        &s(&p("emails.json")),
+        "--receipt",
+        "fixture",
+        "--class",
+        "email",
+        "--class",
+        "emial",
+        "--json",
+    ]));
+    assert_eq!(partial["unknown_classes"], json!(["emial"]));
+    assert!(partial["pending_classes"]["person"].as_u64().unwrap() > 0);
+
+    ok(run(&[
+        "corpus",
+        "approve",
+        &s(&p("proposed.json")),
+        "-o",
+        &s(&p("approved.json")),
+        "--receipt",
+        "fixture: classes and retention approved",
+        "--all-classes",
+        "--unflagged",
+        "--renames",
+        "--json",
+    ]));
+    ok(run(&[
+        "corpus",
+        "review",
+        &s(&p("approved.json")),
+        "-o",
+        &s(&p("reviewed.json")),
+        "--basis",
+        "synthetic",
+        "--evidence",
+        "fixture",
+        "--privacy-review",
+        "fixture",
+        "--serialization-reviewed",
+        "--json",
+    ]));
+    let reviewed: Value = serde_json::from_slice(&fs::read(p("reviewed.json")).unwrap()).unwrap();
+    assert_schema_declares(&reviewed);
+    let status = ok(run(&[
+        "corpus",
+        "status",
+        &s(&p("reviewed.json")),
+        "--json",
+    ]));
+    assert_eq!(
+        (
+            status["unresolved"].as_u64(),
+            status["unreviewed_sources"].as_u64()
+        ),
+        (Some(0), Some(0))
+    );
+
+    let out = p("bundle");
+    let ledger = p("ledger.json");
+    ok(applied(&p("reviewed.json"), &root, &out, &ledger));
+    ok(run(&[
+        "corpus",
+        "verify",
+        "--ledger",
+        &s(&ledger),
+        "--source",
+        &s(&root),
+        "--bundle",
+        &s(&out),
+        "--json",
+    ]));
+    let a_out = fs::read_to_string(out.join("sources/f00000.jsonl")).unwrap();
+    let b_out = fs::read_to_string(out.join("sources/f00001.jsonl")).unwrap();
+    for text in [&a_out, &b_out] {
+        assert!(!text.contains(email) && !text.contains("Alice") && !text.contains("Bob"));
+        assert!(
+            !text.contains("project"),
+            "renamed sources must not keep directory names"
+        );
+        for line in text.lines() {
+            serde_json::from_str::<Value>(line).unwrap();
+        }
+    }
+    // Full scope: one value, one token, in every file and under one class.
+    assert_eq!(a_out.matches("<EMAIL_1>").count(), 2);
+    assert!(a_out.contains("<PERSON_1>"));
+    assert!(b_out.contains("<PERSON_2>") && b_out.contains("<EMAIL_1>"));
+    assert!(!b_out.contains("USERNAME"));
+}

@@ -146,6 +146,24 @@
           "additionalProperties": false,
           "required": [
             "kind",
+            "class"
+          ],
+          "description": "Numbered placeholder <CLASS_n>: same value, same number within its identity namespace.",
+          "properties": {
+            "kind": {
+              "const": "placeholder"
+            },
+            "class": {
+              "type": "string",
+              "pattern": "^[A-Za-z0-9_-]{1,64}$"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "kind",
             "edits"
           ],
           "properties": {
@@ -252,6 +270,9 @@
         },
         "action": {
           "$ref": "#/$defs/action"
+        },
+        "proposal": {
+          "$ref": "#/$defs/proposal"
         }
       }
     },
@@ -312,6 +333,14 @@
           "items": {
             "$ref": "#/$defs/unit"
           }
+        },
+        "denied_by": {
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Index into plan.deny when this source matched a deny rule."
         }
       }
     },
@@ -345,6 +374,16 @@
           "items": {
             "$ref": "#/$defs/source"
           }
+        },
+        "proposed": {
+          "$ref": "#/$defs/proposed"
+        },
+        "deny": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Regexes that disqualify a matching source from publication outright; a match is not redaction."
         }
       }
     },
@@ -483,6 +522,49 @@
           "items": {
             "$ref": "#/$defs/label_source"
           }
+        }
+      }
+    },
+    "proposal": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "basis"
+      ],
+      "description": "Why `corpus propose` suggested this unit's action. A proposal is not an approval.",
+      "properties": {
+        "basis": {
+          "enum": [
+            "values",
+            "unflagged",
+            "rename",
+            "media",
+            "manual",
+            "uncovered"
+          ]
+        },
+        "classes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "proposed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "values_sha256",
+        "nym_version"
+      ],
+      "description": "Provenance of `corpus propose`: digest of the private reviewed-values file.",
+      "properties": {
+        "values_sha256": {
+          "$ref": "#/$defs/digest"
+        },
+        "nym_version": {
+          "type": "string"
         }
       }
     }

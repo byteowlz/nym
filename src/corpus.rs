@@ -39,6 +39,69 @@ enum Command {
         #[arg(long, value_name = "FILE")]
         deny_file: Option<PathBuf>,
     },
+    /// Pre-fill unresolved units from reviewed values (a `traces anon --plan`
+    /// file): every occurrence becomes a numbered placeholder, everything else
+    /// is proposed for retention. Proposals are not approvals.
+    Propose {
+        plan: PathBuf,
+        #[arg(long)]
+        source: PathBuf,
+        /// Reviewed values per session (`nym traces anon --plan` format); private
+        #[arg(long, value_name = "FILE")]
+        values: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Rename every source to its opaque id, not only names that contain values
+        #[arg(long)]
+        rename_files: bool,
+    },
+    /// Approve proposals in bulk, by class or basis, with one receipt
+    Approve {
+        plan: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        /// Who approved what, on which evidence; stored on every approved unit
+        #[arg(long)]
+        receipt: String,
+        /// Approve placeholder proposals whose classes are all listed (repeatable)
+        #[arg(long = "class", value_name = "CLASS")]
+        classes: Vec<String>,
+        /// Approve placeholder proposals of every class
+        #[arg(long)]
+        all_classes: bool,
+        /// Approve retention of units no reviewed value occurs in
+        #[arg(long)]
+        unflagged: bool,
+        /// Approve opaque renames of source files
+        #[arg(long)]
+        renames: bool,
+        /// Approve retention of embedded media (still requires a media review)
+        #[arg(long)]
+        media: bool,
+    },
+    /// Record the rights and privacy review for every source that has none
+    Review {
+        plan: PathBuf,
+        #[arg(short, long)]
+        output: PathBuf,
+        #[arg(long, value_enum)]
+        basis: Rights,
+        /// Where the rights come from (licence, ownership statement)
+        #[arg(long)]
+        evidence: String,
+        /// Who reviewed privacy, how, and when
+        #[arg(long)]
+        privacy_review: String,
+        /// JSON re-encoding of the sources was reviewed
+        #[arg(long)]
+        serialization_reviewed: bool,
+        /// Embedded media was reviewed
+        #[arg(long)]
+        media_reviewed: bool,
+        /// Publish sources the transformation leaves byte-identical
+        #[arg(long)]
+        publish_verbatim: bool,
+    },
     /// Check immutable sources and complete declared decisions without writing outputs
     Validate {
         plan: PathBuf,
@@ -86,7 +149,40 @@ struct Plan {
     /// not redaction: the source must be removed or the policy changed.
     #[serde(default)]
     deny: Vec<String>,
+    /// Provenance of `corpus propose`, when proposals were generated.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proposed: Option<Proposed>,
     sources: Vec<Source>,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Proposed {
+    values_sha256: String,
+    nym_version: String,
+}
+/// Why `corpus propose` suggested a unit's action. Approval stays explicit.
+#[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq, Hash, PartialOrd, Ord)]
+#[serde(rename_all = "snake_case")]
+enum Basis {
+    /// Reviewed values occur in the unit and are replaced by placeholders
+    Values,
+    /// No reviewed value occurs in the unit; proposed for retention
+    Unflagged,
+    /// Source file renamed to its opaque id
+    Rename,
+    /// Embedded media nym cannot inspect; retention proposed, review required
+    Media,
+    /// A value occurs in a typed unit that only takes a literal; decide manually
+    Manual,
+    /// The values file does not cover this source; nothing proposed
+    Uncovered,
+}
+#[derive(Clone, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+struct Proposal {
+    basis: Basis,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    classes: Vec<String>,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -117,7 +213,7 @@ struct Review {
     #[serde(default)]
     publish_verbatim: bool,
 }
-#[derive(Clone, Deserialize, Serialize)]
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum)]
 #[serde(rename_all = "lowercase")]
 enum Rights {
     Owned,
@@ -134,6 +230,8 @@ struct Unit {
     /// Explicit identity namespace for equal literals with different meanings.
     #[serde(default)]
     entity: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    proposal: Option<Proposal>,
     approval: Option<String>,
     action: Action,
 }
@@ -142,11 +240,26 @@ struct Unit {
 enum Action {
     Unresolved,
     Retain,
-    Literal { value: String },
-    Fake { pattern: String },
-    Spans { edits: Vec<Edit> },
-    Asset { path: String, sha256: String },
-    Reference { source_id: String },
+    Literal {
+        value: String,
+    },
+    Fake {
+        pattern: String,
+    },
+    /// Numbered per identity namespace: `<EMAIL_1>`, same value same number.
+    Placeholder {
+        class: String,
+    },
+    Spans {
+        edits: Vec<Edit>,
+    },
+    Asset {
+        path: String,
+        sha256: String,
+    },
+    Reference {
+        source_id: String,
+    },
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -347,6 +460,7 @@ fn units(id: &str, path: &str, bytes: &[u8], format: &str) -> Result<Vec<Unit>> 
             kind,
             original,
             entity: None,
+            proposal: None,
             approval: None,
             action: Action::Unresolved,
         })
@@ -410,6 +524,7 @@ fn inventory(root: &Path, scope: Scope, seed: u64, deny: &[String]) -> Result<Pl
         scope,
         seed,
         deny: deny.to_vec(),
+        proposed: None,
         sources,
     })
 }
@@ -487,6 +602,237 @@ fn decisions(plan: &Plan) -> Result<()> {
         }
     }
     Ok(())
+}
+fn opaque_name(source: &Source) -> String {
+    match Path::new(&source.path).extension().and_then(|e| e.to_str()) {
+        Some(ext) if !ext.is_empty() && ext.bytes().all(|b| b.is_ascii_alphanumeric()) => {
+            format!("{}.{ext}", source.id)
+        }
+        _ => source.id.clone(),
+    }
+}
+fn count(map: &mut std::collections::BTreeMap<String, usize>, key: impl Into<String>) {
+    *map.entry(key.into()).or_default() += 1;
+}
+fn basis_name(basis: Basis) -> String {
+    serde_json::to_value(basis)
+        .ok()
+        .and_then(|v| v.as_str().map(str::to_owned))
+        .unwrap_or_default()
+}
+/// Turn reviewed values into proposed unit actions. Only undecided units change,
+/// and nothing is approved: proposals record why, approval records who agreed.
+fn propose(
+    plan: &mut Plan,
+    root: &Path,
+    values: &Path,
+    rename_files: bool,
+) -> Result<serde_json::Value> {
+    check_sources(plan, root)?;
+    outside(values, root)?;
+    let values_bytes = bounded_read(values, MAX_BYTES * 4)
+        .map_err(|_| anyhow!("reviewed values file cannot be read"))?;
+    let sessions = crate::traces::reviewed_sessions(values)
+        .map_err(|_| anyhow!("invalid reviewed values file"))?;
+    // One class per value and namespace, first occurrence in plan order, so a
+    // value never gets two different placeholders.
+    let mut classes: HashMap<(String, String), String> = HashMap::new();
+    let mut by_basis = std::collections::BTreeMap::new();
+    let mut by_class = std::collections::BTreeMap::new();
+    let (mut covered, mut uncovered, mut denied, mut decided) = (0, 0, 0, 0);
+    let scope = plan.scope;
+    for source in &mut plan.sources {
+        if source.denied_by.is_some() {
+            denied += 1;
+            continue;
+        }
+        let session = sessions.get(&source.path);
+        if session.is_some() {
+            covered += 1;
+        } else {
+            uncovered += 1;
+        }
+        let group = match scope {
+            Scope::Session => Some(source.group.clone()),
+            Scope::Full => None,
+        };
+        let renamed = opaque_name(source);
+        for unit in &mut source.units {
+            if !matches!(unit.action, Action::Unresolved) || unit.approval.is_some() {
+                decided += 1;
+                continue;
+            }
+            let Some(session) = session else {
+                unit.proposal = Some(Proposal {
+                    basis: Basis::Uncovered,
+                    classes: Vec::new(),
+                });
+                count(&mut by_basis, basis_name(Basis::Uncovered));
+                continue;
+            };
+            let namespace = serde_json::to_string(&(&group, &unit.entity))?;
+            let found = session
+                .find(&unit.original)
+                .into_iter()
+                .map(|(start, end, class)| {
+                    let class = classes
+                        .entry((namespace.clone(), unit.original[start..end].to_owned()))
+                        .or_insert(class)
+                        .clone();
+                    (start, end, class)
+                })
+                .collect::<Vec<_>>();
+            let mut names = found.iter().map(|f| f.2.clone()).collect::<Vec<_>>();
+            names.sort();
+            names.dedup();
+            let (basis, action) = match unit.kind.as_str() {
+                "filename" if rename_files || !found.is_empty() => (
+                    Basis::Rename,
+                    Action::Literal {
+                        value: renamed.clone(),
+                    },
+                ),
+                "media" => (Basis::Media, Action::Retain),
+                _ if found.is_empty() && unit.kind != "asset" => (Basis::Unflagged, Action::Retain),
+                "string" | "key" => {
+                    for (_, _, class) in &found {
+                        count(&mut by_class, class.clone());
+                    }
+                    (
+                        Basis::Values,
+                        Action::Spans {
+                            edits: found
+                                .into_iter()
+                                .map(|(start, end, class)| Edit {
+                                    start,
+                                    end,
+                                    action: Action::Placeholder { class },
+                                })
+                                .collect(),
+                        },
+                    )
+                }
+                _ => (Basis::Manual, Action::Unresolved),
+            };
+            count(&mut by_basis, basis_name(basis));
+            unit.action = action;
+            unit.proposal = Some(Proposal {
+                basis,
+                classes: names,
+            });
+        }
+    }
+    plan.proposed = Some(Proposed {
+        values_sha256: digest(&values_bytes),
+        nym_version: env!("CARGO_PKG_VERSION").into(),
+    });
+    Ok(serde_json::json!({
+        "sources": plan.sources.len(),
+        "covered_sources": covered,
+        "uncovered_sources": uncovered,
+        "denied_sources": denied,
+        "already_decided_units": decided,
+        "proposed_units": by_basis,
+        "placeholder_spans": by_class,
+        "approved": 0,
+        "anonymity_guaranteed": false,
+    }))
+}
+struct Selection {
+    receipt: String,
+    classes: HashSet<String>,
+    all_classes: bool,
+    /// Non-value bases approved wholesale: unflagged, rename, media.
+    bases: HashSet<Basis>,
+}
+fn approve(plan: &mut Plan, select: &Selection) -> Result<serde_json::Value> {
+    if !receipt(Some(&select.receipt)) {
+        bail!("approval receipt is empty");
+    }
+    if select.classes.is_empty() && !select.all_classes && select.bases.is_empty() {
+        bail!(
+            "approve selects nothing; pass --class, --all-classes, --unflagged, --renames or --media"
+        );
+    }
+    let mut approved = std::collections::BTreeMap::new();
+    let mut pending = std::collections::BTreeMap::new();
+    let mut pending_classes = std::collections::BTreeMap::new();
+    let mut seen = HashSet::new();
+    for unit in plan.sources.iter_mut().flat_map(|s| &mut s.units) {
+        let Some(proposal) = &unit.proposal else {
+            continue;
+        };
+        seen.extend(proposal.classes.iter().cloned());
+        if unit.approval.is_some() {
+            continue;
+        }
+        let chosen = !matches!(unit.action, Action::Unresolved)
+            && match proposal.basis {
+                Basis::Values => {
+                    select.all_classes
+                        || proposal.classes.iter().all(|c| select.classes.contains(c))
+                }
+                Basis::Unflagged | Basis::Rename | Basis::Media => {
+                    select.bases.contains(&proposal.basis)
+                }
+                Basis::Manual | Basis::Uncovered => false,
+            };
+        if chosen {
+            unit.approval = Some(select.receipt.clone());
+            count(&mut approved, basis_name(proposal.basis));
+        } else {
+            count(&mut pending, basis_name(proposal.basis));
+            for class in &proposal.classes {
+                count(&mut pending_classes, class.clone());
+            }
+        }
+    }
+    let mut unknown = select
+        .classes
+        .iter()
+        .filter(|c| !seen.contains(*c))
+        .cloned()
+        .collect::<Vec<_>>();
+    unknown.sort();
+    Ok(serde_json::json!({
+        "approved_units": approved,
+        "pending_units": pending,
+        "pending_classes": pending_classes,
+        "unknown_classes": unknown,
+        "anonymity_guaranteed": false,
+    }))
+}
+fn review_sources(plan: &mut Plan, review: &Review) -> Result<serde_json::Value> {
+    if !receipt(Some(&review.evidence)) || !receipt(Some(&review.privacy_review)) {
+        bail!("corpus review receipt incomplete");
+    }
+    let (mut reviewed, mut kept, mut denied) = (0, 0, 0);
+    for source in &mut plan.sources {
+        if source.denied_by.is_some() {
+            denied += 1;
+        } else if source.review.is_some() {
+            kept += 1;
+        } else {
+            source.review = Some(review.clone());
+            reviewed += 1;
+        }
+    }
+    Ok(serde_json::json!({
+        "reviewed_sources": reviewed,
+        "already_reviewed_sources": kept,
+        "denied_sources": denied,
+        "rights_verified_by_nym": false,
+    }))
+}
+fn read_plan(path: &Path) -> Result<Plan> {
+    let plan: Plan = read_json(path)?;
+    if plan.version != VERSION {
+        bail!("unsupported corpus plan version");
+    }
+    Ok(plan)
+}
+fn write_plan(path: &Path, plan: &Plan) -> Result<()> {
+    private_write(path, &serde_json::to_vec_pretty(plan)?)
 }
 fn iban_surrogate(original: &str, entropy: &str) -> Result<String> {
     if crate::engine::patterns::iban_span(original, 0, original.len()).is_none() {
@@ -646,29 +992,64 @@ impl AliasRegistry {
         Ok(())
     }
 }
-fn resolve(
-    action: &Action,
-    original: &str,
-    replacer: &mut Replacer,
-    scope: &str,
-    aliases: &mut AliasRegistry,
-    names: &HashMap<String, String>,
-) -> Result<String> {
+/// Placeholder numbering per identity namespace and class, in plan order.
+#[derive(Default)]
+struct Placeholders(HashMap<(String, String), HashMap<String, usize>>);
+impl Placeholders {
+    fn token(&mut self, scope: &str, class: &str, original: &str) -> Result<String> {
+        let label = placeholder_label(class)?;
+        let ids = self.0.entry((scope.into(), label.clone())).or_default();
+        let next = ids.len() + 1;
+        let id = *ids.entry(original.into()).or_insert(next);
+        Ok(format!("<{label}_{id}>"))
+    }
+}
+/// `first_name` -> `FIRST_NAME`; the class names the token, so it must be plain.
+fn placeholder_label(class: &str) -> Result<String> {
+    if class.is_empty()
+        || class.len() > 64
+        || !class
+            .bytes()
+            .all(|b| b.is_ascii_alphanumeric() || matches!(b, b'_' | b'-'))
+    {
+        bail!("placeholder class must be 1-64 ASCII letters, digits, '_' or '-'");
+    }
+    Ok(class.to_ascii_uppercase().replace('-', "_"))
+}
+struct Resolver<'a> {
+    replacer: &'a mut Replacer,
+    placeholders: &'a mut Placeholders,
+    aliases: &'a mut AliasRegistry,
+    names: &'a HashMap<String, String>,
+}
+fn resolve(action: &Action, original: &str, scope: &str, r: &mut Resolver) -> Result<String> {
     match action {
         Action::Retain => Ok(original.into()),
+        Action::Placeholder { class } => {
+            if original.is_empty() {
+                bail!("placeholder replaces an empty value");
+            }
+            let value = r.placeholders.token(scope, class, original)?;
+            if value == original {
+                bail!("placeholder did not replace the original");
+            }
+            r.aliases.record(scope, original, &value)?;
+            Ok(value)
+        }
         Action::Literal { value } => {
             if value == original || value.is_empty() {
                 bail!("literal replacement is empty or unchanged");
             }
-            aliases.record(scope, original, value)?;
+            r.aliases.record(scope, original, value)?;
             Ok(value.clone())
         }
         Action::Fake { pattern } => {
-            let value = fake(pattern, original, replacer)?;
-            aliases.record(scope, original, &value)?;
+            let value = fake(pattern, original, r.replacer)?;
+            r.aliases.record(scope, original, &value)?;
             Ok(value)
         }
-        Action::Reference { source_id } => names
+        Action::Reference { source_id } => r
+            .names
             .get(source_id)
             .cloned()
             .ok_or_else(|| anyhow!("corpus reference target is missing")),
@@ -692,6 +1073,7 @@ fn resolve(
                     Action::Retain
                         | Action::Literal { .. }
                         | Action::Fake { .. }
+                        | Action::Placeholder { .. }
                         | Action::Reference { .. }
                 ) {
                     bail!("unsupported nested corpus span action");
@@ -700,10 +1082,8 @@ fn resolve(
                 output.push_str(&resolve(
                     &edit.action,
                     &original[edit.start..edit.end],
-                    replacer,
                     scope,
-                    aliases,
-                    names,
+                    r,
                 )?);
                 cursor = edit.end;
             }
@@ -742,6 +1122,7 @@ fn reserve_retained(plan: &Plan, aliases: &mut AliasRegistry) -> Result<()> {
 }
 struct TransformState {
     replacers: HashMap<String, Replacer>,
+    placeholders: Placeholders,
     aliases: AliasRegistry,
     names: HashMap<String, String>,
 }
@@ -751,9 +1132,12 @@ impl TransformState {
             return Ok(String::new());
         }
         if !matches!(unit.kind.as_str(), "string" | "key")
-            && matches!(unit.action, Action::Spans { .. } | Action::Fake { .. })
+            && matches!(
+                unit.action,
+                Action::Spans { .. } | Action::Fake { .. } | Action::Placeholder { .. }
+            )
         {
-            bail!("typed corpus unit cannot use text-span or fake actions");
+            bail!("typed corpus unit cannot use text-span, fake or placeholder actions");
         }
         if unit.entity.as_deref().is_some_and(|s| s.trim().is_empty()) {
             bail!("empty corpus identity namespace");
@@ -773,10 +1157,13 @@ impl TransformState {
         let value = resolve(
             &unit.action,
             &unit.original,
-            replacer,
             &scope,
-            &mut self.aliases,
-            &self.names,
+            &mut Resolver {
+                replacer,
+                placeholders: &mut self.placeholders,
+                aliases: &mut self.aliases,
+                names: &self.names,
+            },
         )?;
         if unit.kind == "media" {
             validate_media(unit, &value)?;
@@ -817,6 +1204,7 @@ fn rendered_values(plan: &Plan) -> Result<Vec<Vec<String>>> {
         .collect::<Result<HashMap<_, _>>>()?;
     let mut state = TransformState {
         replacers: HashMap::new(),
+        placeholders: Placeholders::default(),
         aliases: AliasRegistry::default(),
         names,
     };
@@ -1089,8 +1477,14 @@ pub(crate) fn run(common: &crate::CommonOpts, command: CorpusCommand) -> Result<
                 .iter()
                 .flat_map(|s| &s.units)
                 .collect::<Vec<_>>();
+            let mut proposed = std::collections::BTreeMap::new();
+            for unit in &units {
+                if let Some(proposal) = &unit.proposal {
+                    count(&mut proposed, basis_name(proposal.basis));
+                }
+            }
             Ok(
-                serde_json::json!({"sources":plan.sources.len(),"units":units.len(),"unresolved":units.iter().filter(|u|matches!(u.action,Action::Unresolved)||!receipt(u.approval.as_deref())).count(),"unreviewed_sources":plan.sources.iter().filter(|s|s.review.is_none()).count(),"media_units":units.iter().filter(|u|matches!(u.kind.as_str(),"asset"|"media")).count(),"scope":plan.scope,"source_snapshot_checked":false,"anonymity_guaranteed":false}),
+                serde_json::json!({"sources":plan.sources.len(),"units":units.len(),"proposed_units":proposed,"approved_units":units.iter().filter(|u|receipt(u.approval.as_deref())).count(),"unresolved":units.iter().filter(|u|matches!(u.action,Action::Unresolved)||!receipt(u.approval.as_deref())).count(),"unreviewed_sources":plan.sources.iter().filter(|s|s.review.is_none()).count(),"media_units":units.iter().filter(|u|matches!(u.kind.as_str(),"asset"|"media")).count(),"scope":plan.scope,"source_snapshot_checked":false,"anonymity_guaranteed":false}),
             )
         }
         Command::Inventory {
@@ -1132,6 +1526,75 @@ pub(crate) fn run(common: &crate::CommonOpts, command: CorpusCommand) -> Result<
                 "unresolved": count,
                 "denied_sources": denied,
             }))
+        }
+        Command::Propose {
+            plan: plan_path,
+            source,
+            values,
+            output,
+            rename_files,
+        } => {
+            let root = source.canonicalize()?;
+            outside(&output, &root)?;
+            let mut plan = read_plan(&plan_path)?;
+            let summary = propose(&mut plan, &root, &values, rename_files)?;
+            write_plan(&output, &plan)?;
+            Ok(summary)
+        }
+        Command::Approve {
+            plan: plan_path,
+            output,
+            receipt,
+            classes,
+            all_classes,
+            unflagged,
+            renames,
+            media,
+        } => {
+            let mut plan = read_plan(&plan_path)?;
+            let summary = approve(
+                &mut plan,
+                &Selection {
+                    receipt,
+                    classes: classes.into_iter().collect(),
+                    all_classes,
+                    bases: [
+                        (unflagged, Basis::Unflagged),
+                        (renames, Basis::Rename),
+                        (media, Basis::Media),
+                    ]
+                    .into_iter()
+                    .filter_map(|(on, basis)| on.then_some(basis))
+                    .collect(),
+                },
+            )?;
+            write_plan(&output, &plan)?;
+            Ok(summary)
+        }
+        Command::Review {
+            plan: plan_path,
+            output,
+            basis,
+            evidence,
+            privacy_review,
+            serialization_reviewed,
+            media_reviewed,
+            publish_verbatim,
+        } => {
+            let mut plan = read_plan(&plan_path)?;
+            let summary = review_sources(
+                &mut plan,
+                &Review {
+                    basis,
+                    evidence,
+                    privacy_review,
+                    serialization_reviewed,
+                    media_reviewed,
+                    publish_verbatim,
+                },
+            )?;
+            write_plan(&output, &plan)?;
+            Ok(summary)
         }
         Command::Validate { plan, source } => {
             let plan: Plan = read_json(&plan)?;
