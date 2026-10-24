@@ -163,6 +163,19 @@
           "type": "object",
           "additionalProperties": false,
           "required": [
+            "kind"
+          ],
+          "description": "Remove an object member: set on its key unit and every unit beneath it.",
+          "properties": {
+            "kind": {
+              "const": "drop"
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
             "kind",
             "edits"
           ],
@@ -414,7 +427,10 @@
         "values": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": [
+              "string",
+              "null"
+            ]
           }
         }
       }
@@ -539,6 +555,7 @@
             "unflagged",
             "rename",
             "field",
+            "drop",
             "media",
             "media_replaced",
             "manual",
@@ -550,6 +567,10 @@
           "items": {
             "type": "string"
           }
+        },
+        "rule": {
+          "type": "string",
+          "description": "The drop/replace path that fired, or equal-value."
         }
       }
     },
@@ -573,12 +594,27 @@
           ],
           "description": "corpus: reviewed values are replaced in every covered source; session: only where listed."
         },
-        "replace_fields": {
+        "export_profile": {
+          "enum": [
+            "pi-training-v1"
+          ],
+          "description": "Named, versioned export profile whose paths are expanded into drop_paths/replace_paths."
+        },
+        "drop_paths": {
           "type": "array",
           "items": {
-            "type": "string"
+            "type": "string",
+            "pattern": "^/"
           },
-          "description": "JSON keys whose string values were replaced whole by placeholders."
+          "description": "Record-relative paths whose object members were proposed for removal (* matches one segment)."
+        },
+        "replace_paths": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^/"
+          },
+          "description": "Record-relative paths whose strings were proposed for linked placeholders."
         },
         "strip_media": {
           "type": "boolean",

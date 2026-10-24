@@ -98,16 +98,28 @@ impl Node {
         }
     }
 
-    pub(crate) fn render(&self, values: &mut impl Iterator<Item = String>) -> Result<String> {
+    /// Render from unit values in `visit` order. `None` drops: a dropped key
+    /// removes its member, and everything beneath it must be dropped too.
+    pub(crate) fn render(
+        &self,
+        values: &mut impl Iterator<Item = Option<String>>,
+    ) -> Result<String> {
         Ok(match self {
             Self::Object(members) => {
-                if members.is_empty() && values.next().as_deref() != Some("{}") {
-                    bail!("empty corpus object changed");
+                if members.is_empty() {
+                    if kept(values, "object")? != "{}" {
+                        bail!("empty corpus object changed");
+                    }
+                    return Ok("{}".into());
                 }
                 let mut seen = std::collections::HashSet::new();
                 let mut output = Vec::new();
                 for (_, value) in members {
-                    let key = values.next().ok_or_else(|| anyhow!("missing corpus key"))?;
+                    let Some(key) = values.next().ok_or_else(|| anyhow!("missing corpus key"))?
+                    else {
+                        value.skip(values)?;
+                        continue;
+                    };
                     if !seen.insert(key.clone()) {
                         bail!("transformed corpus key collision");
                     }
@@ -120,8 +132,11 @@ impl Node {
                 format!("{{{}}}", output.join(","))
             }
             Self::Array(items) => {
-                if items.is_empty() && values.next().as_deref() != Some("[]") {
-                    bail!("empty corpus array changed");
+                if items.is_empty() {
+                    if kept(values, "array")? != "[]" {
+                        bail!("empty corpus array changed");
+                    }
+                    return Ok("[]".into());
                 }
                 format!(
                     "[{}]",
@@ -132,15 +147,9 @@ impl Node {
                         .join(",")
                 )
             }
-            Self::String(_) => serde_json::to_string(
-                &values
-                    .next()
-                    .ok_or_else(|| anyhow!("missing corpus string"))?,
-            )?,
+            Self::String(_) => serde_json::to_string(&kept(values, "string")?)?,
             Self::Scalar(original) => {
-                let text = values
-                    .next()
-                    .ok_or_else(|| anyhow!("missing corpus scalar"))?;
+                let text = kept(values, "scalar")?;
                 let parsed = Self::parse(&text)?;
                 if !matches!(parsed, Self::Scalar(ref s) if Self::scalar_kind(s) == Self::scalar_kind(original))
                 {
@@ -149,5 +158,36 @@ impl Node {
                 text
             }
         })
+    }
+
+    /// Consume the values of a dropped subtree; every one must be dropped.
+    fn skip(&self, values: &mut impl Iterator<Item = Option<String>>) -> Result<()> {
+        match self {
+            Self::Object(members) if members.is_empty() => gone(values),
+            Self::Array(items) if items.is_empty() => gone(values),
+            Self::Object(members) => members.iter().try_for_each(|(_, value)| {
+                gone(values)?;
+                value.skip(values)
+            }),
+            Self::Array(items) => items.iter().try_for_each(|value| value.skip(values)),
+            Self::String(_) | Self::Scalar(_) => gone(values),
+        }
+    }
+}
+
+/// The next unit value, which must not be dropped.
+fn kept(values: &mut impl Iterator<Item = Option<String>>, what: &str) -> Result<String> {
+    values
+        .next()
+        .ok_or_else(|| anyhow!("missing corpus {what}"))?
+        .ok_or_else(|| anyhow!("dropped corpus {what} outside a dropped member"))
+}
+
+/// The next unit value, which must be dropped.
+fn gone(values: &mut impl Iterator<Item = Option<String>>) -> Result<()> {
+    match values.next() {
+        Some(None) => Ok(()),
+        Some(Some(_)) => bail!("a dropped corpus member keeps part of its value"),
+        None => bail!("missing corpus unit"),
     }
 }

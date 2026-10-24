@@ -49,27 +49,38 @@ nym corpus review PRIVATE_APPROVED.json -o PRIVATE_REVIEWED.json --basis owned \
   In the 20-session pilot, values listed for one session occurred 8,753 times in
   others. `--values-scope session` restricts each value to its own session. This
   is independent of placeholder numbering, which follows the plan `scope`.
-- `--replace-field KEY` (repeatable or comma-separated) replaces every string under
-  that JSON key with one placeholder, for structure that detection skips on purpose
-  but publication must not keep. For agent sessions, use
-  `thinkingSignature,textSignature,id,parentId,toolCallId,responseId`: signatures
-  are the provider's encrypted copy of the reasoning (the pilot's reviewer flagged
-  them, and they were 17.5% of all retained characters), and ids link to provider
-  logs. Equal values share one token and one class, also in units under other
-  keys, so `toolCallId` still matches its call and `parentId` its parent.
+- Export rules select record-relative JSON paths, never key names anywhere: a key
+  called `id` inside tool arguments is data, not linkage. `*` matches one segment.
+  - `--drop-path PATH` removes the object member, key and value, from the output.
+    Use it for opaque provider payloads that nobody downstream can read or review.
+  - `--replace-path PATH` replaces the string with a placeholder. Equal values
+    share one token and class, also in units elsewhere whose whole value equals a
+    replaced one (`equal-value`), so `toolCallId` still matches its call and
+    `parentId` its parent. Replaced values get the identity namespace `field`, so
+    an id `"1"` never collides with the number `1`. `null` stays `null`.
+  - `--export-profile pi-training-v1` is the named, versioned rule set for pi
+    sessions agreed with Kompressor. It drops `/message/content/*/thinkingSignature`
+    and `/message/content/*/textSignature`, and replaces `/id`, `/parentId`,
+    `/targetId`, `/firstKeptEntryId`, `/message/content/*/id`,
+    `/message/toolCallId` and `/message/responseId`. Readable thinking, text, tool
+    calls, tool results, tool arguments and media are kept. A dropped signature
+    is not provider-replay equivalent: keep the originals privately if replay
+    matters. The plan records the profile and the expanded paths.
 - `--strip-media` replaces embedded PNG and JPEG images with a neutral 1x1 image of
-  the same type. Replaced images need no media review; retained ones still do.
+  the same type. It is opt-in and not part of any profile; replaced images need no
+  media review, retained ones do.
 - Each changed unit records a `proposal` with its basis: `values` (placeholders),
   `unflagged` (no reviewed value occurs, retain), `rename` (opaque file name
   `f00003.jsonl`; always used when a name contains a value, for every file with
-  `--rename-files`), `field` (whole value under or equal to a replaced field),
+  `--rename-files`), `field` (whole value at or equal to a replaced path),
+  `drop` (member removed by a drop path),
   `media` (embedded images, retention proposed but never inspected),
   `media_replaced` (neutral image), `manual` (a value occurs in a number or other typed unit, which
   only takes a literal) and `uncovered` (the values file has no entry for the
   source; nothing is proposed). Units that already have a decision are left alone.
 - A proposal is not an approval. `approve` writes the receipt on proposals you
   select by class (`--class email`, repeatable, or `--all-classes`) and by basis
-  (`--unflagged`, `--renames`, `--fields`, `--media`). Unselected, `manual` and `uncovered`
+  (`--unflagged`, `--renames`, `--fields`, `--drops`, `--media`). Unselected, `manual` and `uncovered`
   units stay pending, and the summary reports what remains by basis and class,
   plus any `--class` that matched nothing (usually a typo).
 - `review` writes one source review on every source that has none.
@@ -79,6 +90,13 @@ nym corpus review PRIVATE_APPROVED.json -o PRIVATE_REVIEWED.json --basis owned \
 - `propose`, `approve` and `review` write a new plan each time and never
   overwrite, so the sequence of plans is the audit trail. `plan.proposed` records
   the digest of the values file the proposals came from.
+
+`nym corpus report --ledger PRIVATE_LEDGER.json` gives the consumer value-free
+accounting: per source and per rule (`drop:/message/content/*/thinkingSignature`,
+`field:/id`, `values:first_name`, ...) the units and original characters changed,
+input and output bytes, approval receipts, source reviews, the proposal
+provenance and the SHA-256 of `manifest.json`. Character counts are not token
+counts; measure tokenizer savings separately.
 
 ## Scope and decisions
 

@@ -58,12 +58,19 @@ enum Command {
         /// or only in the session it was listed for
         #[arg(long, value_enum, default_value_t = ValuesScope::Corpus)]
         values_scope: ValuesScope,
-        /// Replace every string under this JSON key with one numbered placeholder
-        /// (repeatable or comma-separated), e.g. provider signatures and ids:
-        /// thinkingSignature,textSignature,id,parentId,toolCallId,responseId.
-        /// Equal values share a token, so links between ids survive.
-        #[arg(long = "replace-field", value_name = "KEY", value_delimiter = ',')]
-        replace_fields: Vec<String>,
+        /// Named, versioned export profile. `pi-training-v1` removes provider
+        /// signatures from pi content blocks and replaces entry and provider ids
+        /// with linked tokens; see `docs/corpus-transformations.md`
+        #[arg(long, value_enum)]
+        export_profile: Option<ExportProfile>,
+        /// Remove the JSON member at this record-relative path, e.g.
+        /// /message/content/*/thinkingSignature (`*` matches one segment; repeatable)
+        #[arg(long = "drop-path", value_name = "PATH")]
+        drop_paths: Vec<String>,
+        /// Replace the string at this record-relative path with a placeholder;
+        /// equal values share a token wherever they occur, so id links survive
+        #[arg(long = "replace-path", value_name = "PATH")]
+        replace_paths: Vec<String>,
         /// Replace embedded PNG/JPEG images with a neutral 1x1 image of the same type
         #[arg(long)]
         strip_media: bool,
@@ -88,9 +95,12 @@ enum Command {
         /// Approve opaque renames of source files
         #[arg(long)]
         renames: bool,
-        /// Approve whole-value placeholders for --replace-field keys
+        /// Approve whole-value placeholders for --replace-path matches and equal values
         #[arg(long)]
         fields: bool,
+        /// Approve removal of members matched by --drop-path
+        #[arg(long)]
+        drops: bool,
         /// Approve retention of embedded media (still requires a media review)
         #[arg(long)]
         media: bool,
@@ -139,6 +149,12 @@ enum Command {
         #[arg(long)]
         resume: bool,
     },
+    /// Value-free accounting of a ledger for the consumer: per-source and per-rule
+    /// unit and character counts, receipts, provenance and the manifest digest
+    Report {
+        #[arg(long)]
+        ledger: PathBuf,
+    },
     /// Verify every generated source against the private transformation ledger
     Verify {
         #[arg(long)]
@@ -148,6 +164,42 @@ enum Command {
         #[arg(long)]
         bundle: PathBuf,
     },
+}
+#[derive(Clone, Copy, Debug, ValueEnum, PartialEq, Eq)]
+enum ExportProfile {
+    #[value(name = "pi-training-v1")]
+    PiTrainingV1,
+}
+impl ExportProfile {
+    fn name(self) -> &'static str {
+        match self {
+            Self::PiTrainingV1 => "pi-training-v1",
+        }
+    }
+    /// Opaque provider payloads nobody downstream can read or review.
+    fn drops(self) -> &'static [&'static str] {
+        match self {
+            Self::PiTrainingV1 => &[
+                "/message/content/*/thinkingSignature",
+                "/message/content/*/textSignature",
+            ],
+        }
+    }
+    /// Structural identities: entry tree, its references, provider ids. Tool
+    /// arguments and tool details are data, not linkage, and stay untouched.
+    fn replaces(self) -> &'static [&'static str] {
+        match self {
+            Self::PiTrainingV1 => &[
+                "/id",
+                "/parentId",
+                "/targetId",
+                "/firstKeptEntryId",
+                "/message/content/*/id",
+                "/message/toolCallId",
+                "/message/responseId",
+            ],
+        }
+    }
 }
 #[derive(Clone, Copy, Debug, Deserialize, Serialize, ValueEnum, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -181,8 +233,12 @@ struct Plan {
 struct Proposed {
     values_sha256: String,
     values_scope: ValuesScope,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    export_profile: Option<String>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    replace_fields: Vec<String>,
+    drop_paths: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    replace_paths: Vec<String>,
     #[serde(default)]
     strip_media: bool,
     nym_version: String,
@@ -197,8 +253,10 @@ enum Basis {
     Unflagged,
     /// Source file renamed to its opaque id
     Rename,
-    /// A whole value under a replaced field, or equal to one
+    /// A whole value at a replaced path, or equal to one
     Field,
+    /// A member removed by a drop path, key and value
+    Drop,
     /// Embedded media nym cannot inspect; retention proposed, review required
     Media,
     /// Embedded media replaced by a neutral image; nothing of the original kept
@@ -214,6 +272,9 @@ struct Proposal {
     basis: Basis,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     classes: Vec<String>,
+    /// The drop/replace path that fired, or `equal-value`
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    rule: Option<String>,
 }
 #[derive(Clone, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -281,6 +342,8 @@ enum Action {
     Placeholder {
         class: String,
     },
+    /// Remove an object member: valid on its key and every unit beneath it.
+    Drop,
     Spans {
         edits: Vec<Edit>,
     },
@@ -313,7 +376,8 @@ struct Output {
     path: String,
     sha256: String,
     bytes: u64,
-    values: Vec<String>,
+    /// Rendered unit values; `None` for dropped units.
+    values: Vec<Option<String>>,
 }
 
 fn digest(bytes: &[u8]) -> String {
@@ -650,16 +714,6 @@ fn neutral_media(mime: Option<&str>) -> Option<&'static str> {
         _ => None,
     }
 }
-/// The JSON key a unit sits under; array elements inherit their parent key.
-fn field_key(location: &str) -> String {
-    location
-        .split('/')
-        .rev()
-        .find(|part| !part.is_empty() && !part.bytes().all(|b| b.is_ascii_digit()))
-        .unwrap_or_default()
-        .replace("~1", "/")
-        .replace("~0", "~")
-}
 /// Replaced fields get their own identity namespace: an id `"1"` is not the
 /// number `1` kept elsewhere. A declared entity wins.
 fn field_entity(unit: &Unit) -> Option<String> {
@@ -697,26 +751,79 @@ fn basis_name(basis: Basis) -> String {
         .and_then(|v| v.as_str().map(str::to_owned))
         .unwrap_or_default()
 }
-/// Turn reviewed values into proposed unit actions. Only undecided units change,
-/// and nothing is approved: proposals record why, approval records who agreed.
+/// What `propose` should do beyond reviewed values.
+struct ProposeOptions {
+    rename_files: bool,
+    values_scope: ValuesScope,
+    export_profile: Option<ExportProfile>,
+    drop_paths: Vec<String>,
+    replace_paths: Vec<String>,
+    strip_media: bool,
+}
+/// Record-relative path of a JSON unit: `/records/3/message/id#key` -> `/message/id`.
+fn record_path(location: &str) -> Option<&str> {
+    let rest = location.strip_prefix("/records/")?;
+    Some(rest[rest.find('/')?..].trim_end_matches("#key"))
+}
+/// `*` matches exactly one segment; everything else matches literally.
+fn path_matches(pattern: &str, path: &str) -> bool {
+    let (mut want, mut have) = (pattern.split('/'), path.split('/'));
+    loop {
+        match (want.next(), have.next()) {
+            (None, None) => return true,
+            (Some(w), Some(h)) if w == "*" || w == h => {}
+            _ => return false,
+        }
+    }
+}
+fn check_paths(paths: &[String]) -> Result<()> {
+    if paths
+        .iter()
+        .any(|p| !p.starts_with('/') || p.len() < 2 || p.len() > 512 || p.contains("//"))
+    {
+        bail!("corpus paths are record-relative JSON pointers such as /message/content/*/id");
+    }
+    Ok(())
+}
+#[derive(Default, Serialize)]
+struct RuleCount {
+    units: usize,
+    chars: usize,
+}
+fn tally(map: &mut std::collections::BTreeMap<String, RuleCount>, rule: &str, unit: &Unit) {
+    let entry = map.entry(rule.to_owned()).or_default();
+    entry.units += 1;
+    entry.chars += unit.original.chars().count();
+}
+/// Turn reviewed values and export rules into proposed unit actions. Only
+/// undecided units change, and nothing is approved: proposals record why,
+/// approval records who agreed.
 fn propose(
     plan: &mut Plan,
     root: &Path,
     values: &Path,
-    rename_files: bool,
-    values_scope: ValuesScope,
-    replace_fields: &[String],
-    strip_media: bool,
+    options: &ProposeOptions,
 ) -> Result<serde_json::Value> {
     check_sources(plan, root)?;
     outside(values, root)?;
+    let profile = options.export_profile;
+    let mut drop_paths: Vec<String> = profile
+        .map(|p| p.drops().iter().map(|s| (*s).to_owned()).collect())
+        .unwrap_or_default();
+    drop_paths.extend(options.drop_paths.iter().cloned());
+    let mut replace_paths: Vec<String> = profile
+        .map(|p| p.replaces().iter().map(|s| (*s).to_owned()).collect())
+        .unwrap_or_default();
+    replace_paths.extend(options.replace_paths.iter().cloned());
+    check_paths(&drop_paths)?;
+    check_paths(&replace_paths)?;
     let values_bytes = bounded_read(values, MAX_BYTES * 4)
         .map_err(|_| anyhow!("reviewed values file cannot be read"))?;
     let sessions = crate::traces::reviewed_sessions(values)
         .map_err(|_| anyhow!("invalid reviewed values file"))?;
     // Coverage still needs the source's own entry: the union only adds values,
     // it is not evidence that detection ran on an unlisted source.
-    let union = match values_scope {
+    let union = match options.values_scope {
         ValuesScope::Corpus => Some(crate::traces::reviewed_union(&sessions)?),
         ValuesScope::Session => None,
     };
@@ -728,25 +835,36 @@ fn propose(
         Scope::Session => Some(source.group.clone()),
         Scope::Full => None,
     };
-    // Field values first, so every unit holding the same id gets the same token
-    // and the same class, wherever it sits.
-    let fields: HashSet<&str> = replace_fields.iter().map(String::as_str).collect();
+    let json = |source: &Source| matches!(source.format.as_str(), "json" | "jsonl");
+    let replace_rule = |unit: &Unit| {
+        record_path(&unit.location)
+            .and_then(|path| replace_paths.iter().find(|p| path_matches(p, path)))
+            .filter(|_| unit.kind == "string" && !unit.original.is_empty())
+    };
+    // Replaced values first, so every unit holding the same id gets the same
+    // token and class wherever it sits.
     let mut field_values = HashSet::new();
-    for source in plan.sources.iter().filter(|s| s.denied_by.is_none()) {
+    for source in plan
+        .sources
+        .iter()
+        .filter(|s| s.denied_by.is_none() && json(s))
+    {
         for unit in &source.units {
-            let key = field_key(&unit.location);
-            if unit.kind == "string" && !unit.original.is_empty() && fields.contains(key.as_str()) {
+            if replace_rule(unit).is_some() {
                 let namespace = serde_json::to_string(&(group_of(source), field_entity(unit)))?;
                 let id = (namespace, unit.original.clone());
+                let key = unit.location.rsplit('/').next().unwrap_or_default();
                 classes
                     .entry(id.clone())
-                    .or_insert_with(|| field_class(&key));
+                    .or_insert_with(|| field_class(key));
                 field_values.insert(id);
             }
         }
     }
     let mut by_basis = std::collections::BTreeMap::new();
     let mut by_class = std::collections::BTreeMap::new();
+    let mut dropped = std::collections::BTreeMap::new();
+    let mut replaced = std::collections::BTreeMap::new();
     let (mut covered, mut uncovered, mut denied, mut decided) = (0, 0, 0, 0);
     for source in &mut plan.sources {
         if source.denied_by.is_some() {
@@ -761,10 +879,8 @@ fn propose(
         } else {
             uncovered += 1;
         }
-        let group = match scope {
-            Scope::Session => Some(source.group.clone()),
-            Scope::Full => None,
-        };
+        let group = group_of(source);
+        let is_json = json(source);
         let renamed = opaque_name(source);
         let mimes: HashMap<String, String> = source
             .units
@@ -777,6 +893,21 @@ fn propose(
                 )
             })
             .collect();
+        // Members to remove: the key's location without `#key`, plus the rule.
+        let members: Vec<(String, String)> = if is_json {
+            source
+                .units
+                .iter()
+                .filter(|u| u.kind == "key")
+                .filter_map(|u| {
+                    let path = record_path(&u.location)?;
+                    let rule = drop_paths.iter().find(|p| path_matches(p, path))?;
+                    Some((u.location.trim_end_matches("#key").to_owned(), rule.clone()))
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         for unit in &mut source.units {
             if !matches!(unit.action, Action::Unresolved) || unit.approval.is_some() {
                 decided += 1;
@@ -786,17 +917,42 @@ fn propose(
                 unit.proposal = Some(Proposal {
                     basis: Basis::Uncovered,
                     classes: Vec::new(),
+                    rule: None,
                 });
                 count(&mut by_basis, basis_name(Basis::Uncovered));
                 continue;
             };
+            let bare = unit.location.trim_end_matches("#key");
+            if let Some((_, rule)) = members.iter().find(|(member, _)| {
+                bare == member
+                    || bare
+                        .strip_prefix(member.as_str())
+                        .is_some_and(|r| r.starts_with('/'))
+            }) {
+                tally(&mut dropped, rule, unit);
+                count(&mut by_basis, basis_name(Basis::Drop));
+                unit.action = Action::Drop;
+                unit.proposal = Some(Proposal {
+                    basis: Basis::Drop,
+                    classes: Vec::new(),
+                    rule: Some(rule.clone()),
+                });
+                continue;
+            }
             let namespace = serde_json::to_string(&(&group, &unit.entity))?;
             let whole = (
                 serde_json::to_string(&(&group, field_entity(unit)))?,
                 unit.original.clone(),
             );
-            if matches!(unit.kind.as_str(), "string" | "key") && field_values.contains(&whole) {
+            if is_json
+                && matches!(unit.kind.as_str(), "string" | "key")
+                && field_values.contains(&whole)
+            {
                 let class = classes[&whole].clone();
+                let rule = replace_rule(unit)
+                    .cloned()
+                    .unwrap_or_else(|| "equal-value".into());
+                tally(&mut replaced, &rule, unit);
                 unit.entity = field_entity(unit);
                 count(&mut by_class, class.clone());
                 count(&mut by_basis, basis_name(Basis::Field));
@@ -806,6 +962,7 @@ fn propose(
                 unit.proposal = Some(Proposal {
                     basis: Basis::Field,
                     classes: vec![class],
+                    rule: Some(rule),
                 });
                 continue;
             }
@@ -824,7 +981,7 @@ fn propose(
             names.sort();
             names.dedup();
             let (basis, action) = match unit.kind.as_str() {
-                "filename" if rename_files || !found.is_empty() => (
+                "filename" if options.rename_files || !found.is_empty() => (
                     Basis::Rename,
                     Action::Literal {
                         value: renamed.clone(),
@@ -833,7 +990,7 @@ fn propose(
                 "media" => {
                     let parent = unit.location.trim_end_matches("data");
                     match neutral_media(mimes.get(parent).map(String::as_str)) {
-                        Some(image) if strip_media => (
+                        Some(image) if options.strip_media => (
                             Basis::MediaReplaced,
                             Action::Literal {
                                 value: image.into(),
@@ -868,14 +1025,17 @@ fn propose(
             unit.proposal = Some(Proposal {
                 basis,
                 classes: names,
+                rule: None,
             });
         }
     }
     plan.proposed = Some(Proposed {
         values_sha256: digest(&values_bytes),
-        values_scope,
-        replace_fields: replace_fields.to_vec(),
-        strip_media,
+        values_scope: options.values_scope,
+        export_profile: profile.map(|p| p.name().to_owned()),
+        drop_paths,
+        replace_paths,
+        strip_media: options.strip_media,
         nym_version: env!("CARGO_PKG_VERSION").into(),
     });
     Ok(serde_json::json!({
@@ -886,6 +1046,8 @@ fn propose(
         "already_decided_units": decided,
         "proposed_units": by_basis,
         "placeholder_spans": by_class,
+        "dropped": dropped,
+        "replaced": replaced,
         "approved": 0,
         "anonymity_guaranteed": false,
     }))
@@ -903,7 +1065,7 @@ fn approve(plan: &mut Plan, select: &Selection) -> Result<serde_json::Value> {
     }
     if select.classes.is_empty() && !select.all_classes && select.bases.is_empty() {
         bail!(
-            "approve selects nothing; pass --class, --all-classes, --unflagged, --renames, --fields or --media"
+            "approve selects nothing; pass --class, --all-classes, --unflagged, --renames, --fields, --drops or --media"
         );
     }
     let mut approved = std::collections::BTreeMap::new();
@@ -924,7 +1086,7 @@ fn approve(plan: &mut Plan, select: &Selection) -> Result<serde_json::Value> {
                     select.all_classes
                         || proposal.classes.iter().all(|c| select.classes.contains(c))
                 }
-                Basis::Unflagged | Basis::Rename | Basis::Media | Basis::Field => {
+                Basis::Unflagged | Basis::Rename | Basis::Media | Basis::Field | Basis::Drop => {
                     select.bases.contains(&proposal.basis)
                 }
                 Basis::MediaReplaced => select.bases.contains(&Basis::Media),
@@ -1280,9 +1442,18 @@ struct TransformState {
     names: HashMap<String, String>,
 }
 impl TransformState {
-    fn value(&mut self, plan: &Plan, source: &Source, unit: &Unit) -> Result<String> {
+    fn value(&mut self, plan: &Plan, source: &Source, unit: &Unit) -> Result<Option<String>> {
+        if matches!(unit.action, Action::Drop) {
+            // Rendering checks that drops cover exactly one member and its subtree.
+            if !matches!(source.format.as_str(), "json" | "jsonl")
+                || matches!(unit.kind.as_str(), "filename" | "asset" | "layout")
+            {
+                bail!("only JSON object members can be dropped");
+            }
+            return Ok(None);
+        }
         if unit.kind == "asset" {
-            return Ok(String::new());
+            return Ok(Some(String::new()));
         }
         if !matches!(unit.kind.as_str(), "string" | "key")
             && matches!(
@@ -1301,7 +1472,7 @@ impl TransformState {
             // Replacement media is deliberately many-to-one (every stripped image
             // becomes the same neutral image), so it carries no alias identity.
             validate_media(unit, value)?;
-            return Ok(value.clone());
+            return Ok(Some(value.clone()));
         }
         let scope = namespace(plan, source, unit)?;
         let seed = u64::from_le_bytes(
@@ -1329,7 +1500,7 @@ impl TransformState {
         if unit.kind == "media" {
             validate_media(unit, &value)?;
         }
-        Ok(value)
+        Ok(Some(value))
     }
 }
 fn validate_media(unit: &Unit, value: &str) -> Result<()> {
@@ -1345,7 +1516,7 @@ fn validate_media(unit: &Unit, value: &str) -> Result<()> {
     }
     Ok(())
 }
-fn rendered_values(plan: &Plan) -> Result<Vec<Vec<String>>> {
+fn rendered_values(plan: &Plan) -> Result<Vec<Vec<Option<String>>>> {
     let names = plan
         .sources
         .iter()
@@ -1381,7 +1552,16 @@ fn rendered_values(plan: &Plan) -> Result<Vec<Vec<String>>> {
         })
         .collect()
 }
-fn materialize(source: &Source, root: &Path, values: &[String]) -> Result<Vec<u8>> {
+/// The output name: the rendered filename unit, which can never be dropped.
+fn output_name(values: &[Option<String>]) -> Result<PathBuf> {
+    relative(
+        values
+            .first()
+            .and_then(Option::as_deref)
+            .ok_or_else(|| anyhow!("corpus filename missing"))?,
+    )
+}
+fn materialize(source: &Source, root: &Path, values: &[Option<String>]) -> Result<Vec<u8>> {
     let original = bounded_read(&root.join(relative(&source.path)?), 16 * 1024 * 1024)?;
     if digest(&original) != source.sha256 {
         bail!("corpus source changed during transformation");
@@ -1405,14 +1585,19 @@ fn materialize(source: &Source, root: &Path, values: &[String]) -> Result<Vec<u8
         };
     }
     if source.format == "text" {
-        return Ok(values[1].as_bytes().to_vec());
+        return values
+            .get(1)
+            .cloned()
+            .flatten()
+            .map(String::into_bytes)
+            .ok_or_else(|| anyhow!("text corpus sources cannot be dropped"));
     }
     let mut next = values[1..].iter().cloned();
     let mut output = String::new();
     for node in documents(&original, &source.format)? {
         if let Some(node) = node {
             output.push_str(&node.render(&mut next)?);
-        } else if next.next().as_deref() != Some("") {
+        } else if next.next() != Some(Some(String::new())) {
             bail!("blank corpus record changed");
         }
         if source.format == "jsonl" {
@@ -1433,7 +1618,7 @@ fn prepare(plan: &Plan, root: &Path) -> Result<(Vec<Output>, Vec<Vec<u8>>)> {
     let mut names = HashSet::new();
     let mut total = 0_u64;
     for (source, values) in plan.sources.iter().zip(values) {
-        let name = relative(&values[0])?;
+        let name = output_name(&values)?;
         if !names.insert(name.clone()) {
             bail!("corpus output filename collision");
         }
@@ -1580,6 +1765,67 @@ fn apply(
     }
     Ok(summary)
 }
+/// Value-free accounting for the consumer of a bundle: what was removed or
+/// replaced where, under which receipts and rules, bound to the manifest digest.
+fn report(ledger: &Path) -> Result<serde_json::Value> {
+    let record: Ledger = read_json(ledger)?;
+    if record.version != VERSION || record.outputs.len() != record.plan.sources.len() {
+        bail!("unsupported or inconsistent corpus ledger");
+    }
+    let key = |unit: &Unit| {
+        let proposal = unit.proposal.as_ref();
+        let basis = proposal.map_or_else(|| "manual".to_owned(), |p| basis_name(p.basis));
+        let detail = proposal
+            .and_then(|p| {
+                p.rule
+                    .clone()
+                    .or_else(|| (!p.classes.is_empty()).then(|| p.classes.join("+")))
+            })
+            .unwrap_or_default();
+        format!("{basis}:{detail}")
+    };
+    let mut totals: std::collections::BTreeMap<String, RuleCount> =
+        std::collections::BTreeMap::new();
+    let mut receipts = std::collections::BTreeSet::new();
+    let mut reviews = std::collections::BTreeSet::new();
+    let mut sources = Vec::new();
+    for (source, output) in record.plan.sources.iter().zip(&record.outputs) {
+        let mut rules: std::collections::BTreeMap<String, RuleCount> =
+            std::collections::BTreeMap::new();
+        for unit in &source.units {
+            receipts.extend(unit.approval.clone());
+            if matches!(unit.action, Action::Retain) {
+                continue;
+            }
+            tally(&mut rules, &key(unit), unit);
+            tally(&mut totals, &key(unit), unit);
+        }
+        if let Some(review) = &source.review {
+            reviews.insert(serde_json::to_string(review)?);
+        }
+        sources.push(serde_json::json!({
+            "id": source.id,
+            "output": output.path,
+            "input_bytes": source.bytes,
+            "output_bytes": output.bytes,
+            "units": source.units.len(),
+            "changed": rules,
+        }));
+    }
+    Ok(serde_json::json!({
+        "manifest_sha256": digest(&serde_json::to_vec_pretty(&public_manifest(&record))?),
+        "scope": record.plan.scope,
+        "proposed": record.plan.proposed,
+        "input_bytes": record.plan.sources.iter().map(|s| s.bytes).sum::<u64>(),
+        "output_bytes": record.outputs.iter().map(|o| o.bytes).sum::<u64>(),
+        "changed": totals,
+        "receipts": receipts,
+        "source_reviews": reviews.iter().map(|r| serde_json::from_str::<serde_json::Value>(r)).collect::<serde_json::Result<Vec<_>>>()?,
+        "sources": sources,
+        "anonymity_guaranteed": false,
+        "rights_verified_by_nym": false,
+    }))
+}
 fn verify(ledger: &Path, root: &Path, bundle: &Path) -> Result<serde_json::Value> {
     let record: Ledger = read_json(ledger)?;
     if record.version != VERSION {
@@ -1600,7 +1846,7 @@ fn verify(ledger: &Path, root: &Path, bundle: &Path) -> Result<serde_json::Value
         }
         let bytes = fs::read(path)?;
         if entry.id != source.id
-            || entry.path != format!("sources/{}", values[0])
+            || entry.path != format!("sources/{}", output_name(&values)?.to_string_lossy())
             || entry.values != values
             || entry.sha256 != digest(&expected)
             || entry.bytes != expected.len() as u64
@@ -1695,7 +1941,9 @@ pub(crate) fn run(common: &crate::CommonOpts, command: CorpusCommand) -> Result<
             output,
             rename_files,
             values_scope,
-            replace_fields,
+            export_profile,
+            drop_paths,
+            replace_paths,
             strip_media,
         } => {
             let root = source.canonicalize()?;
@@ -1705,10 +1953,14 @@ pub(crate) fn run(common: &crate::CommonOpts, command: CorpusCommand) -> Result<
                 &mut plan,
                 &root,
                 &values,
-                rename_files,
-                values_scope,
-                &replace_fields,
-                strip_media,
+                &ProposeOptions {
+                    rename_files,
+                    values_scope,
+                    export_profile,
+                    drop_paths,
+                    replace_paths,
+                    strip_media,
+                },
             )?;
             write_plan(&output, &plan)?;
             Ok(summary)
@@ -1722,6 +1974,7 @@ pub(crate) fn run(common: &crate::CommonOpts, command: CorpusCommand) -> Result<
             unflagged,
             renames,
             fields,
+            drops,
             media,
         } => {
             let mut plan = read_plan(&plan_path)?;
@@ -1735,6 +1988,7 @@ pub(crate) fn run(common: &crate::CommonOpts, command: CorpusCommand) -> Result<
                         (unflagged, Basis::Unflagged),
                         (renames, Basis::Rename),
                         (fields, Basis::Field),
+                        (drops, Basis::Drop),
                         (media, Basis::Media),
                     ]
                     .into_iter()
@@ -1791,6 +2045,7 @@ pub(crate) fn run(common: &crate::CommonOpts, command: CorpusCommand) -> Result<
             dry_run,
             resume,
         ),
+        Command::Report { ledger } => report(&ledger),
         Command::Verify {
             ledger,
             source,

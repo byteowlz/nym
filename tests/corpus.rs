@@ -940,22 +940,23 @@ fn reviewed_values_apply_across_sessions_unless_scoped_to_their_session() {
 }
 
 #[test]
-fn replaced_fields_keep_id_links_and_stripped_media_needs_no_media_review() {
+fn pi_training_profile_drops_signatures_and_links_ids_without_touching_tool_data() {
     use base64::Engine;
     let dir = tempfile::tempdir().unwrap();
     let root = dir.path().join("input");
     fs::create_dir(&root).unwrap();
     let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
     let lines = [
-        json!({"id":"a1b2c3d4","parentId":null,"message":{"role":"assistant","content":[
-            {"type":"thinking","thinking":"plan","thinkingSignature":"EqQBCkYIBxgCKkDsecretsig"},
-            {"type":"toolCall","id":"toolu_01XYZ","name":"read"}]}}),
-        json!({"id":"e5f6a7b8","parentId":"a1b2c3d4","message":{"role":"toolResult","toolCallId":"toolu_01XYZ","content":[
-            {"type":"image","mimeType":"image/png","data":png},
-            {"type":"image","mimeType":"image/jpeg","data":png}]}}),
+        json!({"type":"session","id":"a1b2c3d4","parentId":null}),
+        json!({"type":"message","id":"b2c3d4e5","parentId":"a1b2c3d4","message":{"role":"assistant","responseId":"resp_0123456789abcdef","content":[
+            {"type":"thinking","thinking":"plan the read","thinkingSignature":"EqQBCkYIBxgCKkDsecretsig"},
+            {"type":"text","text":"reading","textSignature":"{\"v\":1,\"id\":\"msg_opaque\"}"},
+            {"type":"toolCall","id":"toolu_01XYZ","name":"trx","arguments":{"id":"issue-42"}}]}}),
+        json!({"type":"message","id":"e5f6a7b8","parentId":"b2c3d4e5","message":{"role":"toolResult","toolCallId":"toolu_01XYZ","content":[
+            {"type":"image","mimeType":"image/png","data":png}]}}),
         json!({"type":"leaf","currentLeafId":"e5f6a7b8"}),
         // A short id equal to a kept number must not conflict with it.
-        json!({"message":{"content":[{"type":"text","id":"1","text":"hi"}]},"details":{"firstChangedLine":1}}),
+        json!({"type":"message","id":"1","parentId":"e5f6a7b8","details":{"firstChangedLine":1}}),
     ];
     let text: String = lines.iter().map(|l| format!("{l}\n")).collect();
     fs::write(root.join("s.jsonl"), text).unwrap();
@@ -976,14 +977,51 @@ fn replaced_fields_keep_id_links_and_stripped_media_needs_no_media_review() {
         values.to_str().unwrap(),
         "-o",
         &p("proposed.json"),
-        "--replace-field",
-        "thinkingSignature,id,parentId,toolCallId",
-        "--strip-media",
+        "--export-profile",
+        "pi-training-v1",
         "--json",
     ]));
-    assert_eq!(summary["proposed_units"]["media_replaced"], 2);
+    // Key and value of each signature member.
+    assert_eq!(
+        summary["dropped"]["/message/content/*/thinkingSignature"]["units"],
+        2
+    );
+    assert_eq!(
+        summary["dropped"]["/message/content/*/textSignature"]["units"],
+        2
+    );
+    assert_eq!(summary["replaced"]["equal-value"]["units"], 1);
     let proposed: Value = serde_json::from_slice(&fs::read(p("proposed.json")).unwrap()).unwrap();
     assert_schema_declares(&proposed);
+    assert_eq!(proposed["proposed"]["export_profile"], "pi-training-v1");
+
+    // Dropping a key without its value is structurally invalid and blocks.
+    let mut half = proposed.clone();
+    for unit in half["sources"][0]["units"].as_array_mut().unwrap() {
+        unit["approval"] = "fixture".into();
+        if unit["action"]["kind"] == "unresolved" {
+            unit["action"] = json!({"kind": "retain"});
+        }
+        if unit["location"]
+            .as_str()
+            .unwrap()
+            .ends_with("/thinkingSignature")
+        {
+            unit["action"] = json!({"kind": "retain"});
+        }
+    }
+    half["sources"][0]["review"] = json!({"basis":"synthetic","evidence":"fixture","privacy_review":"fixture","serialization_reviewed":true,"media_reviewed":true,"publish_verbatim":false});
+    save(Path::new(&p("half.json")), &half);
+    let blocked = run(&[
+        "corpus",
+        "validate",
+        &p("half.json"),
+        "--source",
+        root.to_str().unwrap(),
+        "--json",
+    ]);
+    assert!(String::from_utf8_lossy(&blocked.stdout).contains("keeps part of its value"));
+
     ok(run(&[
         "corpus",
         "approve",
@@ -994,6 +1032,155 @@ fn replaced_fields_keep_id_links_and_stripped_media_needs_no_media_review() {
         "fixture",
         "--unflagged",
         "--fields",
+        "--drops",
+        "--media",
+        "--json",
+    ]));
+    ok(run(&[
+        "corpus",
+        "review",
+        &p("approved.json"),
+        "-o",
+        &p("reviewed.json"),
+        "--basis",
+        "synthetic",
+        "--evidence",
+        "fixture",
+        "--privacy-review",
+        "fixture",
+        "--serialization-reviewed",
+        "--media-reviewed",
+        "--json",
+    ]));
+    let out = dir.path().join("bundle");
+    let ledger = dir.path().join("ledger.json");
+    ok(applied(
+        Path::new(&p("reviewed.json")),
+        &root,
+        &out,
+        &ledger,
+    ));
+    ok(run(&[
+        "corpus",
+        "verify",
+        "--ledger",
+        ledger.to_str().unwrap(),
+        "--source",
+        root.to_str().unwrap(),
+        "--bundle",
+        out.to_str().unwrap(),
+        "--json",
+    ]));
+    let text = fs::read_to_string(out.join("sources/s.jsonl")).unwrap();
+    for gone in [
+        "secretsig",
+        "msg_opaque",
+        "Signature",
+        "toolu_01XYZ",
+        "a1b2c3d4",
+        "e5f6a7b8",
+        "resp_0123",
+    ] {
+        assert!(!text.contains(gone), "{gone} survived");
+    }
+    let r: Vec<Value> = text
+        .lines()
+        .map(|l| serde_json::from_str(l).unwrap())
+        .collect();
+    let content = &r[1]["message"]["content"];
+    assert_eq!(
+        content[0],
+        json!({"type":"thinking","thinking":"plan the read"})
+    );
+    assert_eq!(content[1], json!({"type":"text","text":"reading"}));
+    assert_eq!(
+        content[2]["arguments"],
+        json!({"id":"issue-42"}),
+        "tool data must stay"
+    );
+    assert_eq!(
+        content[2]["id"], r[2]["message"]["toolCallId"],
+        "tool call link lost"
+    );
+    assert!(r[0]["parentId"].is_null());
+    assert_eq!(r[0]["id"], r[1]["parentId"]);
+    assert_eq!(r[1]["id"], r[2]["parentId"]);
+    assert_eq!(
+        r[2]["id"], r[3]["currentLeafId"],
+        "an equal value elsewhere must share the token"
+    );
+    assert_eq!(r[4]["details"]["firstChangedLine"], 1);
+    assert!(r[4]["id"].as_str().unwrap().starts_with("<ID_"));
+    // Media is kept unless --strip-media is asked for.
+    let data = r[2]["message"]["content"][0]["data"].as_str().unwrap();
+    assert_eq!(data, png);
+    base64::engine::general_purpose::STANDARD
+        .decode(data)
+        .unwrap();
+
+    let report = ok(run(&[
+        "corpus",
+        "report",
+        "--ledger",
+        ledger.to_str().unwrap(),
+        "--json",
+    ]));
+    let manifest = fs::read(out.join("manifest.json")).unwrap();
+    use sha2::Digest;
+    assert_eq!(
+        report["manifest_sha256"],
+        format!("{:x}", sha2::Sha256::digest(&manifest))
+    );
+    assert_eq!(
+        report["changed"]["drop:/message/content/*/thinkingSignature"]["units"],
+        2
+    );
+    assert_eq!(report["receipts"], json!(["fixture"]));
+    let body = serde_json::to_string(&report).unwrap();
+    for private in ["secretsig", "toolu_01XYZ", "issue-42", "plan the read"] {
+        assert!(!body.contains(private), "report leaks {private}");
+    }
+}
+
+#[test]
+fn stripped_media_is_neutral_and_needs_no_media_review() {
+    use base64::Engine;
+    let dir = tempfile::tempdir().unwrap();
+    let root = dir.path().join("input");
+    fs::create_dir(&root).unwrap();
+    let png = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==";
+    let line = json!({"message":{"content":[{"type":"image","mimeType":"image/png","data":png},{"type":"image","mimeType":"image/jpeg","data":png}]}});
+    fs::write(root.join("s.jsonl"), format!("{line}\n")).unwrap();
+    let values = dir.path().join("values.json");
+    save(
+        &values,
+        &json!({"sessions": [{"session": "s.jsonl", "candidates": []}]}),
+    );
+    let p = |name: &str| dir.path().join(name).to_str().unwrap().to_owned();
+    snapshot(&root, Path::new(&p("plan.json")), "session");
+    let summary = ok(run(&[
+        "corpus",
+        "propose",
+        &p("plan.json"),
+        "--source",
+        root.to_str().unwrap(),
+        "--values",
+        values.to_str().unwrap(),
+        "-o",
+        &p("proposed.json"),
+        "--strip-media",
+        "--json",
+    ]));
+    assert_eq!(summary["proposed_units"]["media_replaced"], 2);
+    ok(run(&[
+        "corpus",
+        "approve",
+        &p("proposed.json"),
+        "-o",
+        &p("approved.json"),
+        "--receipt",
+        "fixture",
+        "--unflagged",
         "--media",
         "--json",
     ]));
@@ -1020,38 +1207,15 @@ fn replaced_fields_keep_id_links_and_stripped_media_needs_no_media_review() {
         &out,
         Path::new(&p("ledger.json")),
     ));
-    let text = fs::read_to_string(out.join("sources/s.jsonl")).unwrap();
-    for original in ["secretsig", "toolu_01XYZ", "a1b2c3d4", "e5f6a7b8", png] {
-        assert!(!text.contains(original));
-    }
-    let r: Vec<Value> = text
-        .lines()
-        .map(|l| serde_json::from_str(l).unwrap())
-        .collect();
-    let call = &r[0]["message"]["content"][1]["id"];
-    assert_eq!(call, &r[1]["message"]["toolCallId"], "tool call link lost");
-    assert_eq!(r[0]["id"], r[1]["parentId"], "parent link lost");
-    assert_eq!(
-        r[1]["id"], r[2]["currentLeafId"],
-        "an equal value elsewhere must share the token"
-    );
-    assert_eq!(r[3]["details"]["firstChangedLine"], 1);
-    assert!(
-        r[3]["message"]["content"][0]["id"]
-            .as_str()
+    let r: Value = serde_json::from_str(
+        fs::read_to_string(out.join("sources/s.jsonl"))
             .unwrap()
-            .starts_with("<ID_")
-    );
-    assert!(
-        r[0]["message"]["content"][0]["thinkingSignature"]
-            .as_str()
-            .unwrap()
-            .starts_with("<THINKING_SIGNATURE_")
-    );
-    let images = &r[1]["message"]["content"];
+            .trim(),
+    )
+    .unwrap();
     let decode = |i: usize| {
         base64::engine::general_purpose::STANDARD
-            .decode(images[i]["data"].as_str().unwrap())
+            .decode(r["message"]["content"][i]["data"].as_str().unwrap())
             .unwrap()
     };
     assert!(decode(0).starts_with(b"\x89PNG") && decode(1).starts_with(&[0xff, 0xd8]));
