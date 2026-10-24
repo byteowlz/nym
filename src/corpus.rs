@@ -790,10 +790,20 @@ struct RuleCount {
     units: usize,
     chars: usize,
 }
+/// Count a changed unit: `chars` are the original characters replaced or
+/// removed (only the edited spans of a span edit), not the unit's length.
 fn tally(map: &mut std::collections::BTreeMap<String, RuleCount>, rule: &str, unit: &Unit) {
     let entry = map.entry(rule.to_owned()).or_default();
     entry.units += 1;
-    entry.chars += unit.original.chars().count();
+    entry.chars += match &unit.action {
+        Action::Spans { edits } => edits
+            .iter()
+            .filter(|e| !matches!(e.action, Action::Retain))
+            .filter_map(|e| unit.original.get(e.start..e.end))
+            .map(|t| t.chars().count())
+            .sum(),
+        _ => unit.original.chars().count(),
+    };
 }
 /// Turn reviewed values and export rules into proposed unit actions. Only
 /// undecided units change, and nothing is approved: proposals record why,

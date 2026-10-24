@@ -1136,6 +1136,11 @@ fn pi_training_profile_drops_signatures_and_links_ids_without_touching_tool_data
         2
     );
     assert_eq!(report["receipts"], json!(["fixture"]));
+    // Only the replaced characters count, not the length of the edited unit.
+    assert_eq!(
+        report["changed"]["field:/message/toolCallId"]["chars"],
+        "toolu_01XYZ".len()
+    );
     let body = serde_json::to_string(&report).unwrap();
     for private in ["secretsig", "toolu_01XYZ", "issue-42", "plan the read"] {
         assert!(!body.contains(private), "report leaks {private}");
