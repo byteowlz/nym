@@ -39,7 +39,9 @@ nym corpus review PRIVATE_APPROVED.json -o PRIVATE_REVIEWED.json --basis owned \
 
 - `propose` reads the reviewed values per session (the `traces anon --plan`
   format, keyed by the path relative to the input directory) and matches them
-  exactly like `traces anon --apply-plan`. Every occurrence in a string or key
+  exactly like `traces anon --apply-plan`. Values match on word boundaries; a value
+  marked `"anywhere": true` in the values file (a reviewer decision) also matches
+  inside longer words. Every occurrence in a string or key
   becomes a `placeholder` edit, `<EMAIL_1>`, numbered per identity namespace: per
   file with `session` scope, across the corpus with `full` scope. One value gets
   one class per namespace (the first in plan order), so it never gets two tokens.

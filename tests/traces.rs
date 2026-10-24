@@ -678,3 +678,50 @@ fn a_longer_value_failing_its_boundary_does_not_hide_a_shorter_one() {
     assert!(!text.contains("rookvale"), "reviewed value left behind");
     assert!(text.contains("-q1/src") && text.ends_with("-b"));
 }
+
+#[test]
+fn reviewed_anywhere_values_are_replaced_inside_words() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let input = root.join("in");
+    fs::create_dir_all(&input).unwrap();
+    let lines = [
+        r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"see quillonx and 14711"}]}}"#,
+    ];
+    fs::write(input.join("s.jsonl"), session(&lines)).unwrap();
+    let plan = root.join("approved.json");
+    let approved = serde_json::json!({"sessions": [{"session": "s.jsonl", "candidates": [
+        {"value": "quillon", "class": "username", "anywhere": true},
+        {"value": "4711", "class": "pin"}
+    ]}]});
+    fs::write(&plan, approved.to_string()).unwrap();
+    let out = root.join("out");
+    let result = nym(
+        root,
+        &[
+            "traces",
+            "anon",
+            input.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--apply-plan",
+            plan.to_str().unwrap(),
+            "--no-progress",
+        ],
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let r = records(&out.join("s.jsonl"));
+    let text = r[0]["message"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        !text.contains("quillon") && text.contains("x and "),
+        "anywhere value kept: {text}"
+    );
+    assert!(
+        text.ends_with(" 14711"),
+        "boundaries still apply to other values"
+    );
+}

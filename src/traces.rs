@@ -327,6 +327,9 @@ struct PlanSession {
 struct PlanValue {
     value: String,
     class: String,
+    /// Reviewer decision: also replace occurrences inside longer words.
+    #[serde(default)]
+    anywhere: bool,
 }
 
 /// Approved values per session, from `--apply-plan`.
@@ -344,6 +347,7 @@ fn load_plan(path: &Path) -> Result<HashMap<String, Vec<Literal>>> {
                 .map(|c| Literal {
                     text: c.value,
                     class: c.class,
+                    anywhere: c.anywhere,
                 })
                 .collect();
             (s.session, literals)
@@ -453,6 +457,8 @@ fn executable_stamp() -> String {
 struct Literal {
     text: String,
     class: String,
+    /// Match inside longer words too; only ever set by a reviewed plan value.
+    anywhere: bool,
 }
 
 pub fn run(common: &crate::CommonOpts, config: &Config, cmd: TracesCommand) -> Result<()> {
@@ -498,6 +504,7 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
                 .map(|l| Literal {
                     text: l.to_string(),
                     class: sensitive_class(l).into(),
+                    anywhere: false,
                 }),
         );
     }
@@ -505,6 +512,7 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
     literals.extend(profile_lists.sensitive.iter().map(|term| Literal {
         text: term.clone(),
         class: sensitive_class(term).into(),
+        anywhere: false,
     }));
     let identity = Identity::new(&literals)?;
     let mut keep = HashSet::new();
@@ -754,6 +762,7 @@ fn local_identity() -> Vec<Literal> {
             out.push(Literal {
                 text: text.to_string(),
                 class: class.to_string(),
+                anywhere: false,
             });
         }
     };
@@ -887,7 +896,7 @@ fn approved_matches(matcher: &AhoCorasick, literals: &[Literal], text: &str) -> 
                 .chars()
                 .next()
                 .is_some_and(char::is_alphanumeric);
-            !(first && before) && !(last && after)
+            literals[m.pattern().as_usize()].anywhere || (!(first && before) && !(last && after))
         })
         .map(|m| PiiMatch {
             pattern_name: literals[m.pattern().as_usize()].class.clone(),
@@ -1700,6 +1709,7 @@ fn process(
                 session_literals.push(Literal {
                     text: m.matched_text,
                     class: m.pattern_name,
+                    anywhere: false,
                 });
             }
         }
