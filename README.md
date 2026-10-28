@@ -361,6 +361,7 @@ See `examples/config.toml` for a complete annotated example.
 | `identity`   | Personal identifiers                     |
 | `financial`  | Credit cards, IBANs, bank accounts       |
 | `programming`| API keys, tokens, credentials            |
+| `repository` | What must not ship in a source tree: credentials (vendor keys, private keys, assignments, URL passwords), emails, home paths, public IPs; no NER |
 | `gdpr`       | EU GDPR covered data                     |
 | `hipaa`      | US healthcare data                       |
 | `all`        | All available patterns                   |

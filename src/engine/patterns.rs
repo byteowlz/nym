@@ -236,6 +236,143 @@ static SECRET_ASSIGNMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     )
 });
 
+// Credentials embedded in a URL: only the password of `scheme://user:password@`
+// is the finding; scheme, user and host stay readable.
+static URL_CREDENTIALS_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(r"\b[a-zA-Z][a-zA-Z0-9+.-]*://(?P<user>[^\s/:@]+):(?P<pii>[^\s/@]{3,})@")
+});
+
+/// Schemes of references to a secret held elsewhere (config, keychain, vault).
+const SECRET_REFERENCE_SCHEMES: &[&str] = &[
+    "env:",
+    "keychain:",
+    "kyz:",
+    "vault:",
+    "op://",
+    "file:",
+    "secret:",
+    "secrets:",
+    "ssm:",
+    "sops:",
+    "pass:",
+];
+
+/// Marker words that make an assigned value an obvious fixture or placeholder.
+const PLACEHOLDER_WORDS: &[&str] = &[
+    "synthetic",
+    "fixture",
+    "test",
+    "example",
+    "dummy",
+    "fake",
+    "sample",
+    "placeholder",
+    "sentinel",
+    "changeme",
+    "redacted",
+    "your",
+    "mock",
+];
+
+/// Well-known default or demo passwords in connection URLs.
+const DEFAULT_URL_PASSWORDS: &[&str] = &[
+    "password",
+    "pass",
+    "passwd",
+    "secret",
+    "postgres",
+    "root",
+    "admin",
+    "guest",
+    "changeme",
+    "example",
+    "test",
+    "user",
+    "mysql",
+    "redis",
+    "minio",
+    "minioadmin",
+];
+
+/// A segment that could be key material: 8+ characters mixing letters and digits.
+fn random_looking(segment: &str) -> bool {
+    segment.len() >= 8
+        && segment.bytes().any(|b| b.is_ascii_digit())
+        && segment.bytes().any(|b| b.is_ascii_alphabetic())
+}
+
+/// A value assigned to a secret-named key that is not itself a secret: a
+/// reference to one (`env:OPENAI_API_KEY`, `keychain:name`, `${DB_PASS}`,
+/// `op://vault/item`), an environment lookup, a mask (`xxxx`, `****`), or a
+/// value that names itself a fixture (`synthetic-access`, `your-api-key`)
+/// without any segment that could be real key material. Plain words stay
+/// findings: `correct-horse-battery` is a valid passphrase.
+pub(crate) fn non_secret_value(value: &str) -> bool {
+    let v = value.trim_matches(|c: char| c == '"' || c == '\'' || c == '`');
+    let lower = v.to_ascii_lowercase();
+    if SECRET_REFERENCE_SCHEMES
+        .iter()
+        .any(|s| lower.starts_with(s))
+        || v.starts_with("${")
+        || v.starts_with("{{")
+        || (v.starts_with('<') && v.ends_with('>'))
+        || (v.len() > 2 && v.starts_with('%') && v.ends_with('%'))
+        || lower.starts_with("process.env.")
+        || lower.starts_with("os.environ")
+        || lower.contains("getenv(")
+        || lower.starts_with("env[")
+    {
+        return true;
+    }
+    let masked = v
+        .chars()
+        .filter(|c| c.is_alphanumeric())
+        .collect::<String>();
+    if !v.is_empty()
+        && (v.chars().all(|c| matches!(c, '*' | '.' | '-' | '_' | '#'))
+            || (masked.len() >= 3 && masked.chars().all(|c| c == 'x' || c == 'X')))
+    {
+        return true;
+    }
+    let segments: Vec<&str> = v
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|s| !s.is_empty())
+        .collect();
+    let marked = segments.iter().any(|s| {
+        let s = s.to_ascii_lowercase();
+        PLACEHOLDER_WORDS.contains(&s.as_str()) || (s.len() >= 3 && s.chars().all(|c| c == 'x'))
+    });
+    marked && !segments.iter().any(|s| random_looking(s))
+}
+
+/// A URL password that is a well-known default, equals its user, or is a
+/// reference or placeholder: not a credential worth reporting.
+pub(crate) fn non_secret_url_password(user: &str, password: &str) -> bool {
+    password.eq_ignore_ascii_case(user)
+        || DEFAULT_URL_PASSWORDS.contains(&password.to_ascii_lowercase().as_str())
+        || non_secret_value(password)
+}
+
+/// File extensions that end asset names written like addresses (`logo@3x.png`).
+const FILE_EXTENSIONS: &[&str] = &[
+    "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp", "avif", "mp4", "mov", "webm", "mp3",
+    "wav", "pdf", "md", "txt", "json", "js", "ts", "tsx", "css", "html", "lock",
+];
+
+/// Address-shaped text that is no address: an SSH remote (`git@github.com`)
+/// or an asset file name (`logo@3x.png`, `intro@2x.mp4`).
+pub(crate) fn non_address_email(value: &str) -> bool {
+    let Some((local, domain)) = value.rsplit_once('@') else {
+        return false;
+    };
+    let tld = domain
+        .rsplit('.')
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    local == "git" || FILE_EXTENSIONS.contains(&tld.as_str())
+}
+
 // PEM private-key blocks, including the armor lines.
 static PRIVATE_KEY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     regex(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----")
@@ -656,6 +793,15 @@ pub static BUILTIN_PATTERNS: &[PiiPattern] = &[
         replacement_template: "<SECRET>",
     },
     PiiPattern {
+        name: "url_credentials",
+        description: "Password embedded in a URL (scheme://user:password@host)",
+        regex: &URL_CREDENTIALS_REGEX,
+        confidence: Confidence::Medium,
+        category: PiiCategory::Authentication,
+        example: "postgres://app:Kq7vR2xLp9@db.internal:5432/orders",
+        replacement_template: "<SECRET>",
+    },
+    PiiPattern {
         name: "private_key",
         description: "PEM private-key block",
         regex: &PRIVATE_KEY_REGEX,
@@ -859,6 +1005,64 @@ pub fn patterns_by_category(category: PiiCategory) -> Vec<&'static PiiPattern> {
 
 #[cfg(test)]
 mod tests {
+    use super::{non_address_email, non_secret_url_password, non_secret_value};
+
+    #[test]
+    fn ssh_remotes_and_asset_names_are_not_addresses() {
+        assert!(non_address_email("git@github.com"));
+        assert!(non_address_email("logo@3x.png"));
+        assert!(non_address_email("intro@2x.mp4"));
+        assert!(!non_address_email("quillon.example@posteo.de"));
+        assert!(!non_address_email("user7@example.invalid"));
+    }
+
+    #[test]
+    fn references_masks_and_named_fixtures_are_not_secrets() {
+        for value in [
+            "env:OPENAI_API_KEY",
+            "keychain:eavs-openai",
+            "kyz:team/openai",
+            "op://Private/openai/credential",
+            "${DB_PASSWORD}",
+            "{{ secrets.TOKEN }}",
+            "<your-api-key>",
+            "%API_TOKEN%",
+            "process.env.API_KEY",
+            "os.environ['TOKEN']",
+            "xxxxxxxxxxxx",
+            "********",
+            "synthetic-access",
+            "test-key-only",
+            "your-token-here",
+            "sk-local-xxx",
+        ] {
+            assert!(non_secret_value(value), "{value} should not be a secret");
+        }
+    }
+
+    #[test]
+    fn real_shapes_and_passphrases_stay_secrets() {
+        for value in [
+            "correct-horse-battery",
+            "Sup3rSecretValue1",
+            "SyntheticOnly-Pass-7zQ!",
+            "sk_test_4eC39HqLyjWDarjtT1zdp7dc4eC39Hq",
+            "test-Kq7vR2xLp9WmT4",
+            "envoy-upstream-key",
+        ] {
+            assert!(!non_secret_value(value), "{value} should stay a secret");
+        }
+    }
+
+    #[test]
+    fn url_passwords_skip_defaults_and_references_only() {
+        assert!(non_secret_url_password("postgres", "postgres"));
+        assert!(non_secret_url_password("app", "password"));
+        assert!(non_secret_url_password("app", "${DB_PASS}"));
+        assert!(!non_secret_url_password("app", "Kq7vR2xLp9"));
+        assert!(!non_secret_url_password("app", "hunter2pass"));
+    }
+
     use super::*;
 
     #[test]

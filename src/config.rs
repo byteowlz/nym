@@ -746,6 +746,38 @@ impl Config {
             },
         );
 
+        // Repository: what must not ship in a published source tree. No NER and
+        // none of the prose classes (phones, dates, URLs, UUIDs, handles), which
+        // in code and lockfiles are checksums, versions and package names.
+        rulesets.insert(
+            "repository".to_string(),
+            RulesetConfig {
+                description:
+                    "Credentials, personal addresses and home paths in source repositories"
+                        .to_string(),
+                enabled_patterns: [
+                    "vendor_secret",
+                    "private_key",
+                    "aws_key",
+                    "jwt",
+                    "api_key",
+                    "secret_assignment",
+                    "url_credentials",
+                    "email",
+                    "home_dir",
+                    "iban",
+                    "ipv4",
+                ]
+                .map(String::from)
+                .to_vec(),
+                disabled_patterns: vec![],
+                min_confidence: Some(ConfidenceConfig::Medium),
+                ner: NerMode::Off,
+                strategy: Some(StrategyConfig::Placeholder),
+                pattern_strategies: HashMap::new(),
+            },
+        );
+
         // Identity: Names and personal identifiers - NER recommended
         rulesets.insert(
             "identity".to_string(),

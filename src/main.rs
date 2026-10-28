@@ -638,7 +638,7 @@ struct AnonCommand {
     #[arg(short = 'f', long, value_enum)]
     format: Option<FormatArg>,
 
-    /// Use a predefined ruleset (programming, identity, contact, financial, gdpr, hipaa, all, minimal)
+    /// Use a predefined ruleset (programming, repository, identity, contact, financial, gdpr, hipaa, all, minimal)
     #[arg(short = 'r', long, value_name = "NAME")]
     ruleset: Option<String>,
 
@@ -834,7 +834,7 @@ struct DetectCommand {
     #[arg(short = 'f', long, value_enum)]
     format: Option<FormatArg>,
 
-    /// Use a predefined ruleset (programming, identity, contact, financial, gdpr, hipaa, all, minimal)
+    /// Use a predefined ruleset (programming, repository, identity, contact, financial, gdpr, hipaa, all, minimal)
     #[arg(short = 'r', long, value_name = "NAME")]
     ruleset: Option<String>,
 

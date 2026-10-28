@@ -766,6 +766,24 @@ impl Detector {
                 {
                     continue;
                 }
+                // A reference to a secret, or an obvious fixture, is not one.
+                if matches!(pattern.name, "secret_assignment" | "api_key")
+                    && crate::engine::patterns::non_secret_value(m.as_str())
+                {
+                    continue;
+                }
+                if pattern.name == "email" && crate::engine::patterns::non_address_email(m.as_str())
+                {
+                    continue;
+                }
+                if pattern.name == "url_credentials"
+                    && crate::engine::patterns::non_secret_url_password(
+                        captures.name("user").map_or("", |u| u.as_str()),
+                        m.as_str(),
+                    )
+                {
+                    continue;
+                }
                 if pattern.name == "ipv4"
                     && !self.report_private_ipv4
                     && crate::engine::patterns::is_local_ipv4(&text[m.start()..m.end()])

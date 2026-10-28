@@ -141,7 +141,7 @@ recall_first = false
 # Rulesets
 # =============================================================================
 # Rulesets are named presets for common use cases. Use with: nym anon -r <name>
-# Built-in rulesets: programming, identity, contact, financial, gdpr, hipaa, all, minimal
+# Built-in rulesets: programming, repository, identity, contact, financial, gdpr, hipaa, all, minimal
 #
 # You can define custom rulesets here that override or extend the built-ins:
 
