@@ -9,6 +9,43 @@ nym anon --ner --profile agent-trace --sensitive-terms-file "$HOME/.config/nym/s
 
 The profile retains unknown contexts. It only filters NER candidates with supported technical context or explicitly trusted public-reference hosts; it never skips entire code or metadata blocks. Credential regex findings and sensitive-list matches cannot be vetoed. A threshold change is not a repair for contextual model errors; the NER default remains 0.5.
 
+## Reviewed values across sessions
+
+`traces anon --plan` lists the values nym would replace. After review, apply them:
+
+```bash
+nym traces anon SESSIONS -o OUT --apply-plan-reviewed.json              # per session
+nym traces anon SESSIONS -o OUT --apply-plan-reviewed.json --apply-plan-scope corpus
+```
+
+`session` (the default) applies each session's own reviewed values and fails on a
+session the plan does not cover, so nothing is silently processed unplanned.
+`corpus` applies the union of every reviewed value to every session: a value judged
+sensitive in one session is replaced in all of them. That closes the largest measured
+recall gap: in a blind 20-session round, detection flagged 90% of the owner's
+sensitive strings, but only 59% of their occurrences were masked, because a value
+seen in one session was left intact in the others. Applying the reviewed union
+corpus-wide masked 18,712 of 18,712 occurrences.
+
+## Structural noise
+
+Two filters run on every detection, in every mode:
+
+- A number that is a fragment of an id, hash or base64 run (`-fragment` inside a
+  UUID, a digest, a lockfile checksum) is not a phone, card, SSN, date or time,
+  unless it sits in a credential-named field (`api_key: <hex>`).
+- A name that is unambiguously code syntax (`mcp__linear__save_issue`, `--dry-run`,
+  `std::io::Error`, a path, `SCREAMING_CASE`, a dotted module path) is not a person.
+  Plain snake_case is deliberately kept: project codenames and usernames look the
+  same, and the owner's labels showed suppressing them costs real names.
+- A URL is reported only when it carries a credential or capability (userinfo,
+  `access_token`, `code`, `sig`, ...), addresses a private or internal host (an IP,
+  a bare hostname, `.local`/`.lan`/`.internal`, a private-content service such as
+  Google Docs or Notion), or holds a home-directory path. Public documentation,
+  package and repository links are not findings. An organisation's own service
+  hostnames are not structurally private: list them in `--sensitive-terms-file` (or
+  a profile) if they must be reported.
+
 ## Literal lists
 
 Configure `[trace_policy]` in `config.toml` (see [example](../examples/config.toml)), or use repeatable `--sensitive-terms-file`, `--benign-terms-file`, and `--public-host`. CLI lists replace corresponding configured lists. Files contain one literal per nonblank line; nonblank lines preserve whitespace and have no comment syntax. Duplicate terms are deduplicated deterministically. Paths expand `~` and environment variables. Keep private lists outside git.

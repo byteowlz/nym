@@ -73,6 +73,12 @@ struct AnonArgs {
     /// Sessions the plan does not cover fail.
     #[arg(long, conflicts_with = "plan")]
     apply_plan: Option<PathBuf>,
+    /// How a reviewed plan applies: `session` (default) replaces a session's own
+    /// reviewed values and fails on sessions the plan does not cover; `corpus`
+    /// applies the union of every reviewed value to every session, so a value
+    /// judged sensitive in one session is replaced in all of them
+    #[arg(long, value_enum, default_value_t = PlanScope::Session, requires = "apply_plan")]
+    apply_plan_scope: PlanScope,
     /// Do not read or write the NER result cache ($XDG_CACHE_HOME/nym/ner)
     #[arg(long)]
     no_cache: bool,
@@ -124,6 +130,12 @@ struct AnonArgs {
     /// such as pi-nym; independent of --no-progress.
     #[arg(long)]
     progress_json: bool,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, ValueEnum)]
+enum PlanScope {
+    Session,
+    Corpus,
 }
 
 #[derive(Clone, Copy, Debug, ValueEnum)]
@@ -434,6 +446,8 @@ struct Shared<'a> {
     /// Matcher over kept values: approved literals inside a kept value stay.
     keep_matcher: Option<AhoCorasick>,
     approved: Option<HashMap<String, Vec<Literal>>>,
+    /// Reviewed values of every session, applied everywhere (`--apply-plan-scope corpus`).
+    approved_union: Option<Vec<Literal>>,
     cache: Option<crate::traces_cache::NerCache>,
 }
 
@@ -528,7 +542,24 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
     let mut allow = allowlist(&args.allow_terms_file)?;
     allow.extend(profile_lists.allow.iter().map(|t| t.to_lowercase()));
     let regex = detector(config, false)?;
-    let approved = args.apply_plan.as_deref().map(load_plan).transpose()?;
+    let mut approved = args.apply_plan.as_deref().map(load_plan).transpose()?;
+    let approved_union = match (&approved, args.apply_plan_scope) {
+        (Some(plan), PlanScope::Corpus) => {
+            // Deterministic union: sessions in path order, first class per value.
+            let mut names: Vec<&String> = plan.keys().collect();
+            names.sort();
+            let mut seen = HashSet::new();
+            let union: Vec<Literal> = names
+                .into_iter()
+                .flat_map(|name| plan[name].iter())
+                .filter(|literal| seen.insert(literal.text.clone()))
+                .cloned()
+                .collect();
+            approved = None; // the union replaces the per-session plan
+            Some(union)
+        }
+        _ => None,
+    };
     let keep_matcher = if keep.is_empty() {
         None
     } else {
@@ -547,7 +578,7 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
     // One shared model session: NER is compute-bound, and measured per-worker
     // sessions with split cores were slower than one session using all cores.
     // Applying a reviewed plan needs no detectors, so no model and no cache.
-    let ner = if args.no_ner || approved.is_some() {
+    let ner = if args.no_ner || approved.is_some() || approved_union.is_some() {
         None
     } else {
         Some(detector(config, true)?)
@@ -573,6 +604,7 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
         keep: &keep,
         keep_matcher,
         approved,
+        approved_union,
         cache,
     };
     let pool = rayon::ThreadPoolBuilder::new()
@@ -1097,7 +1129,7 @@ fn plausible(m: &PiiMatch, leaf: &str, prose: bool, allow: &HashSet<String>) -> 
         // Vendors, products and languages dominate; list employers and clients
         // explicitly with --sensitive-terms-file instead.
         "organization" | "company" => false,
-        "url" | "social_url" => url_like(&lower) && !public_url(&lower),
+        "url" | "social_url" => url_like(&lower) && private_url(&lower),
         // Decorators, npm scopes and doc tags in code; mentions only in prose.
         "twitter_handle" | "social_handle" | "instagram_handle" => {
             prose && !CODE_HANDLES.contains(&lower.trim_start_matches('@'))
@@ -1255,6 +1287,133 @@ const FILE_TYPES: &[&str] = &[
     "cfg", "conf", "xml", "mjs", "cjs", "pyi", "ipynb", "wasm", "so", "dylib", "dll", "exe", "bin",
     "onnx", "pt",
 ];
+
+/// Query and fragment keys that carry a credential or a capability.
+const URL_SECRET_KEYS: &[&str] = &[
+    "token",
+    "access_token",
+    "id_token",
+    "refresh_token",
+    "api_key",
+    "apikey",
+    "key",
+    "sig",
+    "signature",
+    "x-amz-signature",
+    "x-amz-credential",
+    "password",
+    "passwd",
+    "secret",
+    "auth",
+    "code",
+    "session",
+    "sso",
+];
+
+/// Hosts whose URLs address private content by opaque id, so the link is as
+/// sensitive as the document even when nothing in it looks like a credential.
+const PRIVATE_CONTENT_HOSTS: &[&str] = &[
+    "drive.google.com",
+    "docs.google.com",
+    "notion.so",
+    "notion.site",
+    "atlassian.net",
+    "figma.com",
+    "dropbox.com",
+    "onedrive.live.com",
+    "sharepoint.com",
+    "linear.app",
+    "slack.com",
+    "discord.com",
+    "1password.com",
+    "privatebin.net",
+    "gitlab.acme",
+];
+
+/// A URL worth reporting: it carries a credential or capability, addresses a
+/// private or internal host, holds a home-directory path, or points at private
+/// content by id. A public documentation, package or repository link is not.
+/// The owner's fresh round marked all 30 URLs harmless; the 27 that were flagged
+/// were public links, so the host allow list is replaced by this test.
+fn private_url(lower: &str) -> bool {
+    let lower = lower.to_ascii_lowercase();
+    let rest = lower.split_once("://").map_or(lower.as_str(), |(_, r)| r);
+    let (authority, tail) = match rest.find(['/', '?', '#']) {
+        Some(i) => (&rest[..i], &rest[i..]),
+        None => (rest, ""),
+    };
+    if authority.contains('@') {
+        return true; // userinfo (user:pass@host) or an ssh-style remote
+    }
+    let host = authority.split(':').next().unwrap_or_default();
+    let host = host.trim_end_matches('.');
+    if host.is_empty() {
+        return false;
+    }
+    if host.parse::<std::net::IpAddr>().is_ok() {
+        return true;
+    }
+    let internal = !host.contains('.')
+        || [
+            ".local",
+            ".lan",
+            ".internal",
+            ".corp",
+            ".home",
+            ".tailnet",
+            ".ts.net",
+        ]
+        .iter()
+        .any(|suffix| host.ends_with(suffix));
+    if internal {
+        return true;
+    }
+    if PRIVATE_CONTENT_HOSTS
+        .iter()
+        .any(|private| host == *private || host.ends_with(&format!(".{private}")))
+    {
+        return true;
+    }
+    if tail.contains("/users/") || tail.contains("/home/") || tail.contains("/~/") {
+        return true;
+    }
+    let params = tail.split_once(['?', '#']).map_or("", |(_, query)| query);
+    params.split('&').any(|pair| {
+        let key = pair.split('=').next().unwrap_or_default().to_lowercase();
+        URL_SECRET_KEYS.contains(&key.as_str())
+    })
+}
+
+#[cfg(test)]
+mod url_tests {
+    use super::private_url;
+
+    #[test]
+    fn public_links_are_not_findings_but_capabilities_and_private_hosts_are() {
+        for url in [
+            "https://docs.rs/rayon/latest/rayon/",
+            "https://github.com/byteowlz/nym/blob/main/README.md",
+            "https://crates.io/crates/serde",
+            "https://en.wikipedia.org/wiki/Postcodes_in_Germany",
+            "https://www.rust-lang.org/learn",
+        ] {
+            assert!(!private_url(url), "{url} is a public link");
+        }
+        for url in [
+            "postgres://app:hunter2@db.example.invalid:5432/orders",
+            "https://user@github.com/byteowlz/nym.git",
+            "https://api.example.invalid/v1/items?access_token=abcdef0123456789",
+            "https://example.invalid/callback?code=Kq7vR2xLp9",
+            "http://100.64.0.9:8010/v1/models",
+            "http://builder.lan:8080/status",
+            "https://docs.google.com/document/d/1Kq7vR2xLp9WmT4/edit",
+            "https://acme.atlassian.net/wiki/spaces/OPS/pages/12345",
+            "https://example.invalid/Users/quillon/projects/app",
+        ] {
+            assert!(private_url(url), "{url} is sensitive");
+        }
+    }
+}
 
 fn public_url(lower: &str) -> bool {
     let rest = lower.split_once("://").map_or(lower, |(_, r)| r);
@@ -1531,12 +1690,14 @@ fn process(
         ..
     } = *shared;
     let failure = |what: &str| anyhow!("{what} for session #{}", short_id(rel));
-    let approved = match &shared.approved {
-        Some(plan) => Some(
+    let union = shared.approved_union.as_ref();
+    let approved = match (&shared.approved, union) {
+        (_, Some(union)) => Some(union),
+        (Some(plan), None) => Some(
             plan.get(rel.to_string_lossy().as_ref())
                 .ok_or_else(|| failure("plan does not cover this session"))?,
         ),
-        None => None,
+        (None, None) => None,
     };
     let raw = fs::read(path).map_err(|_| failure("read failed"))?;
     let text = std::str::from_utf8(&raw).map_err(|_| failure("invalid UTF-8"))?;
@@ -1999,8 +2160,11 @@ mod tests {
             ("README.md", false),
             ("rw-r--r", false),
             ("gingface", false),
-            ("hs.byteowlz.com", true),
-            ("https://hs.byteowlz.com/x", true),
+            // An org's own service hostnames are not structurally private: they
+            // belong in --sensitive-terms-file (or a profile), which is what the
+            // pilot's owner labelled as harmless in the fresh round.
+            ("hs.byteowlz.com", false),
+            ("https://hs.byteowlz.com/x", false),
             ("https://github.com/rust-lang/", false),
         ] {
             assert_eq!(

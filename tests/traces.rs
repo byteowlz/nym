@@ -725,3 +725,66 @@ fn reviewed_anywhere_values_are_replaced_inside_words() {
         "boundaries still apply to other values"
     );
 }
+
+#[test]
+fn corpus_plan_scope_applies_reviewed_values_to_every_session() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let input = root.join("in");
+    fs::create_dir_all(&input).unwrap();
+    // The value is reviewed in session a; detection never saw it in b or c.
+    fs::write(
+        input.join("a.jsonl"),
+        session(&[r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Quillon wrote this"}]}}"#]),
+    )
+    .unwrap();
+    for name in ["b", "c"] {
+        fs::write(
+            input.join(format!("{name}.jsonl")),
+            session(&[r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"ask Quillon later"}]}}"#]),
+        )
+        .unwrap();
+    }
+    let plan = root.join("reviewed.json");
+    fs::write(
+        &plan,
+        serde_json::json!({"sessions": [{"session": "a.jsonl", "candidates": [{"value": "Quillon", "class": "first_name"}]}]}).to_string(),
+    )
+    .unwrap();
+    let run = |scope: &str| {
+        let out = root.join(format!("out-{scope}"));
+        let result = nym(
+            root,
+            &[
+                "traces",
+                "anon",
+                input.to_str().unwrap(),
+                "-o",
+                out.to_str().unwrap(),
+                "--apply-plan",
+                plan.to_str().unwrap(),
+                "--apply-plan-scope",
+                scope,
+                "--no-progress",
+            ],
+        );
+        (result, out)
+    };
+    // Session scope keeps the fail-closed contract for uncovered sessions.
+    let (failed, _) = run("session");
+    assert_eq!(failed.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&failed.stderr).contains("plan does not cover"));
+    let (ok, out) = run("corpus");
+    assert!(
+        ok.status.success(),
+        "{}",
+        String::from_utf8_lossy(&ok.stderr)
+    );
+    for name in ["a", "b", "c"] {
+        let text = fs::read_to_string(out.join(format!("{name}.jsonl"))).unwrap();
+        assert!(
+            !text.contains("Quillon"),
+            "{name} still has the reviewed value: {text}"
+        );
+    }
+}

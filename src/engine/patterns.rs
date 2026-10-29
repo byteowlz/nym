@@ -373,6 +373,94 @@ pub(crate) fn non_address_email(value: &str) -> bool {
     local == "git" || FILE_EXTENSIONS.contains(&tld.as_str())
 }
 
+/// Character set of opaque identifiers: ids, hashes, base64 blobs and the
+/// separators used inside them. No '/' or '_': a path or a snake_case name is
+/// not an opaque id, and that is where a person's name or account sits.
+fn opaque_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || matches!(c, '-' | '.' | '+' | '=')
+}
+
+/// The run of identifier characters covering the span, when it is long and not
+/// purely digits: a UUID, a hex id or digest, a base64 payload, a lockfile hash.
+fn opaque_run(text: &str, start: usize, end: usize) -> Option<(usize, usize)> {
+    let run_start = text[..start]
+        .char_indices()
+        .rev()
+        .take_while(|(_, c)| opaque_char(*c))
+        .last()
+        .map_or(start, |(i, _)| i);
+    let run_end = text[end..]
+        .char_indices()
+        .take_while(|(_, c)| opaque_char(*c))
+        .last()
+        .map_or(end, |(i, c)| end + i + c.len_utf8());
+    let run = &text[run_start..run_end];
+    (run.len() >= 20 && run.chars().any(|c| c.is_ascii_alphabetic()))
+        .then_some((run_start, run_end))
+}
+
+/// The span is a fragment of an opaque run, not a token of its own.
+pub(crate) fn strictly_inside_opaque(text: &str, start: usize, end: usize) -> bool {
+    opaque_run(text, start, end).is_some_and(|(a, b)| a < start || b > end)
+}
+
+/// The match sits in a value assigned to a credential-named key, where an id or
+/// a hash really is the secret (`api_key: <hex>`, `refresh_token=<hex>`).
+pub(crate) fn in_credential_field(text: &str, start: usize) -> bool {
+    // The window must start on a character boundary: text is UTF-8.
+    let mut window_start = start.saturating_sub(48);
+    while !text.is_char_boundary(window_start) {
+        window_start += 1;
+    }
+    let window = &text[window_start..start];
+    let Some(cut) = window.rfind(['=', ':', '"', '\'', ' ', ',']) else {
+        return false;
+    };
+    let key =
+        window[..cut].trim_matches(|c: char| !c.is_ascii_alphanumeric() && c != '_' && c != '-');
+    let key = key.to_ascii_lowercase();
+    [
+        "password",
+        "passwd",
+        "secret",
+        "token",
+        "api_key",
+        "apikey",
+        "access_key",
+        "private_key",
+        "credential",
+    ]
+    .iter()
+    .any(|name| key.ends_with(name))
+}
+
+/// Text that is unambiguously code syntax rather than a name: dunder and MCP
+/// names (`mcp__linear__save_issue`), CLI flags, `::` paths, file paths, dotted
+/// module paths, SCREAMING_CASE constants. Deliberately excludes plain snake_case:
+/// project codenames and usernames look exactly like `max_retries`, and the owner's
+/// labels show suppressing those costs real names for a handful of false
+/// positives (identifier rule measured on the fresh round: -7 harmless, -2 real).
+pub(crate) fn identifier_like(value: &str) -> bool {
+    let v = value.trim();
+    if v.is_empty() || v.contains(char::is_whitespace) {
+        return false;
+    }
+    if v.starts_with("--") || v.contains("::") || v.contains("__") {
+        return true;
+    }
+    if v.contains('/') || v.contains('\\') {
+        return true;
+    }
+    let underscore = v.contains('_');
+    let screaming = underscore && v.chars().all(|c| !c.is_lowercase());
+    if screaming {
+        return true;
+    }
+    // A dotted name with at least two dots and no spaces is a module path.
+    let dots = v.chars().filter(|c| *c == '.').count();
+    dots >= 2 && v.split('.').all(|part| !part.is_empty())
+}
+
 // PEM private-key blocks, including the armor lines.
 static PRIVATE_KEY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     regex(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----")
@@ -1005,7 +1093,77 @@ pub fn patterns_by_category(category: PiiCategory) -> Vec<&'static PiiPattern> {
 
 #[cfg(test)]
 mod tests {
-    use super::{non_address_email, non_secret_url_password, non_secret_value};
+    use super::{
+        identifier_like, in_credential_field, non_address_email, non_secret_url_password,
+        non_secret_value, strictly_inside_opaque,
+    };
+
+    #[test]
+    fn opaque_runs_cover_ids_hashes_and_base64_but_not_numbers() {
+        let uuid = "3f2a9c1e-7b4d-4e8a-9f1c-2d6b8e0a5c37";
+        assert!(strictly_inside_opaque(uuid, 0, 8), "a uuid segment");
+        assert!(
+            !strictly_inside_opaque(uuid, 0, uuid.len()),
+            "a whole id is a token"
+        );
+        let digest = "9a8e94ea7f378bd32cbbd37198a4a91436180c5bb472411e48b5ec2e2124ae9e";
+        assert!(strictly_inside_opaque(digest, 5, 9));
+        let base64 =
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQ";
+        assert!(strictly_inside_opaque(base64, 10, 24));
+        assert!(
+            !strictly_inside_opaque("call 4111111111111111 now", 5, 21),
+            "a card is not an id"
+        );
+        assert!(!strictly_inside_opaque("esi 4711 ok", 4, 8));
+        // A name in a path or a sentence is not inside an id.
+        assert!(!strictly_inside_opaque(
+            "see /Users/quillon/app for it",
+            14,
+            21
+        ));
+        assert!(!strictly_inside_opaque("done. Quillon wrote", 6, 13));
+    }
+
+    #[test]
+    fn credential_fields_are_recognised_by_the_key_before_the_value() {
+        assert!(in_credential_field("api_key = 9a8e94ea7f378bd32cbb", 10));
+        assert!(in_credential_field("REFRESH_TOKEN: abcdef0123456789", 15));
+        assert!(!in_credential_field("let id = 9a8e94ea7f378bd32cbb", 9));
+        assert!(!in_credential_field("hash 9a8e94ea7f378bd32cbb", 5));
+        // A multi-byte character inside the look-behind window must not panic.
+        let text = "Grüße aus München, ääää ääää; api_key = 9a8e94ea7f378bd32cbb";
+        assert!(in_credential_field(text, text.find("9a8e").unwrap()));
+        assert!(!in_credential_field("äöüß 4711", 8));
+    }
+
+    #[test]
+    fn code_identifiers_are_not_people() {
+        for value in [
+            "mcp__linear__save_issue",
+            "--dry-run",
+            "std::io::Error",
+            "src/agent/loop.ts",
+            "THINKING_LEVEL",
+            "a.b.c",
+        ] {
+            assert!(identifier_like(value), "{value} should read as code");
+        }
+        for value in [
+            "Quillon",
+            "Alice Example",
+            "Müller",
+            "firstChangedLine",
+            "Claude Opus",
+            "St.John",
+            "qwen3",
+            // Plain snake_case stays: a codename or username is indistinguishable.
+            "max_retries",
+            "nordwind_core",
+        ] {
+            assert!(!identifier_like(value), "{value} should read as a name");
+        }
+    }
 
     #[test]
     fn ssh_remotes_and_asset_names_are_not_addresses() {

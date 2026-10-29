@@ -656,7 +656,38 @@ impl Detector {
         }
     }
 
+    /// Drop findings a code-shaped context explains: a number that landed inside
+    /// an id or hash, a model finding that names code rather than a person, and
+    /// generic key shapes that are only a fragment of a blob.
+    fn suppress_structural_noise(text: &str, matches: &mut Vec<PiiMatch>) {
+        use crate::engine::patterns::{
+            identifier_like, in_credential_field, strictly_inside_opaque,
+        };
+        matches.retain(|m| {
+            // A span with a space is a phrase, not a fragment of an id: a number
+            // beside a sentence-final dot must not read as inside a run.
+            let fragment = !m.matched_text.chars().any(char::is_whitespace)
+                && strictly_inside_opaque(text, m.start, m.end);
+            match m.pattern_name.as_str() {
+                // A number inside an id or hash is not a phone, card or SSN.
+                // In a credential-named field it is the secret.
+                "phone_us" | "phone_intl" | "ssn" | "ssn_nodash" | "credit_card"
+                | "credit_card_nodash" | "date" | "time" | "geocoord" | "mac" => {
+                    !fragment || in_credential_field(text, m.start)
+                }
+                // A name that names code: `max_retries`, `mcp__linear__save_issue`,
+                // `--dry-run`. Not the opaque-run test: a name beside a '.' or '-'
+                // is a sentence, not an id, and dropping it loses real names.
+                "person" | "first_name" | "last_name" | "ner_entity" => {
+                    !identifier_like(&m.matched_text)
+                }
+                _ => true,
+            }
+        });
+    }
+
     fn finish_matches(text: &str, matches: &mut Vec<PiiMatch>, sensitive: Vec<PiiMatch>) {
+        Self::suppress_structural_noise(text, matches);
         TracePolicy::add_sensitive_coverage(text, matches, sensitive);
         Self::sort_matches(matches);
     }
