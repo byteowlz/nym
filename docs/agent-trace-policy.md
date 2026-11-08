@@ -38,6 +38,13 @@ Two filters run on every detection, in every mode:
   `std::io::Error`, a path, `SCREAMING_CASE`, a dotted module path) is not a person.
   Plain snake_case is deliberately kept: project codenames and usernames look the
   same, and the owner's labels showed suppressing them costs real names.
+- A model-found secret (`api_key`, `password`) shorter than 12 characters is
+  dropped. The model calls short tokens like `session_id` or `abc123` secrets;
+  measured on the owner's labelled round, a floor of 12 removed 48 harmless
+  findings and no real one, and the frozen corpus passwords are 16 characters.
+  This is a measured trade, not a guarantee: a genuinely short pasted password is
+  no longer reported by the model (an assignment is still caught by
+  `secret_assignment`).
 - A URL is reported only when it carries a credential or capability (userinfo,
   `access_token`, `code`, `sig`, ...), addresses a private or internal host (an IP,
   a bare hostname, `.local`/`.lan`/`.internal`, a private-content service such as
@@ -45,6 +52,27 @@ Two filters run on every detection, in every mode:
   package and repository links are not findings. An organisation's own service
   hostnames are not structurally private: list them in `--sensitive-terms-file` (or
   a profile) if they must be reported.
+
+## Allow lists and profiles
+
+Review decisions become an allow list through a profile:
+
+```bash
+# review the plan (pi-nym, or scripts/review_trace_anon.py), then keep the values
+# you judged harmless in a file and merge them:
+nym profiles import owner-allow --list allow HARMLESS.txt
+nym traces anon SESSIONS -o OUT --redaction-profile owner-allow
+```
+
+Keep this opt-in with a named profile, not `default`: a present `default` profile
+switches every run onto the trace-policy path (counters in summaries, policy
+filters), which is a surprising global change and makes results machine-dependent.
+
+Measured: an allow list built from one corpus barely transfers to another. The
+owner's 232 harmless values from an earlier pilot removed 5 of 302 flagged strings
+on fresh sessions, because the false positives there were different strings. Per-
+corpus learning (`nym terms discover` -> review -> profile) is the mechanism that
+generalises; a static list is not.
 
 ## Literal lists
 

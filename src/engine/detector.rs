@@ -657,8 +657,9 @@ impl Detector {
     }
 
     /// Drop findings a code-shaped context explains: a number that landed inside
-    /// an id or hash, a model finding that names code rather than a person, and
-    /// generic key shapes that are only a fragment of a blob.
+    /// an id or hash, a model finding that names code rather than a person, a
+    /// short token the model took for a secret, and generic key shapes that are
+    /// only a fragment of a blob.
     fn suppress_structural_noise(text: &str, matches: &mut Vec<PiiMatch>) {
         use crate::engine::patterns::{
             identifier_like, in_credential_field, strictly_inside_opaque,
@@ -675,6 +676,11 @@ impl Detector {
                 | "credit_card_nodash" | "date" | "time" | "geocoord" | "mac" => {
                     !fragment || in_credential_field(text, m.start)
                 }
+                // The model calls short tokens secrets (`session_id`, `abc123`);
+                // real keys and passwords are longer. The owner's labelled fresh
+                // round: below 12 characters, 48 harmless findings and no real one;
+                // the frozen corpus passwords are 16 characters.
+                "api_key" | "password" => m.matched_text.chars().count() >= 12,
                 // A name that names code: `max_retries`, `mcp__linear__save_issue`,
                 // `--dry-run`. Not the opaque-run test: a name beside a '.' or '-'
                 // is a sentence, not an id, and dropping it loses real names.
