@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Tool-output lines with an initial before a surname (`A. Surname`, as in citation and author lists) now qualify for NER in the default `auto` scope; they matched none of the candidate-line patterns, so names in bibliographies, paper listings and search results were never sent to the model. Pilot owner labels, tool-result mode: 120 -> 183 of 218 redact values fully masked, with harmless values touched unchanged (71). Frozen session benchmark 990/990, blind round unchanged. NER input grows by 0.4%.
+
 - A model-found secret (`api_key`, `password`) shorter than 12 characters is no longer reported. The token model labels short identifier-like tokens as secrets; on the owner's blind labelled round a floor of 12 removed 48 of 266 harmless strings and no real value, and the frozen corpus passwords are 16 characters. Fresh round after it: 302 -> 254 flagged strings, precision 0.116 -> 0.138, place precision 0.61 -> 0.70, recall unchanged (36 of 41 sensitive strings fully masked). Cost on the other sets: one must-mask case and one reviewed value. Assignments still catch short passwords through `secret_assignment`.
 - Documented that an allow list does not transfer between corpora: the owner's 232 harmless values from an earlier pilot removed 5 of 302 strings on fresh sessions. Per-corpus learning through `terms discover` and a named profile is the mechanism that generalises. Also documented that a `default` profile switches every run onto the trace-policy path, so allow lists belong in a named profile applied explicitly.
 

@@ -225,7 +225,9 @@ const TRACE_EXCLUDED: &[&str] = &["unix_path", "uuid", "date", "time"];
 /// places), postcode + capitalized word (addresses) and account labels.
 static CANDIDATE_LINE: std::sync::LazyLock<regex::Regex> = std::sync::LazyLock::new(|| {
     regex::Regex::new(
-        r"\b\p{Lu}[\p{Ll}\p{M}]+[ \t]+\p{Lu}[\p{Ll}\p{M}]+|\b\d{4,5}[ \t]+\p{Lu}[\p{Ll}\p{M}]+|(?i)\b(?:user(?:name)?|login|handle|account|author|owner|contact)\s*[:=]",
+        // Two capitalized words, a postcode before a city, an account label, or
+        // an initial before a surname ("A. Surname"), as in author lists.
+        r"\b\p{Lu}[\p{Ll}\p{M}]+[ \t]+\p{Lu}[\p{Ll}\p{M}]+|\b\d{4,5}[ \t]+\p{Lu}[\p{Ll}\p{M}]+|\b\p{Lu}\.[ \t]*\p{Lu}[\p{Ll}\p{M}]+|(?i)\b(?:user(?:name)?|login|handle|account|author|owner|contact)\s*[:=]",
     )
     .expect("candidate line pattern is valid")
 });
@@ -1217,51 +1219,6 @@ fn person_like(m: &PiiMatch, leaf: &str) -> bool {
     !(member || next == Some('(') || before == Some('.'))
 }
 
-/// Hosts whose URLs are public references, not personal data. Identities,
-/// emails and tokens inside such URLs are still caught by other detectors.
-const PUBLIC_HOSTS: &[&str] = &[
-    "github.com",
-    "raw.githubusercontent.com",
-    "gist.github.com",
-    "gitlab.com",
-    "docs.rs",
-    "crates.io",
-    "npmjs.com",
-    "www.npmjs.com",
-    "pypi.org",
-    "huggingface.co",
-    "stackoverflow.com",
-    "en.wikipedia.org",
-    "de.wikipedia.org",
-    "developer.mozilla.org",
-    "doc.rust-lang.org",
-    "rust-lang.org",
-    "www.rust-lang.org",
-    "python.org",
-    "docs.python.org",
-    "go.dev",
-    "pkg.go.dev",
-    "developer.apple.com",
-    "learn.microsoft.com",
-    "docs.anthropic.com",
-    "docs.claude.com",
-    "platform.openai.com",
-    "openai.com",
-    "anthropic.com",
-    "arxiv.org",
-    "youtube.com",
-    "www.youtube.com",
-    "google.com",
-    "www.google.com",
-    "localhost",
-    "127.0.0.1",
-    "example.com",
-    "schemas.openxmlformats.org",
-    "www.w3.org",
-    "json-schema.org",
-    "registry.npmjs.org",
-];
-
 /// NER labels file names (`README.md`), permission strings and word fragments
 /// as URLs. Require a scheme or a dotted host that does not end in a file type.
 fn url_like(lower: &str) -> bool {
@@ -1385,6 +1342,32 @@ fn private_url(lower: &str) -> bool {
 }
 
 #[cfg(test)]
+mod candidate_line_tests {
+    use super::{CANDIDATE_LINE, PROSE_CANDIDATE_LINE};
+
+    #[test]
+    fn author_lists_qualify_for_line_ner_but_code_does_not() {
+        // Citations in tool output: initials before surnames.
+        for line in [
+            "[12] A. Quillon, B. Rookvale, and C. Mettrich (2024) TITLE",
+            "- [3] D. Example, E. F. Sample, G. Person",
+            "1. A.Quillon et al.",
+        ] {
+            assert!(CANDIDATE_LINE.is_match(line), "{line}");
+        }
+        for line in [
+            "let x = self.value;",
+            "use std::io::Error;",
+            "E.g. this is fine",
+            "fn main() { T.into() }",
+        ] {
+            assert!(!CANDIDATE_LINE.is_match(line), "{line}");
+        }
+        assert!(PROSE_CANDIDATE_LINE.is_match("talked to Quillon today"));
+    }
+}
+
+#[cfg(test)]
 mod url_tests {
     use super::private_url;
 
@@ -1413,19 +1396,6 @@ mod url_tests {
             assert!(private_url(url), "{url} is sensitive");
         }
     }
-}
-
-fn public_url(lower: &str) -> bool {
-    let rest = lower.split_once("://").map_or(lower, |(_, r)| r);
-    let host = rest
-        .split(['/', '?', '#'])
-        .next()
-        .unwrap_or_default()
-        .rsplit('@')
-        .next()
-        .unwrap_or_default();
-    let host = host.split(':').next().unwrap_or_default();
-    PUBLIC_HOSTS.contains(&host)
 }
 
 /// Code decorators, npm scopes and doc-comment tags that look like handles.
