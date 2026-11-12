@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Four recall fixes from the owner's blind labelled round, which moves from 36 to 39 of 41 sensitive strings fully masked with the frozen benchmark at 990/990:
+  - `phone_labelled`: a phone number after a phone, tel, fax or mobile label in any national format (`Telefon=05231 1234567`), reported whole instead of partly.
+  - Secret assignments accept escaped quotes (`= \"...\"`, code quoted inside JSON), and SCREAMING_CASE `*_KEY` names with values of 16+ characters; identifier key names (`PRIMARY_KEY`, `SORT_KEY`, `CACHE_KEY`, `PUBLIC_KEY`, ...) are excluded.
+  - Name findings grow to the whole hyphen- or underscore-joined token (`quill` in `quill-vale` -> `quill-vale`), so codenames are masked whole and propagation looks for the right value. Never across `.`, `/` or whitespace.
+  - URL userinfo (`scheme://user:password@host`) is no longer reported as an email, and `url_credentials` is now high confidence, so the password is found in default runs on its own rather than by accident through the email pattern.
+
 - Tool-output lines with an initial before a surname (`A. Surname`, as in citation and author lists) now qualify for NER in the default `auto` scope; they matched none of the candidate-line patterns, so names in bibliographies, paper listings and search results were never sent to the model. Pilot owner labels, tool-result mode: 120 -> 183 of 218 redact values fully masked, with harmless values touched unchanged (71). Frozen session benchmark 990/990, blind round unchanged. NER input grows by 0.4%.
 
 - A model-found secret (`api_key`, `password`) shorter than 12 characters is no longer reported. The token model labels short identifier-like tokens as secrets; on the owner's blind labelled round a floor of 12 removed 48 of 266 harmless strings and no real value, and the frozen corpus passwords are 16 characters. Fresh round after it: 302 -> 254 flagged strings, precision 0.116 -> 0.138, place precision 0.61 -> 0.70, recall unchanged (36 of 41 sensitive strings fully masked). Cost on the other sets: one must-mask case and one reviewed value. Assignments still catch short passwords through `secret_assignment`.

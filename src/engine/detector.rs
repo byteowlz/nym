@@ -692,8 +692,72 @@ impl Detector {
         });
     }
 
+    /// Grow a name finding to the whole hyphen- or underscore-joined token it
+    /// sits in: a model that finds `quill` inside `quill-vale` leaves `-vale`
+    /// readable and gives propagation the wrong value to look for. Never across
+    /// `.`, `/` or whitespace, so a name in a path or sentence stays a name.
+    fn complete_joined_names(text: &str, matches: &mut Vec<PiiMatch>) {
+        let joined = |c: char| c.is_alphanumeric() || c == '-' || c == '_';
+        let mut grown = Vec::new();
+        for (index, m) in matches.iter_mut().enumerate() {
+            if !matches!(
+                m.pattern_name.as_str(),
+                "person" | "first_name" | "last_name" | "username" | "ner_entity"
+            ) || m.matched_text.contains(char::is_whitespace)
+            {
+                continue;
+            }
+            let before = text[..m.start].chars().next_back();
+            let after = text[m.end..].chars().next();
+            if !before.is_some_and(|c| c == '-' || c == '_')
+                && !after.is_some_and(|c| c == '-' || c == '_')
+            {
+                continue;
+            }
+            let start = text[..m.start]
+                .char_indices()
+                .rev()
+                .take_while(|(_, c)| joined(*c))
+                .last()
+                .map_or(m.start, |(i, _)| i);
+            let end = text[m.end..]
+                .char_indices()
+                .take_while(|(_, c)| joined(*c))
+                .last()
+                .map_or(m.end, |(i, c)| m.end + i + c.len_utf8());
+            // Trim joiners at the edges: `-quill-` is the token `quill`.
+            let token = &text[start..end];
+            let lead = token.len() - token.trim_start_matches(['-', '_']).len();
+            let trail = token.len() - token.trim_end_matches(['-', '_']).len();
+            let (start, end) = (start + lead, end - trail);
+            if end - start > 64 || start >= end {
+                continue;
+            }
+            if (start, end) != (m.start, m.end) {
+                m.start = start;
+                m.end = end;
+                m.matched_text = text[start..end].to_string();
+                grown.push(index);
+            }
+        }
+        // A grown span can now contain another finding; only grown spans absorb.
+        let spans: Vec<(usize, (usize, usize))> = grown
+            .iter()
+            .map(|&i| (i, (matches[i].start, matches[i].end)))
+            .collect();
+        let mut index = 0;
+        matches.retain(|m| {
+            let me = index;
+            index += 1;
+            !spans.iter().any(|&(other, (a, b))| {
+                other != me && a <= m.start && m.end <= b && (b - a > m.end - m.start || other < me)
+            })
+        });
+    }
+
     fn finish_matches(text: &str, matches: &mut Vec<PiiMatch>, sensitive: Vec<PiiMatch>) {
         Self::suppress_structural_noise(text, matches);
+        Self::complete_joined_names(text, matches);
         TracePolicy::add_sensitive_coverage(text, matches, sensitive);
         Self::sort_matches(matches);
     }
@@ -794,10 +858,18 @@ impl Detector {
                 let Some(m) = captures
                     .name("pii")
                     .or_else(|| captures.name("piz"))
+                    .or_else(|| captures.name("pik"))
                     .or_else(|| captures.get(0))
                 else {
                     continue;
                 };
+                if captures.name("pik").is_some()
+                    && captures.name("kname").is_some_and(|name| {
+                        crate::engine::patterns::non_secret_key_name(name.as_str())
+                    })
+                {
+                    continue;
+                }
                 if Self::is_social_handle_pattern(pattern.name)
                     && !Self::is_valid_social_handle(text, m.start(), m.end())
                 {
@@ -809,7 +881,9 @@ impl Detector {
                 {
                     continue;
                 }
-                if pattern.name == "email" && crate::engine::patterns::non_address_email(m.as_str())
+                if pattern.name == "email"
+                    && (crate::engine::patterns::non_address_email(m.as_str())
+                        || crate::engine::patterns::url_userinfo_before(text, m.start()))
                 {
                     continue;
                 }
@@ -930,6 +1004,48 @@ impl Default for Detector {
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
+
+    fn name_at(text: &str, value: &str, class: &str) -> PiiMatch {
+        let start = text.find(value).unwrap();
+        PiiMatch {
+            pattern_name: class.into(),
+            matched_text: value.into(),
+            start,
+            end: start + value.len(),
+            confidence: Confidence::Medium,
+            category: PiiCategory::Identity,
+        }
+    }
+
+    #[test]
+    fn name_findings_grow_to_the_joined_token_only() {
+        let text = "deploy quill-vale_api today; see /home/quill/x and Quill wrote. -quill-";
+        let mut matches = vec![name_at(text, "quill", "first_name")];
+        Detector::complete_joined_names(text, &mut matches);
+        assert_eq!(matches[0].matched_text, "quill-vale_api");
+        // Not across '/', '.' or whitespace; edge joiners are trimmed.
+        for (value, start_after) in [("quill", "/home/"), ("Quill", "and "), ("quill", " -")] {
+            let at = text.find(start_after).unwrap() + start_after.len();
+            let mut m = vec![PiiMatch {
+                pattern_name: "first_name".into(),
+                matched_text: value.into(),
+                start: at,
+                end: at + value.len(),
+                confidence: Confidence::Medium,
+                category: PiiCategory::Identity,
+            }];
+            Detector::complete_joined_names(text, &mut m);
+            assert_eq!(m[0].matched_text, value, "{start_after}");
+        }
+        // Only a grown span absorbs a finding inside it.
+        let url = "postgres://app:Kq7vR2xLp9@db.internal";
+        let mut both = vec![
+            name_at(url, "Kq7vR2xLp9@db.internal", "email"),
+            name_at(url, "Kq7vR2xLp9", "url_credentials"),
+        ];
+        Detector::complete_joined_names(url, &mut both);
+        assert_eq!(both.len(), 2);
+    }
 
     fn spans(config: DetectorConfig, text: &str) -> Vec<String> {
         Detector::new(&config)

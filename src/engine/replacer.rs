@@ -365,7 +365,7 @@ impl Replacer {
         // Use pattern-specific placeholders
         match pii_match.pattern_name.as_str() {
             "email" => "<EMAIL>".to_string(),
-            "phone_us" | "phone_intl" => "<PHONE>".to_string(),
+            "phone_us" | "phone_intl" | "phone_labelled" => "<PHONE>".to_string(),
             "ssn" | "ssn_nodash" => "<SSN>".to_string(),
             "credit_card" | "credit_card_nodash" => "<CREDIT_CARD>".to_string(),
             "ipv4" => "<IPV4>".to_string(),

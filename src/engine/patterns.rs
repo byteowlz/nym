@@ -232,7 +232,47 @@ static VENDOR_SECRET_REGEX: LazyLock<Regex> = LazyLock::new(|| {
 //   and bare lowercase assignments stay unmatched.
 static SECRET_ASSIGNMENT_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     regex(
-        r#"\b[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*[:=]\s*["']?(?P<pii>[^\s"'`$][^\s"'`]{7,})|(?i:["']?(?:password|passwd|secret|token|api_?key|access_?key|private_?key)["']?[ \t]*[:=][ \t]*["'](?P<piz>[^\s"'`$][^\s"'`]{7,})["'])"#,
+        // Quotes may be escaped (`\"`): code quoted inside JSON or a shell string.
+        // A bare `*_KEY` name counts only with a long value (16+), as `SORT_KEY`
+        // and friends hold short identifiers; see `non_secret_key_name`.
+        r#"\b[A-Z][A-Z0-9_]*(?:PASSWORD|PASSWD|SECRET|TOKEN|API_KEY|APIKEY|ACCESS_KEY|PRIVATE_KEY)[A-Z0-9_]*\s*[:=]\s*\\?["']?(?P<pii>[^\s"'`$\\][^\s"'`\\]{7,})|\b(?P<kname>[A-Z][A-Z0-9_]*_KEY)\s*[:=]\s*\\?["']?(?P<pik>[^\s"'`$\\][^\s"'`\\]{15,})|(?i:\\?["']?(?:password|passwd|secret|token|api_?key|access_?key|private_?key)\\?["']?[ \t]*[:=][ \t]*\\?["'](?P<piz>[^\s"'`$\\][^\s"'`\\]{7,})\\?["'])"#,
+    )
+});
+
+/// `*_KEY` names that hold identifiers, not credentials.
+pub(crate) fn non_secret_key_name(name: &str) -> bool {
+    [
+        "PRIMARY_KEY",
+        "FOREIGN_KEY",
+        "SORT_KEY",
+        "PARTITION_KEY",
+        "CACHE_KEY",
+        "STORAGE_KEY",
+        "ROUTING_KEY",
+        "LOOKUP_KEY",
+        "MAP_KEY",
+        "HASH_KEY",
+        "RANGE_KEY",
+        "INDEX_KEY",
+        "SHORTCUT_KEY",
+        "HOT_KEY",
+        "HOTKEY",
+        "LOCALE_KEY",
+        "I18N_KEY",
+        "QUERY_KEY",
+        "PUBLIC_KEY",
+        "PUB_KEY",
+    ]
+    .iter()
+    .any(|known| name.ends_with(known))
+}
+
+// A phone number after a phone, fax or mobile label, in any national format
+// (`Telefon=05231 1234567`, `phone: (030) 123 45 67`). Without a label such
+// digit groups are too ambiguous; with one, the whole number is the finding.
+static PHONE_LABELLED_REGEX: LazyLock<Regex> = LazyLock::new(|| {
+    regex(
+        r#"(?i)\b(?:phone|tel|telefon|telephone|fax|mobile?|mobil|handy|cell)(?:[ _.-]?(?:no|nr|number|nummer))?\.?\s*[:=]\s*\\?["']?(?P<pii>\+?\(?\d[\d \t()./-]{4,22}\d)"#,
     )
 });
 
@@ -459,6 +499,23 @@ pub(crate) fn identifier_like(value: &str) -> bool {
     // A dotted name with at least two dots and no spaces is a module path.
     let dots = v.chars().filter(|c| *c == '.').count();
     dots >= 2 && v.split('.').all(|part| !part.is_empty())
+}
+
+/// An address-shaped match right after `scheme://user:` is the password and
+/// host of URL userinfo, which `url_credentials` reports, not an email.
+pub(crate) fn url_userinfo_before(text: &str, start: usize) -> bool {
+    let mut from = start.saturating_sub(256);
+    while !text.is_char_boundary(from) {
+        from += 1;
+    }
+    let Some(head) = text[from..start].strip_suffix(':') else {
+        return false;
+    };
+    let Some(scheme) = head.rfind("://") else {
+        return false;
+    };
+    let user = &head[scheme + 3..];
+    !user.is_empty() && !user.contains(['/', '@', ' ', '\t', '\n'])
 }
 
 // PEM private-key blocks, including the armor lines.
@@ -755,6 +812,15 @@ pub static BUILTIN_PATTERNS: &[PiiPattern] = &[
         replacement_template: "<PHONE>",
     },
     PiiPattern {
+        name: "phone_labelled",
+        description: "Phone number after a phone, fax or mobile label, any national format",
+        regex: &PHONE_LABELLED_REGEX,
+        confidence: Confidence::High,
+        category: PiiCategory::Contact,
+        example: "Telefon=05231 1234567",
+        replacement_template: "<PHONE>",
+    },
+    PiiPattern {
         name: "phone_intl",
         description: "International phone number (E.164)",
         regex: &PHONE_INTL_REGEX,
@@ -884,7 +950,7 @@ pub static BUILTIN_PATTERNS: &[PiiPattern] = &[
         name: "url_credentials",
         description: "Password embedded in a URL (scheme://user:password@host)",
         regex: &URL_CREDENTIALS_REGEX,
-        confidence: Confidence::Medium,
+        confidence: Confidence::High,
         category: PiiCategory::Authentication,
         example: "postgres://app:Kq7vR2xLp9@db.internal:5432/orders",
         replacement_template: "<SECRET>",
@@ -1163,6 +1229,17 @@ mod tests {
         ] {
             assert!(!identifier_like(value), "{value} should read as a name");
         }
+    }
+
+    #[test]
+    fn url_userinfo_is_not_an_email() {
+        use super::url_userinfo_before;
+        let url = "postgres://app:Kq7vR2xLp9@db.internal:5432/orders";
+        assert!(url_userinfo_before(url, url.find("Kq7v").unwrap()));
+        let mail = "contact: quill@example.invalid";
+        assert!(!url_userinfo_before(mail, mail.find("quill").unwrap()));
+        let ssh = "ssh://git@host/repo";
+        assert!(!url_userinfo_before(ssh, ssh.find("git").unwrap()));
     }
 
     #[test]

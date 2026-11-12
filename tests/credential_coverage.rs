@@ -113,3 +113,79 @@ fn repeated_quoted_credentials_fully_covered_in_text_json_and_stream() {
         }
     }
 }
+
+fn detected(text: &str) -> Vec<(String, String)> {
+    let out = run(&["detect", "--json"], Some(text));
+    assert!(
+        out.status.success(),
+        "{}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let value: serde_json::Value = serde_json::from_slice(&out.stdout).unwrap();
+    value
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|f| {
+            (
+                f["pattern_name"].as_str().unwrap().to_owned(),
+                f["matched_text"].as_str().unwrap().to_owned(),
+            )
+        })
+        .collect()
+}
+
+#[test]
+fn labelled_phones_long_key_values_and_escaped_quotes_are_found_whole() {
+    let found = detected(
+        "name=Quillon, Email=q@example.invalid, Telefon=05231 1234567. Next\n\
+         phone: (030) 123 45 67\n\
+         const BUCKET_KEY = \"synth-rookvale-access-zq\";\n\
+         {\"code\": \"const DB_PASSWORD_ENV = \\\"rook-vale-quill-mettrich-zz\\\";\"}\n\
+         \\\"password\\\": \\\"SynthPass-7zQ-quill\\\"\n",
+    );
+    let has = |kind: &str, value: &str| found.iter().any(|(k, v)| k == kind && v == value);
+    assert!(has("phone_labelled", "05231 1234567"), "{found:?}");
+    assert!(has("phone_labelled", "(030) 123 45 67"), "{found:?}");
+    assert!(
+        has("secret_assignment", "synth-rookvale-access-zq"),
+        "{found:?}"
+    );
+    assert!(
+        has("secret_assignment", "rook-vale-quill-mettrich-zz"),
+        "{found:?}"
+    );
+    assert!(has("secret_assignment", "SynthPass-7zQ-quill"), "{found:?}");
+}
+
+#[test]
+fn identifier_key_names_and_short_values_are_not_secrets() {
+    let found = detected(
+        "const SORT_KEY = \"created-at-descending-order\";\n\
+         PRIMARY_KEY = \"user-profile-identifier\"\n\
+         const MAP_KEY = \"short\";\n\
+         PUBLIC_KEY = \"ssh-ed25519-AAAAC3NzaC1lZDI1\"\n\
+         call version 2.1.0 at 10:30\n",
+    );
+    assert!(
+        found
+            .iter()
+            .all(|(k, _)| k != "secret_assignment" && k != "phone_labelled"),
+        "{found:?}"
+    );
+}
+
+#[test]
+fn url_passwords_are_found_at_default_confidence() {
+    let found = detected("DATABASE_URL=postgres://app:Kq7vR2xLp9zz@db.internal:5432/orders\n");
+    assert!(
+        found
+            .iter()
+            .any(|(k, v)| k == "url_credentials" && v == "Kq7vR2xLp9zz"),
+        "{found:?}"
+    );
+    assert!(
+        found.iter().all(|(k, _)| k != "email"),
+        "userinfo is not an email: {found:?}"
+    );
+}
