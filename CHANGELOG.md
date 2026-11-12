@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Code locations such as `handler@server.rs:12` or `fn@module.py` are no longer emails (source-file extensions join the asset extensions). Blind round 217 -> 209 flagged strings, no recall change. Measured and not adopted: treating UUIDs and prefixed ids (`evt_`, `req_`, ...) as harmless, which magpie does: the owner labelled tenant, directory and client UUIDs and an `evt_` id as sensitive, so ids stay findings.
+
 - Structural false-positive rules, each with zero sensitive values in the owner-labelled rounds: model-found `api_key`/`password` that are a hex hash, a file path or HTML-escaped prose (40 harmless); `email` findings that are not address-shaped, such as `drwxr-xr-x@ 12` from `ls -l` output; phone matches that are part of a decimal number or a longer digit-group run; and, in agent traces only, addresses at documentation and test domains (`example.com`, `.test`, `.invalid`, `.example`; 26 harmless). `detect`/`anon` still report reserved-domain addresses. Blind round: 263 -> 217 flagged strings, precision 0.143 -> 0.170; pilot harmless touches 121 -> 91 (user messages) and 70 -> 45 (tool results); magpie must-keep 77 -> 86 and 102 -> 104; frozen corpus 990/990. Costs: one `ls -l` permission string and one decimal header value a reviewer had marked; both were only ever partly masked. An npm-scope rule was measured and dropped: a scope can be the owner's own organisation (29 places).
 
 - Four recall fixes from the owner's blind labelled round, which moves from 36 to 39 of 41 sensitive strings fully masked with the frozen benchmark at 990/990:

@@ -397,6 +397,9 @@ pub(crate) fn non_secret_url_password(user: &str, password: &str) -> bool {
 const FILE_EXTENSIONS: &[&str] = &[
     "png", "jpg", "jpeg", "gif", "svg", "webp", "ico", "bmp", "avif", "mp4", "mov", "webm", "mp3",
     "wav", "pdf", "md", "txt", "json", "js", "ts", "tsx", "css", "html", "lock",
+    // Source files: `func@file.rs:12` is a code location, not an address.
+    "rs", "py", "go", "rb", "swift", "kt", "java", "toml", "yaml", "yml", "cpp", "hpp", "lua",
+    "sql", "jsx", "mjs", "cjs", "vue", "svelte",
 ];
 
 /// Address-shaped text that is no address: an SSH remote (`git@github.com`)
@@ -555,9 +558,8 @@ pub(crate) fn malformed_email(value: &str) -> bool {
 /// Owner-labelled rounds: 40 harmless such findings, none sensitive.
 pub(crate) fn non_secret_shape(value: &str) -> bool {
     let v = value.trim_matches(|c: char| c == '.' || c == ',' || c == ';');
-    let hex = v.len() >= 7
-        && v.chars()
-            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c));
+    let hex_char = |c: char| c.is_ascii_digit() || ('a'..='f').contains(&c);
+    let hex = v.len() >= 7 && v.chars().all(hex_char);
     let path = v.starts_with('/') || v.starts_with("~/") || v.matches('/').count() >= 2;
     let entity = v.match_indices('&').any(|(i, _)| {
         v[i + 1..].split_once(';').is_some_and(|(name, _)| {
@@ -1334,7 +1336,10 @@ mod tests {
         ] {
             assert!(non_secret_shape(v), "{v}");
         }
+        // UUIDs and prefixed ids can be tenant, client or account ids.
         for v in [
+            "3f2a9c1e-7b4d-4e8a-9f1c-2d6b8e0a5c37",
+            "evt_8f2a9c1e7b4d",
             "Sup3rSecretValue1",
             "correct-horse",
             "hunter2pass",
@@ -1367,6 +1372,7 @@ mod tests {
         assert!(non_address_email("git@github.com"));
         assert!(non_address_email("logo@3x.png"));
         assert!(non_address_email("intro@2x.mp4"));
+        assert!(non_address_email("handler@server.rs"));
         assert!(!non_address_email("quillon.example@posteo.de"));
         assert!(!non_address_email("user7@example.invalid"));
     }
