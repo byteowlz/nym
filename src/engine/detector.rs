@@ -672,15 +672,22 @@ impl Detector {
             match m.pattern_name.as_str() {
                 // A number inside an id or hash is not a phone, card or SSN.
                 // In a credential-named field it is the secret.
-                "phone_us" | "phone_intl" | "ssn" | "ssn_nodash" | "credit_card"
-                | "credit_card_nodash" | "date" | "time" | "geocoord" | "mac" => {
-                    !fragment || in_credential_field(text, m.start)
+                "phone_us" | "phone_intl" => {
+                    (!fragment || in_credential_field(text, m.start))
+                        && !crate::engine::patterns::phone_inside_number(text, m.start, m.end)
                 }
+                "ssn" | "ssn_nodash" | "credit_card" | "credit_card_nodash" | "date" | "time"
+                | "geocoord" | "mac" => !fragment || in_credential_field(text, m.start),
                 // The model calls short tokens secrets (`session_id`, `abc123`);
                 // real keys and passwords are longer. The owner's labelled fresh
                 // round: below 12 characters, 48 harmless findings and no real one;
                 // the frozen corpus passwords are 16 characters.
-                "api_key" | "password" => m.matched_text.chars().count() >= 12,
+                "api_key" | "password" => {
+                    m.matched_text.chars().count() >= 12
+                        && !crate::engine::patterns::non_secret_shape(&m.matched_text)
+                }
+                // A model finding labelled email that is not address-shaped.
+                "email" => !crate::engine::patterns::malformed_email(&m.matched_text),
                 // A name that names code: `max_retries`, `mcp__linear__save_issue`,
                 // `--dry-run`. Not the opaque-run test: a name beside a '.' or '-'
                 // is a sentence, not an id, and dropping it loses real names.

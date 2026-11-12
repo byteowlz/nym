@@ -35,9 +35,9 @@ fn session(lines: &[&str]) -> String {
 
 const SESSION: &[&str] = &[
     r#"{"type":"session","id":"s-1","timestamp":"2026-10-12T10:00:00Z","cwd":"/Users/zorbaxtester/projects/app"}"#,
-    r#"{"type":"message","id":"m-1","message":{"role":"user","content":[{"type":"text","text":"Mail ada.quill@example.org and set DB_PASSWORD=Sup3rSecretValue1"}]}}"#,
-    r#"{"type":"message","id":"m-2","message":{"role":"assistant","content":[{"type":"thinking","thinking":"ok","thinkingSignature":"EqQBCkYIBxgCKkDada.quill@example.org"},{"type":"text","text":"Reading /Users/zorbaxtester/projects/app/.env for ada.quill@example.org"}]}}"#,
-    r#"{"type":"message","id":"m-3","message":{"role":"toolResult","toolCallId":"t-1","content":[{"type":"text","text":"user=zorbaxtester password Sup3rSecretValue1 owner ada.quill@example.org"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}]}}"#,
+    r#"{"type":"message","id":"m-1","message":{"role":"user","content":[{"type":"text","text":"Mail ada.quill@quillmail.de and set DB_PASSWORD=Sup3rSecretValue1"}]}}"#,
+    r#"{"type":"message","id":"m-2","message":{"role":"assistant","content":[{"type":"thinking","thinking":"ok","thinkingSignature":"EqQBCkYIBxgCKkDada.quill@quillmail.de"},{"type":"text","text":"Reading /Users/zorbaxtester/projects/app/.env for ada.quill@quillmail.de"}]}}"#,
+    r#"{"type":"message","id":"m-3","message":{"role":"toolResult","toolCallId":"t-1","content":[{"type":"text","text":"user=zorbaxtester password Sup3rSecretValue1 owner ada.quill@quillmail.de"},{"type":"image","mimeType":"image/png","data":"iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"}]}}"#,
     r#"{"z":"untouched record keeps its exact bytes","a":1}"#,
 ];
 
@@ -78,13 +78,13 @@ fn per_session_consistent_pseudonyms_with_structure_preserved() {
     let two = out.join("two.jsonl");
     let text_one = fs::read_to_string(&one).unwrap();
     for secret in [
-        "ada.quill@example.org",
+        "ada.quill@quillmail.de",
         "zorbaxtester",
         "Sup3rSecretValue1",
         "iVBORw0KGgo",
     ] {
         // The signature is opaque and deliberately not rewritten.
-        let outside_signature = text_one.replace("EqQBCkYIBxgCKkDada.quill@example.org", "");
+        let outside_signature = text_one.replace("EqQBCkYIBxgCKkDada.quill@quillmail.de", "");
         assert!(
             !outside_signature.contains(secret),
             "leaked a {} char value",
@@ -97,7 +97,7 @@ fn per_session_consistent_pseudonyms_with_structure_preserved() {
     assert_eq!(r[0]["timestamp"], "2026-10-12T10:00:00Z");
     assert_eq!(
         r[2]["message"]["content"][0]["thinkingSignature"],
-        "EqQBCkYIBxgCKkDada.quill@example.org"
+        "EqQBCkYIBxgCKkDada.quill@quillmail.de"
     );
     assert_eq!(r[3]["message"]["content"][1]["data"], "");
     assert_eq!(r[3]["message"]["content"][1]["mimeType"], "image/png");
@@ -214,7 +214,7 @@ fn invalid_session_fails_without_partial_output_or_content_in_errors() {
     fs::write(input.join("good.jsonl"), session(SESSION)).unwrap();
     fs::write(
         input.join("bad.jsonl"),
-        "{\"text\":\"ada.quill@example.org\"}\nnot json ada.quill\n",
+        "{\"text\":\"ada.quill@quillmail.de\"}\nnot json ada.quill\n",
     )
     .unwrap();
     let out = root.join("out");
@@ -364,7 +364,7 @@ fn redaction_profiles_are_shared_and_stack_on_default() {
         "default",
         "--list",
         "allow",
-        "support@example.org",
+        "support@quillmail.de",
     ]);
     ok(&[
         "profiles",
@@ -375,7 +375,7 @@ fn redaction_profiles_are_shared_and_stack_on_default() {
         "Acme Corp",
     ]);
     let downloaded = root.join("trace-allow.txt");
-    fs::write(&downloaded, "# from the review page\nkeep@example.org\n").unwrap();
+    fs::write(&downloaded, "# from the review page\nkeep@quillmail.de\n").unwrap();
     ok(&[
         "profiles",
         "import",
@@ -397,7 +397,7 @@ fn redaction_profiles_are_shared_and_stack_on_default() {
 
     let input = root.join("in");
     fs::create_dir_all(&input).unwrap();
-    let text = "Acme Corp: mail support@example.org, keep@example.org or ada.quill@example.org";
+    let text = "Acme Corp: mail support@quillmail.de, keep@quillmail.de or ada.quill@quillmail.de";
     fs::write(
         input.join("s.jsonl"),
         format!(r#"{{"message":{{"role":"user","content":[{{"type":"text","text":"{text}"}}]}}}}"#)
@@ -420,10 +420,10 @@ fn redaction_profiles_are_shared_and_stack_on_default() {
         fs::read_to_string(out.join("s.jsonl")).unwrap()
     };
     let base = run("base", &[]);
-    assert!(base.contains("support@example.org") && base.contains("Acme Corp"));
-    assert!(base.contains("keep@example.org") == false && !base.contains("ada.quill"));
+    assert!(base.contains("support@quillmail.de") && base.contains("Acme Corp"));
+    assert!(base.contains("keep@quillmail.de") == false && !base.contains("ada.quill"));
     let work = run("work", &["--redaction-profile", "work"]);
-    assert!(work.contains("support@example.org") && work.contains("keep@example.org"));
+    assert!(work.contains("support@quillmail.de") && work.contains("keep@quillmail.de"));
     assert!(!work.contains("Acme Corp") && !work.contains("ada.quill"));
     // A missing named profile is an error, not a silent no-op.
     let missing = nym(
@@ -484,7 +484,7 @@ fn plan_lists_candidates_and_keep_values_are_honored() {
     let plan: Value = serde_json::from_slice(&fs::read(&plan_path).unwrap()).unwrap();
     let candidates = plan["sessions"][0]["candidates"].as_array().unwrap();
     let find = |value: &str| candidates.iter().find(|c| c["value"] == value).cloned();
-    let email = find("ada.quill@example.org").expect("email candidate");
+    let email = find("ada.quill@quillmail.de").expect("email candidate");
     assert_eq!(email["class"], "email");
     // Two prose occurrences plus the tool output; the opaque signature is never scanned.
     assert_eq!(email["count"], 3);
@@ -492,7 +492,7 @@ fn plan_lists_candidates_and_keep_values_are_honored() {
         email["context"]
             .as_str()
             .unwrap()
-            .contains("ada.quill@example.org")
+            .contains("ada.quill@quillmail.de")
     );
     let secret = find("Sup3rSecretValue1").expect("secret candidate");
     assert_eq!(secret["credential"], true);
@@ -512,7 +512,7 @@ fn plan_lists_candidates_and_keep_values_are_honored() {
     }
     // Apply with an explicit keep decision: the email stays, everything else is replaced.
     let keep = root.join("keep.txt");
-    fs::write(&keep, "ada.quill@example.org\n").unwrap();
+    fs::write(&keep, "ada.quill@quillmail.de\n").unwrap();
     let output = root.join("out");
     let out = nym(
         root,
@@ -534,7 +534,7 @@ fn plan_lists_candidates_and_keep_values_are_honored() {
         String::from_utf8_lossy(&out.stderr)
     );
     let text = fs::read_to_string(output.join("s.jsonl")).unwrap();
-    assert_eq!(text.matches("ada.quill@example.org").count(), 4);
+    assert_eq!(text.matches("ada.quill@quillmail.de").count(), 4);
     assert!(!text.contains("Sup3rSecretValue1") && !text.contains("/Users/zorbaxtester"));
     // --plan cannot be combined with outputs.
     let both = nym(
@@ -560,7 +560,7 @@ fn apply_plan_replaces_exactly_the_reviewed_values_everywhere() {
     fs::create_dir_all(&input).unwrap();
     let lines = [
         r#"{"type":"session","id":"s-1","cwd":"/tmp/app"}"#,
-        r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Ask Henrike or other@example.org; build 4711 at 14711"}]}}"#,
+        r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"Ask Henrike or other@quillmail.de; build 4711 at 14711"}]}}"#,
         r#"{"type":"message","message":{"role":"toolResult","content":[{"type":"text","text":"owner=Henrike Brinkhaus;id 4711"}]}}"#,
         r#"{"type":"message","message":{"role":"toolResult","content":[{"type":"text","text":"log: \\nHenrike said"}]}}"#,
     ];
@@ -598,7 +598,7 @@ fn apply_plan_replaces_exactly_the_reviewed_values_everywhere() {
     let user = r[1]["message"]["content"][0]["text"].as_str().unwrap();
     let tool = r[2]["message"]["content"][0]["text"].as_str().unwrap();
     // Approved values go everywhere; unreviewed findings (the email) stay.
-    assert!(!user.contains("Henrike") && user.contains("other@example.org"));
+    assert!(!user.contains("Henrike") && user.contains("other@quillmail.de"));
     // Word boundaries: 14711 is a different number.
     assert!(user.ends_with(" at 14711") && !user.contains("build 4711"));
     // A kept value protects the approved value inside it.
@@ -787,4 +787,47 @@ fn corpus_plan_scope_applies_reviewed_values_to_every_session() {
             "{name} still has the reviewed value: {text}"
         );
     }
+}
+
+#[test]
+fn documentation_domains_and_npm_scopes_stay_in_traces() {
+    let dir = TempDir::new().unwrap();
+    let root = dir.path();
+    let input = root.join("in");
+    fs::create_dir_all(&input).unwrap();
+    let lines = [
+        r#"{"type":"message","message":{"role":"user","content":[{"type":"text","text":"e.g. you@example.com or ci@build.test; real one: ada.quill@quillmail.de"}]}}"#,
+        r#"{"type":"message","message":{"role":"toolResult","content":[{"type":"text","text":"import x from \"@scope/pkg\"; ts 1761379200.123"}]}}"#,
+    ];
+    fs::write(input.join("s.jsonl"), session(&lines)).unwrap();
+    let out = root.join("out");
+    let result = nym(
+        root,
+        &[
+            "traces",
+            "anon",
+            input.to_str().unwrap(),
+            "-o",
+            out.to_str().unwrap(),
+            "--no-ner",
+            "--no-progress",
+        ],
+    );
+    assert!(
+        result.status.success(),
+        "{}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    let r = records(&out.join("s.jsonl"));
+    let user = r[0]["message"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        user.contains("you@example.com") && user.contains("ci@build.test"),
+        "{user}"
+    );
+    assert!(!user.contains("ada.quill@quillmail.de"), "{user}");
+    let tool = r[1]["message"]["content"][0]["text"].as_str().unwrap();
+    assert!(
+        tool.contains("@scope/pkg") && tool.contains("1761379200.123"),
+        "{tool}"
+    );
 }

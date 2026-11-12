@@ -518,6 +518,80 @@ pub(crate) fn url_userinfo_before(text: &str, start: usize) -> bool {
     !user.is_empty() && !user.contains(['/', '@', ' ', '\t', '\n'])
 }
 
+/// Domains reserved for documentation and tests (RFC 2606, RFC 6761): an
+/// address there is an example, never a person. Owner-labelled rounds: 26
+/// harmless such addresses, none sensitive.
+pub(crate) fn reserved_email_domain(value: &str) -> bool {
+    let Some((_, domain)) = value.rsplit_once('@') else {
+        return false;
+    };
+    let domain = domain.trim_end_matches('.').to_ascii_lowercase();
+    matches!(
+        domain.as_str(),
+        "example.com" | "example.org" | "example.net" | "localhost"
+    ) || [".example", ".test", ".invalid", ".localhost"]
+        .iter()
+        .any(|suffix| domain.ends_with(suffix))
+        || domain.ends_with(".example.com")
+        || domain.ends_with(".example.org")
+        || domain.ends_with(".example.net")
+}
+
+/// A finding labelled email that is not address-shaped (`drwxr-xr-x@ 12`).
+pub(crate) fn malformed_email(value: &str) -> bool {
+    let Some((local, domain)) = value.rsplit_once('@') else {
+        return true;
+    };
+    local.is_empty()
+        || value.contains(char::is_whitespace)
+        || !domain.contains('.')
+        || domain
+            .rsplit('.')
+            .next()
+            .is_none_or(|tld| tld.len() < 2 || !tld.chars().all(char::is_alphabetic))
+}
+
+/// A model-found secret that is a hash, a file path or HTML-escaped prose.
+/// Owner-labelled rounds: 40 harmless such findings, none sensitive.
+pub(crate) fn non_secret_shape(value: &str) -> bool {
+    let v = value.trim_matches(|c: char| c == '.' || c == ',' || c == ';');
+    let hex = v.len() >= 7
+        && v.chars()
+            .all(|c| c.is_ascii_digit() || ('a'..='f').contains(&c));
+    let path = v.starts_with('/') || v.starts_with("~/") || v.matches('/').count() >= 2;
+    let entity = v.match_indices('&').any(|(i, _)| {
+        v[i + 1..].split_once(';').is_some_and(|(name, _)| {
+            (2..=8).contains(&name.len())
+                && name.chars().all(|c| c.is_ascii_alphanumeric() || c == '#')
+        })
+    });
+    hex || path || entity
+}
+
+/// A phone-shaped match that is part of a number: a decimal (`1761379200.123`,
+/// a JSON float) or a longer run of digit groups (`1-2-3-4-5`).
+pub(crate) fn phone_inside_number(text: &str, start: usize, end: usize) -> bool {
+    let before = &text[..start];
+    let after = &text[end..];
+    let digit_after_sep = |s: &str| {
+        let mut chars = s.chars();
+        matches!(chars.next(), Some('.' | '-' | '/' | ','))
+            && chars.next().is_some_and(|c| c.is_ascii_digit())
+    };
+    let digit_before_sep = |s: &str| {
+        let mut chars = s.chars().rev();
+        matches!(chars.next(), Some('.' | '-' | '/'))
+            && chars.next().is_some_and(|c| c.is_ascii_digit())
+    };
+    before
+        .chars()
+        .next_back()
+        .is_some_and(|c| c.is_ascii_digit())
+        || after.chars().next().is_some_and(|c| c.is_ascii_digit())
+        || digit_after_sep(after)
+        || digit_before_sep(before)
+}
+
 // PEM private-key blocks, including the armor lines.
 static PRIVATE_KEY_REGEX: LazyLock<Regex> = LazyLock::new(|| {
     regex(r"(?s)-----BEGIN [A-Z ]*PRIVATE KEY-----.*?-----END [A-Z ]*PRIVATE KEY-----")
@@ -1229,6 +1303,52 @@ mod tests {
         ] {
             assert!(!identifier_like(value), "{value} should read as a name");
         }
+    }
+
+    #[test]
+    fn reserved_domains_hashes_paths_entities_and_number_runs_are_not_findings() {
+        use super::{
+            malformed_email, non_secret_shape, phone_inside_number, reserved_email_domain,
+        };
+        for v in [
+            "you@example.com",
+            "a@b.example",
+            "x@host.test",
+            "q@example.invalid",
+            "ci@sub.example.org",
+        ] {
+            assert!(reserved_email_domain(v), "{v}");
+        }
+        for v in ["quill@posteo.de", "a@examples.com", "me@my-example.dev"] {
+            assert!(!reserved_email_domain(v), "{v}");
+        }
+        assert!(malformed_email("drwxr-xr-x@ 12"));
+        assert!(malformed_email("user@host"));
+        assert!(!malformed_email("quill@posteo.de"));
+        for v in [
+            "9a8e94ea7f378bd",
+            "4f2c1e9",
+            "/Users/x/a.txt",
+            "~/.ssh/id",
+            "&quot;Ok&quot;, &amp;",
+        ] {
+            assert!(non_secret_shape(v), "{v}");
+        }
+        for v in [
+            "Sup3rSecretValue1",
+            "correct-horse",
+            "hunter2pass",
+            "sk_live_4eC39Hq",
+        ] {
+            assert!(!non_secret_shape(v), "{v}");
+        }
+        let t = "\"ts\": 1761379200.123, \"id\": \"5-555-123-4567-9\", call 555-123-4567 now";
+        let ts = t.find("1761379200").unwrap();
+        assert!(phone_inside_number(t, ts, ts + 10));
+        let run = t.find("555-123-4567-9").unwrap();
+        assert!(phone_inside_number(t, run, run + 12));
+        let real = t.rfind("555-123-4567").unwrap();
+        assert!(!phone_inside_number(t, real, real + 12));
     }
 
     #[test]

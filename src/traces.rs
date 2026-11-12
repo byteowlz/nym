@@ -1132,6 +1132,10 @@ fn plausible(m: &PiiMatch, leaf: &str, prose: bool, allow: &HashSet<String>) -> 
         // explicitly with --sensitive-terms-file instead.
         "organization" | "company" => false,
         "url" | "social_url" => url_like(&lower) && private_url(&lower),
+        // Documentation and test domains in agent traces are examples: owner
+        // labels found 26 such addresses, all harmless. Applied to traces only;
+        // `detect`/`anon` keep reporting them.
+        "email" => !crate::engine::patterns::reserved_email_domain(text),
         // Decorators, npm scopes and doc tags in code; mentions only in prose.
         "twitter_handle" | "social_handle" | "instagram_handle" => {
             prose && !CODE_HANDLES.contains(&lower.trim_start_matches('@'))

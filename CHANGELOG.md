@@ -4,6 +4,8 @@ All notable changes to this project will be documented in this file.
 
 ## Unreleased
 
+- Structural false-positive rules, each with zero sensitive values in the owner-labelled rounds: model-found `api_key`/`password` that are a hex hash, a file path or HTML-escaped prose (40 harmless); `email` findings that are not address-shaped, such as `drwxr-xr-x@ 12` from `ls -l` output; phone matches that are part of a decimal number or a longer digit-group run; and, in agent traces only, addresses at documentation and test domains (`example.com`, `.test`, `.invalid`, `.example`; 26 harmless). `detect`/`anon` still report reserved-domain addresses. Blind round: 263 -> 217 flagged strings, precision 0.143 -> 0.170; pilot harmless touches 121 -> 91 (user messages) and 70 -> 45 (tool results); magpie must-keep 77 -> 86 and 102 -> 104; frozen corpus 990/990. Costs: one `ls -l` permission string and one decimal header value a reviewer had marked; both were only ever partly masked. An npm-scope rule was measured and dropped: a scope can be the owner's own organisation (29 places).
+
 - Four recall fixes from the owner's blind labelled round, which moves from 36 to 39 of 41 sensitive strings fully masked with the frozen benchmark at 990/990:
   - `phone_labelled`: a phone number after a phone, tel, fax or mobile label in any national format (`Telefon=05231 1234567`), reported whole instead of partly.
   - Secret assignments accept escaped quotes (`= \"...\"`, code quoted inside JSON), and SCREAMING_CASE `*_KEY` names with values of 16+ characters; identifier key names (`PRIMARY_KEY`, `SORT_KEY`, `CACHE_KEY`, `PUBLIC_KEY`, ...) are excluded.
