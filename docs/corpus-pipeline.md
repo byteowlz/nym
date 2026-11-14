@@ -56,7 +56,9 @@ and both projects' hash-keyed incremental state (already the ledger's basis).
    directories and normalise them into the inventory (pi is already parsed).
 2. **Stable placeholders** — indexed per file (`<EMAIL_1>`) or bound to the value
    across the corpus (`<EMAIL_8f3a2b9c1d4e>`), for training data where realistic fakes
-   would teach the wrong thing.
+   would teach the wrong thing. Value-bound ids are HMAC-SHA256 under a private
+   token key (`$XDG_DATA_HOME/nym/token.key` or `--token-key-file`): a bare hash
+   would let anyone with a list of candidate names recompute the tokens.
 3. **External secret verifier** — `verify --secrets-cmd`, blocking on any
    finding, so a third-party scanner can veto a bundle nym believes is clean.
 4. **Residual review** — a review page over a stratified sample of transformed

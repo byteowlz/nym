@@ -183,6 +183,14 @@
           ],
           "default": "none",
           "description": "Placeholder numbering for --strategy placeholder: none keeps <EMAIL>, file numbers within one input (<EMAIL_1>), corpus derives a stable id from the value (<EMAIL_8f3a2b9c1d4e>)."
+        },
+        "token_key_file": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "default": null,
+          "description": "Secret key file (64 hex characters) for tokens derived from values: corpus placeholders and --strategy hash use HMAC-SHA256 under it, so a token cannot be recomputed from a guessed value. Default $XDG_DATA_HOME/nym/token.key, created on first use. Overridden by NYM_TOKEN_KEY_FILE and --token-key-file."
         }
       },
       "additionalProperties": false

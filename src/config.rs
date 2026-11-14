@@ -176,6 +176,11 @@ pub struct ReplacementConfig {
     /// Placeholder numbering: sequential per file, or stable per corpus.
     #[serde(default)]
     pub placeholder_scope: crate::engine::PlaceholderScope,
+    /// Secret key for tokens derived from values (`hash`, corpus placeholders).
+    /// Default: `$XDG_DATA_HOME/nym/token.key`, created on first use. Share the
+    /// file to get identical tokens on several machines; keep it private.
+    #[serde(default)]
+    pub token_key_file: Option<String>,
 }
 
 impl Default for ReplacementConfig {
@@ -185,6 +190,7 @@ impl Default for ReplacementConfig {
             seed: None,
             email_domain: "example.com".to_string(),
             placeholder_scope: crate::engine::PlaceholderScope::None,
+            token_key_file: None,
         }
     }
 }

@@ -13,7 +13,6 @@ use fake::faker::name::en::{FirstName, LastName, Name};
 use fake::rand::rngs::StdRng;
 use fake::rand::{Rng, SeedableRng};
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 
 use super::detector::PiiMatch;
 
@@ -346,9 +345,10 @@ impl Replacer {
                 // Content-derived, so independent files cannot disagree. 48 bits keeps
                 // the chance that two distinct values share a token negligible
                 // (about 1e-5 at 100k values per class; 24 bits was ~50% at 5k).
-                let digest = Sha256::digest(value.as_bytes());
-                let hex = format!("{:x}", digest);
-                return format!("<{class}_{}>", &hex[..12]);
+                // Keyed: a bare hash would let anyone who can guess the value
+                // (a name list) recompute the token. See `token_key`.
+                let digest = super::token_key::mac(value.as_bytes());
+                return format!("<{class}_{}>", super::token_key::hex(&digest[..6]));
             }
         };
         format!("<{class}_{index}>")
@@ -405,9 +405,7 @@ impl Replacer {
     }
 
     fn hash_replacement(&mut self, pii_match: &PiiMatch) -> String {
-        let mut hasher = Sha256::new();
-        hasher.update(pii_match.matched_text.as_bytes());
-        let hash = hasher.finalize();
+        let hash = super::token_key::mac(pii_match.matched_text.as_bytes());
         let hash_str = base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&hash[..8]);
 
         // Format based on pattern type

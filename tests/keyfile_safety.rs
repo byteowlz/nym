@@ -3,8 +3,17 @@ use std::fs;
 use std::io::Write;
 use std::process::{Command, Output, Stdio};
 
+/// Private data directory for this test binary: `hash` tokens create a token
+/// key on first use, which must never land in the real user data directory.
+fn data_home() -> &'static std::path::Path {
+    static DIR: std::sync::OnceLock<tempfile::TempDir> = std::sync::OnceLock::new();
+    DIR.get_or_init(|| tempfile::tempdir().unwrap()).path()
+}
+
 fn run(args: &[&str], input: &str) -> Output {
     let mut child = Command::new(env!("CARGO_BIN_EXE_nym"))
+        .env("XDG_DATA_HOME", data_home())
+        .env_remove("NYM_TOKEN_KEY_FILE")
         .args(args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())

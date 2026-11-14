@@ -112,6 +112,11 @@ struct AnonArgs {
     /// `default` profile always applies when present. See `nym profiles`.
     #[arg(long = "redaction-profile", value_name = "NAME")]
     redaction_profiles: Vec<String>,
+    /// Secret key file for `--strategy hash` tokens (64 hex characters). Default:
+    /// NYM_TOKEN_KEY_FILE, `[replacement] token_key_file`, then
+    /// $XDG_DATA_HOME/nym/token.key, created on first use
+    #[arg(long, value_name = "FILE")]
+    token_key_file: Option<PathBuf>,
     /// Base seed for reproducible pseudonyms (each session derives its own seed)
     #[arg(long)]
     seed: Option<u64>,
@@ -496,6 +501,16 @@ fn detector(config: &Config, ner: bool) -> Result<Detector> {
 
 fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<()> {
     let started = Instant::now();
+    if matches!(args.strategy, TraceStrategy::Hash) {
+        crate::install_token_key_if_needed(
+            &crate::engine::ReplacerConfig {
+                strategy: crate::engine::ReplacementStrategy::Hash,
+                ..crate::engine::ReplacerConfig::default()
+            },
+            args.token_key_file.as_deref(),
+            config,
+        )?;
+    }
     let files = resolve(&args.inputs, args.output.as_deref())?;
     if files.is_empty() {
         bail!("no session files (*.jsonl) found");

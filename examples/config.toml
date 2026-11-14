@@ -45,6 +45,12 @@ builtin_benign_terms = true
 # numbers per class within one input file (<EMAIL_1>); "corpus" derives a stable
 # id from the value (<EMAIL_8f3a2b9c1d4e>) so files processed in any order agree.
 placeholder_scope = "none"
+# Secret key for tokens derived from values ("corpus" placeholders, --strategy
+# hash): HMAC-SHA256, so nobody without the key can recompute a token from a
+# guessed name. Default: $XDG_DATA_HOME/nym/token.key, created on first use.
+# Share the same file across machines for identical tokens; keep it private.
+# Precedence: --token-key-file, NYM_TOKEN_KEY_FILE, this setting, default.
+# token_key_file = "~/.local/share/nym/token.key"
 # Strategy: "placeholder", "mask", "hash", "random", "consistent"
 # - placeholder: Use fixed placeholders like <EMAIL>, <PHONE>
 # - mask: Preserve length with X characters (user@example.com -> XXXX@XXXXXXX.XXX)

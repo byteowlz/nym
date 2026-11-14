@@ -40,6 +40,7 @@ pub mod patterns;
 pub mod pdf;
 pub mod replacer;
 pub mod selector;
+pub mod token_key;
 pub mod trace_policy;
 
 #[cfg(feature = "decision")]

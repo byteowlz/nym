@@ -680,6 +680,13 @@ struct AnonCommand {
     #[arg(long, value_enum)]
     placeholder_scope: Option<PlaceholderScopeArg>,
 
+    /// Secret key file for tokens derived from values (--strategy hash,
+    /// --placeholder-scope corpus); 64 hex characters. Overrides
+    /// NYM_TOKEN_KEY_FILE and [replacement] token_key_file. Default:
+    /// $XDG_DATA_HOME/nym/token.key, created on first use.
+    #[arg(long, value_name = "FILE")]
+    token_key_file: Option<PathBuf>,
+
     /// Session tag for tracking (auto-generated if not specified)
     #[arg(long)]
     tag: Option<String>,
@@ -1049,6 +1056,36 @@ enum ConfigAction {
 // Command Handlers
 // =============================================================================
 
+/// Install the token key when the replacement derives tokens from values.
+/// Precedence: CLI flag, `NYM_TOKEN_KEY_FILE`, `[replacement] token_key_file`,
+/// default file (created on first use).
+pub(crate) fn install_token_key_if_needed(
+    replacer: &ReplacerConfig,
+    cli: Option<&Path>,
+    config: &Config,
+) -> Result<()> {
+    let keyed = replacer.strategy == ReplacementStrategy::Hash
+        || replacer.placeholder_scope == engine::PlaceholderScope::Corpus;
+    if !keyed {
+        return Ok(());
+    }
+    let explicit = cli.map(Path::to_path_buf).or_else(|| {
+        std::env::var_os("NYM_TOKEN_KEY_FILE")
+            .map(PathBuf::from)
+            .or_else(|| {
+                config
+                    .replacement
+                    .token_key_file
+                    .as_deref()
+                    .map(config::expand_path)
+            })
+    });
+    let key = engine::token_key::load(explicit.as_deref()).map_err(|e| anyhow!(e))?;
+    engine::token_key::install(key).map_err(|e| anyhow!(e))?;
+    log::debug!("token key {}", engine::token_key::fingerprint(&key));
+    Ok(())
+}
+
 fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result<()> {
     #[cfg(not(feature = "streaming"))]
     if cmd.stream {
@@ -1211,6 +1248,7 @@ fn handle_anon(common: &CommonOpts, config: &Config, cmd: AnonCommand) -> Result
             .placeholder_scope
             .map_or(config.replacement.placeholder_scope, Into::into),
     };
+    install_token_key_if_needed(&replacer_config, cmd.token_key_file.as_deref(), config)?;
 
     let mut replacer = Replacer::new(replacer_config.clone()).with_session_id(session.id.clone());
 
@@ -1570,6 +1608,7 @@ fn handle_anon_streaming(
             .placeholder_scope
             .map_or(config.replacement.placeholder_scope, Into::into),
     };
+    install_token_key_if_needed(&replacer_config, cmd.token_key_file.as_deref(), config)?;
 
     // Generate session
     let session = if let Some(ref tag) = cmd.tag {

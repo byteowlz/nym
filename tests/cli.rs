@@ -1029,16 +1029,21 @@ fn placeholder_numbering_is_opt_in_and_scope_aware() {
     let dir = tempfile::tempdir().unwrap();
     let cfg = dir.path().join("config.toml");
     fs::write(&cfg, "[ner]\nenabled = false\n").unwrap();
+    let data = dir.path().join("data");
     let run = |extra: &[&str]| {
         let mut cmd = Command::new(env!("CARGO_BIN_EXE_nym"));
-        cmd.arg("--config").arg(&cfg).args([
-            "anon",
-            "--no-ner",
-            "--patterns",
-            "email",
-            "--strategy",
-            "placeholder",
-        ]);
+        cmd.env("XDG_DATA_HOME", &data)
+            .env_remove("NYM_TOKEN_KEY_FILE")
+            .arg("--config")
+            .arg(&cfg)
+            .args([
+                "anon",
+                "--no-ner",
+                "--patterns",
+                "email",
+                "--strategy",
+                "placeholder",
+            ]);
         cmd.args(extra);
         cmd.stdin(Stdio::piped())
             .stdout(Stdio::piped())
@@ -1070,4 +1075,45 @@ fn placeholder_numbering_is_opt_in_and_scope_aware() {
     );
     // Content-derived ids are stable across separate runs.
     assert_eq!(corpus, run(&["--placeholder-scope", "corpus"]));
+
+    // Keyed: the default key is created private on first use, and the token is
+    // not the bare hash a name list could recompute.
+    let default_key = data.join("nym/token.key");
+    assert!(default_key.is_file());
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        assert_eq!(
+            fs::metadata(&default_key).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+    }
+    use sha2::Digest;
+    let bare = format!("{:x}", sha2::Sha256::digest(b"ada@example.invalid"));
+    assert!(
+        !corpus.contains(&bare[..12]),
+        "token must be keyed: {corpus}"
+    );
+
+    // Same key file: same tokens anywhere; another key: different tokens.
+    let shared = dir.path().join("shared.key");
+    fs::write(&shared, format!("{}\n", "ab".repeat(32))).unwrap();
+    let other = dir.path().join("other.key");
+    fs::write(&other, format!("{}\n", "cd".repeat(32))).unwrap();
+    let with = |key: &std::path::Path| {
+        run(&[
+            "--placeholder-scope",
+            "corpus",
+            "--token-key-file",
+            key.to_str().unwrap(),
+        ])
+    };
+    assert_eq!(with(&shared), with(&shared));
+    assert_ne!(with(&shared), with(&other));
+    assert_ne!(with(&shared), corpus);
+
+    // A malformed key fails closed: no output at all.
+    let bad = dir.path().join("bad.key");
+    fs::write(&bad, "too-short\n").unwrap();
+    assert!(with(&bad).is_empty(), "a bad key must not produce output");
 }
