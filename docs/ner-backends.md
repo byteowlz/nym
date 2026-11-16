@@ -129,6 +129,25 @@ nym config ner-status
 nym --config nym.toml config ner-status --ner-model nationaldesignstudio/rampart
 ```
 
+## Apple GPU acceleration (CoreML static buckets)
+
+On Apple Silicon, `provider = "auto"` uses the GPU through CoreML when the
+model directory contains fixed-shape ONNX variants; otherwise it runs on CPU.
+Generate the variants from the fp32 export (never from the int8 one):
+
+```bash
+uv run --no-project --with onnx python scripts/make_static_buckets.py <model_dir>
+# writes <model_dir>/static/model_static_{64x64,16x128,4x512}.onnx
+```
+
+Then point `[ner] token_model` at that directory. Batched windows are padded
+into the smallest bucket that fits; single windows and oversized batches stay
+on CPU. Compiled CoreML specializations cache under
+`~/Library/Caches/nym/coreml/` keyed by model content, so the per-shape compile
+(4-5 s) is paid once. Any bucket failure falls back to CPU permanently for the
+process. Measured 2.5-3.7x over CPU for batched inference with argmax agreement
+1.0000 against CPU logits (trx-zp2t).
+
 Status reports backend(s), safe model identifiers, threshold, label scope,
 decoding, token provider and effective token intra-op threads. `configured_enabled` is configuration, **not runtime
 readiness**; status does not load/download models. Revisions are `null` because
