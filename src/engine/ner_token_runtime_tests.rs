@@ -199,13 +199,12 @@ fn invalid_model_returns_error() -> Result<(), Box<dyn std::error::Error + Send 
         Err(error) => {
             let message = error.to_string();
             let expected = match provider {
-                NerProvider::Auto
-                    if cfg!(any(
-                        feature = "ner-coreml",
-                        feature = "ner-cuda",
-                        feature = "ner-tensorrt"
-                    )) =>
-                {
+                // Accelerators that register on the eager session and fall
+                // back to CPU when they cannot initialize. CoreML is absent
+                // from the eager session: the Apple GPU path runs through
+                // fixed-shape bucket sessions, so `auto` and `cpu` behave the
+                // same there and the plain session error is expected.
+                NerProvider::Auto if cfg!(any(feature = "ner-cuda", feature = "ner-tensorrt")) => {
                     "CPU fallback failed:"
                 }
                 _ => "token NER session failed:",

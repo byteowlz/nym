@@ -96,6 +96,9 @@ struct SharedSession {
     /// Never dropped: matches the intentional leak that keeps ONNX Runtime
     /// teardown (and its macOS exit crash) from ever running.
     session: std::cell::UnsafeCell<std::mem::ManuallyDrop<Session>>,
+    /// Whether the model expects a `token_type_ids` input (BERT-family models
+    /// do; DeBERTa-v2 exports typically don't).
+    needs_token_type_ids: bool,
 }
 
 // SAFETY: `Session` is Send + Sync (raw pointers guarded by ORT's internal
@@ -106,9 +109,18 @@ unsafe impl Sync for SharedSession {}
 
 impl SharedSession {
     fn new(session: Session) -> Self {
+        let needs_token_type_ids = session
+            .inputs()
+            .iter()
+            .any(|input| input.name() == "token_type_ids");
         Self {
             session: std::cell::UnsafeCell::new(std::mem::ManuallyDrop::new(session)),
+            needs_token_type_ids,
         }
+    }
+
+    fn needs_token_type_ids(&self) -> bool {
+        self.needs_token_type_ids
     }
 
     /// One padded forward pass; returns the row-major logits.
@@ -135,6 +147,170 @@ impl SharedSession {
         };
         let (_, logits) = outputs["logits"].try_extract_tensor::<f32>()?;
         Ok(logits.to_vec())
+    }
+}
+
+/// Apple GPU acceleration through fixed-shape CoreML buckets (trx-zp2t).
+///
+/// The CoreML execution provider only compiles a fast MLProgram when no ONNX
+/// dimension is unbounded, and it specializes per concrete shape — that is
+/// what makes it fast (measured 2.5-3.7x over CPU for full batches, argmax
+/// agreement 1.0000). The runtime therefore loads one small ONNX variant per
+/// bucket shape (generated next to the model with
+/// `scripts/make_static_buckets.py`) and pads every batch into the smallest
+/// bucket that fits. Bucket sessions are created lazily on first use so an
+/// unused shape costs nothing, and any provider failure permanently disables
+/// the GPU path for the process (the eager CPU session still serves it).
+#[cfg(feature = "ner-coreml")]
+const COREML_BUCKET_SHAPES: &[(usize, usize)] = &[(64, 64), (16, 128), (4, 512)];
+
+/// Below this batch size the padded bucket would compute more tokens than the
+/// CPU path, so single windows stay on the eager CPU session.
+#[cfg(feature = "ner-coreml")]
+const GPU_MIN_BATCH: usize = 2;
+
+/// One fixed-shape CoreML session, created on first dispatch.
+#[cfg(feature = "ner-coreml")]
+struct GpuBucket {
+    batch: usize,
+    seq: usize,
+    model_path: PathBuf,
+    /// Created on first use; `Ok` sessions are shared via `Arc` so dispatches
+    /// after creation never hold the lock.
+    session: std::sync::Mutex<Option<Result<std::sync::Arc<SharedSession>, String>>>,
+}
+
+#[cfg(feature = "ner-coreml")]
+impl GpuBucket {
+    /// The session, compiling the CoreML specialization on first use (4-5 s
+    /// once per shape; later runs load from the model cache directory).
+    fn session(&self, threads: usize) -> Result<std::sync::Arc<SharedSession>, String> {
+        let mut slot = self
+            .session
+            .lock()
+            .map_err(|_| "bucket mutex poisoned".to_string())?;
+        if slot.is_none() {
+            let created = TokenClassDetector::create_bucket_session(&self.model_path, threads)
+                .map_err(|error| error.to_string());
+            *slot = Some(created.map(std::sync::Arc::new));
+        }
+        slot.as_ref().expect("slot is filled above").clone()
+    }
+}
+
+/// The set of bucket sessions for one detector, or `None` when the model
+/// directory has no complete static-variant set or the provider is CPU.
+#[cfg(feature = "ner-coreml")]
+struct GpuBuckets {
+    /// Ascending by `seq`.
+    buckets: Vec<GpuBucket>,
+    threads: usize,
+}
+
+#[cfg(feature = "ner-coreml")]
+impl GpuBuckets {
+    /// Resolve the static-variant set. Requires every bucket file to exist:
+    /// a partial set would silently mix GPU and CPU results for mid-length
+    /// batches, and a complete set is what `scripts/make_static_buckets.py`
+    /// generates.
+    fn resolve(
+        provider: NerProvider,
+        found: Vec<(usize, usize, PathBuf)>,
+        threads: usize,
+    ) -> Option<Self> {
+        if provider != NerProvider::Auto || found.len() != COREML_BUCKET_SHAPES.len() {
+            return None;
+        }
+        let mut buckets: Vec<GpuBucket> = found
+            .into_iter()
+            .map(|(batch, seq, model_path)| GpuBucket {
+                batch,
+                seq,
+                model_path,
+                session: std::sync::Mutex::new(None),
+            })
+            .collect();
+        buckets.sort_by_key(|bucket| bucket.seq);
+        log::info!(
+            "CoreML static buckets available: {}",
+            buckets
+                .iter()
+                .map(|bucket| format!("{}x{}", bucket.batch, bucket.seq))
+                .collect::<Vec<_>>()
+                .join(", ")
+        );
+        Some(Self { buckets, threads })
+    }
+
+    /// Run all encodings through the buckets. Returns `None` when the GPU
+    /// path cannot take the batch (then the CPU session handles it). The
+    /// returned padded length is the bucket's `seq`; decoders ignore columns
+    /// beyond each row's real tokens, and padding rows are trimmed here.
+    fn run(
+        &self,
+        encodings: &[&tokenizers::Encoding],
+        num_labels: usize,
+    ) -> Result<Option<(Vec<f32>, usize)>, Box<dyn std::error::Error + Send + Sync>> {
+        let n = encodings.len();
+        if n < GPU_MIN_BATCH {
+            return Ok(None);
+        }
+        let seq = encodings
+            .iter()
+            .map(|encoding| encoding.get_ids().len())
+            .max()
+            .unwrap_or(1)
+            .max(1);
+        let Some(bucket) = self.buckets.iter().find(|bucket| bucket.seq >= seq) else {
+            return Ok(None);
+        };
+        let session = match bucket.session(self.threads) {
+            Ok(session) => session,
+            Err(error) => {
+                log::warn!(
+                    "CoreML bucket {}x{} unavailable ({}); staying on CPU",
+                    bucket.batch,
+                    bucket.seq,
+                    error
+                );
+                return Ok(None);
+            }
+        };
+        let row_len = bucket.seq * num_labels;
+        let mut out = Vec::with_capacity(n * row_len);
+        for rows in encodings.chunks(bucket.batch) {
+            let run_rows = rows.len();
+            let mut input_ids = vec![0i64; bucket.batch * bucket.seq];
+            let mut attention_mask = vec![0i64; bucket.batch * bucket.seq];
+            for (row, encoding) in rows.iter().enumerate() {
+                for (token, (&id, &mask)) in encoding
+                    .get_ids()
+                    .iter()
+                    .zip(encoding.get_attention_mask())
+                    .enumerate()
+                {
+                    input_ids[row * bucket.seq + token] = i64::from(id);
+                    attention_mask[row * bucket.seq + token] = i64::from(mask);
+                }
+            }
+            let ids_tensor =
+                Tensor::from_array((vec![bucket.batch as i64, bucket.seq as i64], input_ids))?;
+            let mask_tensor =
+                Tensor::from_array((vec![bucket.batch as i64, bucket.seq as i64], attention_mask))?;
+            let type_ids = if session.needs_token_type_ids() {
+                Some(Tensor::from_array((
+                    vec![bucket.batch as i64, bucket.seq as i64],
+                    vec![0i64; bucket.batch * bucket.seq],
+                ))?)
+            } else {
+                None
+            };
+            let logits = session.forward(ids_tensor, mask_tensor, type_ids)?;
+            // Drop the padding rows (beyond `run_rows`); keep all columns —
+            // decoders read only each row's real token positions.
+            out.extend_from_slice(&logits[..run_rows * row_len]);
+        }
+        Ok(Some((out, bucket.seq)))
     }
 }
 
@@ -175,6 +351,11 @@ pub struct TokenClassDetector {
     /// [`SharedSession`]). Intentionally leaked to match the GLiNER backend's
     /// workaround for the ONNX Runtime macOS exit crash; see [`super::ner`].
     session: SharedSession,
+    /// Apple GPU static-shape buckets (CoreML). `None` without static model
+    /// variants, on an explicit-CPU provider, or without the `ner-coreml`
+    /// feature.
+    #[cfg(feature = "ner-coreml")]
+    gpu_buckets: Option<GpuBuckets>,
     tokenizer: Tokenizer,
     /// Maps a label index to its BIO label string (e.g. `"B-email"`).
     id2label: Vec<String>,
@@ -220,6 +401,7 @@ impl TokenClassDetector {
                     dir.display()
                 )
             })?;
+        let gpu_static = Self::resolve_dir_static_buckets(dir);
         Self::build(
             &model_path,
             &dir.join("tokenizer.json"),
@@ -227,6 +409,7 @@ impl TokenClassDetector {
             threshold,
             provider,
             threads,
+            gpu_static,
         )
     }
 
@@ -273,6 +456,7 @@ impl TokenClassDetector {
             .find_map(|c| model.get(&format!("{prefix}{c}")).ok())
             .ok_or_else(|| format!("no ONNX model in repo (looked for {MODEL_CANDIDATES:?})"))?;
 
+        let gpu_static = Self::resolve_repo_static_buckets(&model, &prefix);
         Self::build(
             &model_path,
             &tokenizer_path,
@@ -280,13 +464,13 @@ impl TokenClassDetector {
             threshold,
             provider,
             threads,
+            gpu_static,
         )
     }
 
     /// Download a token model's files into the HF cache without building a
     /// session (used by `nym models pull` — avoids loading a multi-GB model
     /// just to fetch it). Returns the resolved on-disk model path.
-    ///
     /// `model_ref` follows the same `org/name[/subfolder]` convention as
     /// [`Self::from_repo`]. Respects `HF_HOME`/`HF_ENDPOINT`; `cache_dir`
     /// overrides the cache location.
@@ -328,6 +512,7 @@ impl TokenClassDetector {
         threshold: Option<f32>,
         provider: NerProvider,
         threads: Option<std::num::NonZeroUsize>,
+        gpu_static: Option<Vec<(usize, usize, PathBuf)>>,
     ) -> Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let id2label = load_id2label(config_path)?;
         let mut tokenizer = Tokenizer::from_file(tokenizer_path)?;
@@ -339,19 +524,26 @@ impl TokenClassDetector {
         // single inference needs none, and batched inference pads explicitly.
         tokenizer.with_truncation(None)?;
         tokenizer.with_padding(None);
-        let cpu_only = provider == NerProvider::Cpu;
+        // With the Apple GPU bucket path available, the eager session stays
+        // CPU-only under `auto`: it serves single windows and oversized
+        // batches while the buckets carry batched work. The old dynamic-CoreML
+        // attempt on this session was measured harmful (NeuralNetwork format,
+        // half CPU speed), so `auto` no longer registers it.
+        #[cfg(feature = "ner-coreml")]
+        let eager_cpu_only = true;
+        #[cfg(not(feature = "ner-coreml"))]
+        let eager_cpu_only = provider == NerProvider::Cpu;
         let threads =
             threads.map_or_else(crate::config::default_ner_threads, std::num::NonZero::get);
         log::debug!("Token NER intra-op threads: {threads}");
-        let session = match Self::try_create_session(model_path, cpu_only, threads) {
+        #[cfg(feature = "ner-coreml")]
+        let gpu_buckets = GpuBuckets::resolve(provider, gpu_static.unwrap_or_default(), threads);
+        #[cfg(not(feature = "ner-coreml"))]
+        let _ = gpu_static;
+        let session = match Self::try_create_session(model_path, eager_cpu_only, threads) {
             Ok(session) => session,
             Err(error)
-                if !cpu_only
-                    && cfg!(any(
-                        feature = "ner-coreml",
-                        feature = "ner-cuda",
-                        feature = "ner-tensorrt"
-                    )) =>
+                if !eager_cpu_only && cfg!(any(feature = "ner-cuda", feature = "ner-tensorrt")) =>
             {
                 log::warn!("Token NER accelerator initialization failed; retrying with CPU");
                 Self::try_create_session(model_path, true, threads).map_err(|cpu_error| {
@@ -363,14 +555,14 @@ impl TokenClassDetector {
             Err(error) => return Err(format!("token NER session failed: {error}").into()),
         };
 
-        let needs_token_type_ids = session
-            .inputs()
-            .iter()
-            .any(|input| input.name() == "token_type_ids");
+        let session = SharedSession::new(session);
+        let needs_token_type_ids = session.needs_token_type_ids();
 
         let o_id = id2label.iter().position(|l| l == "O").unwrap_or(0);
         Ok(Self {
-            session: SharedSession::new(session),
+            session,
+            #[cfg(feature = "ner-coreml")]
+            gpu_buckets,
             tokenizer,
             id2label,
             needs_token_type_ids,
@@ -380,6 +572,58 @@ impl TokenClassDetector {
             window_tokens: DEFAULT_WINDOW_TOKENS,
             window_overlap: DEFAULT_WINDOW_OVERLAP,
         })
+    }
+
+    /// Resolve the static bucket variants next to a local model directory.
+    /// A complete set enables the Apple GPU path; a missing file silently
+    /// keeps the detector on CPU.
+    #[cfg(feature = "ner-coreml")]
+    fn resolve_dir_static_buckets(dir: &Path) -> Option<Vec<(usize, usize, PathBuf)>> {
+        let found: Vec<_> = COREML_BUCKET_SHAPES
+            .iter()
+            .map(|&(batch, seq)| {
+                let path = dir
+                    .join("static")
+                    .join(format!("model_static_{batch}x{seq}.onnx"));
+                path.is_file().then_some((batch, seq, path))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(found)
+    }
+
+    /// No CoreML buckets without the feature.
+    #[cfg(not(feature = "ner-coreml"))]
+    fn resolve_dir_static_buckets(_dir: &Path) -> Option<Vec<(usize, usize, PathBuf)>> {
+        None
+    }
+
+    /// Same resolution for a HuggingFace repo layout (`static/` below the
+    /// model subfolder). Missing files are not an error: the GPU path is an
+    /// optimization layered on the repo, not a requirement.
+    #[cfg(feature = "ner-coreml")]
+    fn resolve_repo_static_buckets(
+        model: &hf_hub::api::sync::ApiRepo,
+        prefix: &str,
+    ) -> Option<Vec<(usize, usize, PathBuf)>> {
+        let found: Vec<_> = COREML_BUCKET_SHAPES
+            .iter()
+            .map(|&(batch, seq)| {
+                model
+                    .get(&format!("{prefix}static/model_static_{batch}x{seq}.onnx"))
+                    .ok()
+                    .map(|path| (batch, seq, path))
+            })
+            .collect::<Option<Vec<_>>>()?;
+        Some(found)
+    }
+
+    /// No CoreML buckets without the feature.
+    #[cfg(not(feature = "ner-coreml"))]
+    fn resolve_repo_static_buckets(
+        _model: &hf_hub::api::sync::ApiRepo,
+        _prefix: &str,
+    ) -> Option<Vec<(usize, usize, PathBuf)>> {
+        None
     }
 
     /// Initialize ORT before registering providers. The process-global
@@ -404,6 +648,82 @@ impl TokenClassDetector {
         Ok(result?)
     }
 
+    /// Create one fixed-shape bucket session for the Apple GPU path: CoreML
+    /// MLProgram on CPUAndGPU, compiling into (and later loading from) a
+    /// content-keyed cache directory. Dynamic CoreML never enters here — the
+    /// eager session is CPU-only, GPU work is bucket-only.
+    #[cfg(feature = "ner-coreml")]
+    fn create_bucket_session(
+        model_path: &Path,
+        threads: usize,
+    ) -> Result<SharedSession, Box<dyn std::error::Error + Send + Sync>> {
+        let environment = Self::global_environment()?;
+        let cache_dir = Self::bucket_cache_dir(model_path)
+            .ok_or_else(|| "cannot determine CoreML model cache directory".to_string())?;
+        std::fs::create_dir_all(&cache_dir)?;
+        let build = || -> ort::Result<Session> {
+            let mut builder = Session::builder(&environment)?
+                .with_intra_threads(threads)
+                .map_err(|error| ort::Error::new(error.to_string()))?
+                .with_execution_providers([ort::ep::CoreML::default()
+                    .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
+                    .with_compute_units(ort::ep::coreml::ComputeUnits::CPUAndGPU)
+                    .with_model_cache_dir(cache_dir.to_string_lossy().into_owned())
+                    .build()
+                    .error_on_failure()])
+                .map_err(|error| ort::Error::new(error.to_string()))?;
+            builder.commit_from_file(model_path)
+        };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(build))
+            .map_err(|_| "CoreML bucket initialization failed")?;
+        result
+            .map(SharedSession::new)
+            .map_err(|error| error.to_string().into())
+    }
+
+    /// Content-keyed cache directory for a compiled bucket specialization:
+    /// ONNX Runtime recompiles on every session load unless a cache directory
+    /// is configured, and the key must change when the model file changes
+    /// (length + head + tail hash; a full-file hash would cost a 400 MB read
+    /// per run).
+    #[cfg(feature = "ner-coreml")]
+    fn bucket_cache_dir(model_path: &Path) -> Option<PathBuf> {
+        use sha2::{Digest, Sha256};
+        let metadata = std::fs::metadata(model_path).ok()?;
+        let mut file = std::fs::File::open(model_path).ok()?;
+        let mut hasher = Sha256::new();
+        hasher.update(metadata.len().to_le_bytes());
+        let mut edge = vec![0u8; 64 * 1024];
+        std::io::Read::read_exact(&mut file, &mut edge).ok()?;
+        hasher.update(&edge);
+        let tail_offset = metadata.len().saturating_sub(edge.len() as u64);
+        std::io::Seek::seek(&mut file, std::io::SeekFrom::Start(tail_offset)).ok()?;
+        let tail = std::io::Read::read(&mut file, &mut edge).ok()?;
+        hasher.update(&edge[..tail]);
+        let digest = hasher.finalize();
+        let key: String = digest[..8]
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect();
+        let (batch, seq) = Self::bucket_shape_from_path(model_path)?;
+        Some(
+            dirs::cache_dir()?
+                .join("nym")
+                .join("coreml")
+                .join(key)
+                .join(format!("{batch}x{seq}")),
+        )
+    }
+
+    /// Parse `model_static_<B>x<S>.onnx` back into its bucket shape.
+    #[cfg(feature = "ner-coreml")]
+    fn bucket_shape_from_path(model_path: &Path) -> Option<(usize, usize)> {
+        let name = model_path.file_name()?.to_str()?;
+        let rest = name.strip_prefix("model_static_")?.strip_suffix(".onnx")?;
+        let (batch, seq) = rest.split_once('x')?;
+        Some((batch.parse().ok()?, seq.parse().ok()?))
+    }
+
     /// Process-global ONNX Runtime environment: one create-once helper owns it
     /// for the whole binary (see `super::ner::global_environment`), so the
     /// token backend and the exit tests always share the environment the
@@ -425,21 +745,15 @@ impl TokenClassDetector {
         // every builder step maps to a plain message for this error type.
         let build = || -> ort::Result<Session> {
             let mut builder = Session::builder(&environment)?
+                // ONNX Runtime 1.31 auto-selects providers (MaxEfficiency
+                // registers CoreML on macOS) unless overridden; nym registers
+                // EPs explicitly, so auto selection must stay off.
+                .with_auto_device(ort::session::builder::AutoDevicePolicy::PreferCPU)
+                .map_err(|error| ort::Error::new(error.to_string()))?
                 .with_intra_threads(threads)
                 .map_err(|error| ort::Error::new(error.to_string()))?;
-            // On Apple Silicon, register the CoreML execution provider so the
-            // token-classification model runs on the ANE/GPU instead of CPU.
-            // CoreML is gated behind the `ner-coreml` build feature; the session
-            // builder falls back to CPU for any ops CoreML cannot handle.
-            #[cfg(feature = "ner-coreml")]
-            if !cpu_only {
-                builder = builder
-                    .with_execution_providers([ort::ep::CoreML::default()
-                        .build()
-                        .error_on_failure()])
-                    .map_err(|error| ort::Error::new(error.to_string()))?;
-            }
-            // On NVIDIA, register the CUDA execution provider so the token model
+            // CoreML is not registered here: the Apple GPU path runs through
+            // fixed-shape bucket sessions only (see `GpuBuckets`). On NVIDIA,
             // runs on the GPU instead of the CPU. CUDA is gated behind the
             // `ner-cuda` build feature; ONNX Runtime falls back to CPU for any ops
             // CUDA cannot handle, so the session still works if a CUDA build is run
@@ -574,6 +888,15 @@ impl TokenClassDetector {
         &self,
         encodings: &[&tokenizers::Encoding],
     ) -> Result<(Vec<f32>, usize), Box<dyn std::error::Error + Send + Sync>> {
+        // Apple GPU buckets carry batched work when they cover the batch
+        // shape; the CPU session serves everything they cannot take.
+        #[cfg(feature = "ner-coreml")]
+        if let Some(gpu_buckets) = &self.gpu_buckets {
+            let num_labels = self.id2label.len();
+            if let Some(result) = gpu_buckets.run(encodings, num_labels)? {
+                return Ok(result);
+            }
+        }
         let n = encodings.len();
         let seq = encodings
             .iter()

@@ -26,6 +26,11 @@ impl Model {
     pub fn new<P: AsRef<Path>>(model_path: P, params: RuntimeParameters) -> Result<Self> {
         let environment = global_environment()?;
         let session = Session::builder(&environment)?
+            // ONNX Runtime 1.31 auto-selects providers (MaxEfficiency
+            // registers CoreML on macOS); preserve the historical
+            // manual-EP-only behavior.
+            .with_auto_device(ort::session::builder::AutoDevicePolicy::PreferCPU)
+            .map_err(|error| error.to_string())?
             .with_intra_threads(params.threads())
             .map_err(|error| error.to_string())?
             .with_execution_providers(params.into_execution_providers())
@@ -42,6 +47,11 @@ impl Model {
     pub fn new_from_bytes(model_bytes: &[u8], params: RuntimeParameters) -> Result<Self> {
         let environment = global_environment()?;
         let session = Session::builder(&environment)?
+            // ONNX Runtime 1.31 auto-selects providers (MaxEfficiency
+            // registers CoreML on macOS); preserve the historical
+            // manual-EP-only behavior.
+            .with_auto_device(ort::session::builder::AutoDevicePolicy::PreferCPU)
+            .map_err(|error| error.to_string())?
             .with_intra_threads(params.threads())
             .map_err(|error| error.to_string())?
             .with_execution_providers(params.into_execution_providers())
