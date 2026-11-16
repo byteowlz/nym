@@ -668,6 +668,11 @@ impl TokenClassDetector {
                 .with_execution_providers([ort::ep::CoreML::default()
                     .with_model_format(ort::ep::coreml::ModelFormat::MLProgram)
                     .with_compute_units(ort::ep::coreml::ComputeUnits::CPUAndGPU)
+                    // Full fp32 accumulation keeps GPU logits numerically
+                    // close to CPU: fp16 accumulation flipped one
+                    // owner-labelled sensitive value on the pilot labels
+                    // (the trx-zp2t evidence rule protects measured recall).
+                    .with_low_precision_accumulation_on_gpu(false)
                     .with_model_cache_dir(cache_dir.to_string_lossy().into_owned())
                     .build()
                     .error_on_failure()])
