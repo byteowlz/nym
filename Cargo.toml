@@ -68,12 +68,17 @@ async-stream = { version = "0.3", optional = true }
 async-tqsm = { git = "https://github.com/WismutHansen/async-tqsm", optional = true }
 unicode-segmentation = { version = "1.12", optional = true }
 
-# NER with GLiNER (optional)
-gline-rs = { version = "1", optional = true }
-orp = { version = "1", optional = true }
+# GLiNER span-model engine. Opt-in behind `ner-gliner`: the upstream releases
+# pin ort 2.0.0-rc.9, and the token backend (the default NER engine) needs newer
+# ort for CoreML MLProgram/static-shape acceleration. The in-tree forks
+# (crates/orp, crates/gline-rs — see their FORK.md) are ported to ort rc.15 so
+# both backends share one runtime.
+gline-rs = { version = "1", optional = true, path = "crates/gline-rs" }
+orp = { version = "1", optional = true, path = "crates/orp" }
 hf-hub = { version = "0.4", optional = true, default-features = false, features = ["ureq"] }
-# Direct ort dependency for environment leak workaround (macOS crash fix)
-ort = { version = "=2.0.0-rc.9", optional = true }
+# Direct ort dependency for the token-classification NER backend (also the
+# environment leak workaround for the macOS exit crash)
+ort = { version = "=2.0.0-rc.15", optional = true }
 # Native teardown and atomic no-replace corpus directory commits.
 libc = "0.2"
 # Tokenizer for the OpenMed token-classification NER backend (HF tokenizer.json)
@@ -106,47 +111,52 @@ decision = ["ureq"]
 # itself runs as an external process (nym-ocr / tesseract / custom command).
 ocr = ["image"]
 
-# NER with GLiNER
-ner = ["gline-rs", "orp", "hf-hub", "ort", "async-tqsm", "unicode-segmentation", "tokenizers", "ureq"]
+# NER: token-classification backend (the default engine). GLiNER is opt-in via
+# `ner-gliner` because gline-rs pins an older ort.
+ner = ["hf-hub", "ort", "async-tqsm", "unicode-segmentation", "tokenizers", "ureq"]
+# GLiNER zero-shot span model, additionally to the token backend.
+ner-gliner = ["ner", "gline-rs", "orp"]
 
 # Dynamic loading of ONNX runtime (recommended for distribution)
-ner-load-dynamic = ["ner", "gline-rs/load-dynamic"]
+ner-load-dynamic = ["ner", "ort/load-dynamic"]
 
 # GPU/NPU acceleration for NER (requires appropriate hardware and drivers)
+# Accelerator features apply to the token-classification backend's ort session.
+# (The opt-in GLiNER engine runs through its own pinned ort; it always uses CPU.)
 # NVIDIA CUDA
-ner-cuda = ["ner", "gline-rs/cuda", "ort/cuda"]
+ner-cuda = ["ner", "ort/cuda"]
 # NVIDIA TensorRT (optimized inference on NVIDIA GPUs)
-ner-tensorrt = ["ner", "gline-rs/tensorrt", "ort/tensorrt"]
+ner-tensorrt = ["ner", "ort/tensorrt"]
 # AMD ROCm
-ner-rocm = ["ner", "gline-rs/rocm"]
+ner-rocm = ["ner", "ort/rocm"]
 # Intel OpenVINO
-ner-openvino = ["ner", "gline-rs/openvino"]
+ner-openvino = ["ner", "ort/openvino"]
 # Intel oneDNN
-ner-onednn = ["ner", "gline-rs/onednn"]
+ner-onednn = ["ner", "ort/onednn"]
 # Windows DirectML (DirectX 12 GPU acceleration)
-ner-directml = ["ner", "gline-rs/directml"]
+ner-directml = ["ner", "ort/directml"]
 # Apple CoreML (macOS/iOS)
-ner-coreml = ["ner", "gline-rs/coreml", "ort/coreml"]
+ner-coreml = ["ner", "ort/coreml"]
 # Qualcomm QNN
-ner-qnn = ["ner", "gline-rs/qnn"]
+ner-qnn = ["ner", "ort/qnn"]
 # Huawei CANN
-ner-cann = ["ner", "gline-rs/cann"]
+ner-cann = ["ner", "ort/cann"]
 # Android NNAPI
-ner-nnapi = ["ner", "gline-rs/nnapi"]
+ner-nnapi = ["ner", "ort/nnapi"]
 # Apache TVM
-ner-tvm = ["ner", "gline-rs/tvm"]
+ner-tvm = ["ner", "ort/tvm"]
 # ARM ACL
-ner-acl = ["ner", "gline-rs/acl"]
+ner-acl = ["ner", "ort/acl"]
 # ARM NN
-ner-armnn = ["ner", "gline-rs/armnn"]
+ner-armnn = ["ner", "ort/armnn"]
 # AMD MIGraphX
-ner-migraphx = ["ner", "gline-rs/migraphx"]
+ner-migraphx = ["ner", "ort/migraphx"]
 # Xilinx Vitis AI
-ner-vitis = ["ner", "gline-rs/vitis"]
+ner-vitis = ["ner", "ort/vitis"]
 # Rockchip RKNPU
-ner-rknpu = ["ner", "gline-rs/rknpu"]
+ner-rknpu = ["ner", "ort/rknpu"]
 # XNNPACK (CPU optimization)
-ner-xnnpack = ["ner", "gline-rs/xnnpack"]
+ner-xnnpack = ["ner", "ort/xnnpack"]
 
 # ============================================
 # RUST MAGIC LINTER - STANDARD PRESET

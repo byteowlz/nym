@@ -19,19 +19,19 @@ fn exercise_native_teardown() -> Result<(), Box<dyn std::error::Error + Send + S
     let directory = tempfile::tempdir()?;
     let model = directory.path().join("identity.onnx");
     std::fs::write(&model, IDENTITY_MODEL)?;
-    ort::environment::get_environment()?;
+    let environment = super::global_environment()?;
     // Match the real detectors' intentional session leak, not an unsafe Drop.
-    let session = std::mem::ManuallyDrop::new(
-        ort::session::Session::builder()?
-            .with_intra_threads(1)?
-            .with_execution_providers([
-                ort::execution_providers::CPUExecutionProvider::default().build()
-            ])?
+    let mut session = std::mem::ManuallyDrop::new(
+        ort::session::Session::builder(&environment)?
+            .with_intra_threads(1)
+            .map_err(|error| error.to_string())?
+            .with_execution_providers([ort::ep::CPU::default().build()])
+            .map_err(|error| error.to_string())?
             .commit_from_file(model)?,
     );
     let input = ort::value::Tensor::from_array((vec![1_i64], vec![42.0_f32]))?;
-    let outputs = session.run(ort::inputs!["x" => input]?)?;
-    assert_eq!(outputs["y"].try_extract_raw_tensor::<f32>()?.1, [42.0]);
+    let outputs = session.run(ort::inputs!["x" => input])?;
+    assert_eq!(outputs["y"].try_extract_tensor::<f32>()?.1, [42.0]);
     Ok(())
 }
 

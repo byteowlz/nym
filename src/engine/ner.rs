@@ -17,24 +17,24 @@
 //! This is a memory leak, but it only happens once per process and the memory
 //! is reclaimed by the OS when the process exits anyway.
 
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 use gliner::model::GLiNER;
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 use gliner::model::input::text::TextInput;
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 use gliner::model::params::Parameters;
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 use gliner::model::pipeline::span::SpanMode;
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 use orp::params::RuntimeParameters;
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 use std::path::Path;
 
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 use crate::engine::detector::PiiMatch;
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 use crate::engine::patterns::Confidence;
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 use crate::engine::patterns::PiiCategory;
 
 /// Labels for PII entity detection.
@@ -42,7 +42,7 @@ use crate::engine::patterns::PiiCategory;
 ///
 /// Note: GLiNER is a zero-shot NER model, so we can add any labels we want.
 /// The model will try to extract entities matching these semantic concepts.
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 pub const PII_LABELS: &[&str] = &[
     // Name components - try to get first/last name separately
     "person",
@@ -64,7 +64,7 @@ pub const PII_LABELS: &[&str] = &[
 ];
 
 /// Maps GLiNER entity labels to nym pattern names.
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 fn label_to_pattern_name(label: &str) -> &'static str {
     match label.to_lowercase().as_str() {
         // Name-related
@@ -90,7 +90,7 @@ fn label_to_pattern_name(label: &str) -> &'static str {
 }
 
 /// Maps GLiNER entity labels to PII categories.
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 fn label_to_category(label: &str) -> PiiCategory {
     match label.to_lowercase().as_str() {
         // Names and birthdates are identity
@@ -108,21 +108,21 @@ fn label_to_category(label: &str) -> PiiCategory {
 }
 
 /// Default chunk size in words (GLiNER has 384 token limit, using conservative word count)
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 const DEFAULT_CHUNK_SIZE: usize = 250;
 
 /// Default overlap in words to avoid splitting entities at boundaries
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 const DEFAULT_CHUNK_OVERLAP: usize = 50;
 
 /// Minimum text length in characters for NER processing.
 /// GLiNER fails with reshape errors on very short inputs.
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 const MIN_TEXT_LENGTH: usize = 3;
 
 /// Minimum word count for NER processing.
 /// Single words or empty strings cause ONNX runtime errors.
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 const MIN_WORD_COUNT: usize = 2;
 
 /// Explicit CLI exit code for the macOS crash workaround.
@@ -138,6 +138,33 @@ static EXIT_CODE: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::n
 #[cfg(all(feature = "ner", target_os = "macos"))]
 pub fn set_exit_code(code: i32) {
     EXIT_CODE.store(code, std::sync::atomic::Ordering::SeqCst);
+}
+
+/// The process-global ONNX Runtime environment, created once and never
+/// dropped. `ort` 2.0-rc.15 allows exactly one environment per process and
+/// exposes no public accessor for an existing one, so every session creation
+/// in the binary must go through this helper: statics never drop, which keeps
+/// ONNX Runtime teardown (and its macOS exit crash, see the workaround below)
+/// from ever running. In `ner-gliner` builds the GLiNER stack shares the same
+/// environment through the patched `orp` shim's create-once accessor.
+#[cfg(feature = "ner")]
+pub(super) fn global_environment()
+-> Result<ort::environment::Environment, Box<dyn std::error::Error + Send + Sync>> {
+    #[cfg(feature = "ner-gliner")]
+    return orp::env::global_environment().map_err(Into::into);
+    #[cfg(not(feature = "ner-gliner"))]
+    {
+        static ENVIRONMENT: std::sync::OnceLock<Result<ort::environment::Environment, String>> =
+            std::sync::OnceLock::new();
+        ENVIRONMENT
+            .get_or_init(|| {
+                ort::environment::init()
+                    .build()
+                    .map_err(|error| error.to_string())
+            })
+            .clone()
+            .map_err(Into::into)
+    }
 }
 
 /// Set the exit code (no-op stub for non-macOS).
@@ -157,7 +184,7 @@ pub fn set_exit_code(_code: i32) {
 /// running C++ destructors or atexit handlers. This prevents the crash but
 /// means cleanup code won't run. Since we're at process exit anyway, this is fine.
 #[cfg(feature = "ner")]
-fn setup_macos_crash_workaround() {
+pub(super) fn setup_macos_crash_workaround() {
     use std::sync::Once;
     static SETUP_ONCE: Once = Once::new();
 
@@ -193,7 +220,7 @@ fn setup_macos_crash_workaround() {
 }
 
 /// A cached entity for fast repeated lookups
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 #[derive(Debug, Clone)]
 struct CachedEntity {
     text: String,
@@ -216,7 +243,7 @@ struct CachedEntity {
 /// leaked on drop to prevent a mutex crash during process exit. This is a workaround
 /// until the fix is released in a future ONNX Runtime version.
 /// See: https://github.com/microsoft/onnxruntime/issues/24579
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 pub struct NerDetector {
     /// The GLiNER model wrapped in ManuallyDrop to prevent cleanup crash on macOS.
     /// ONNX Runtime 1.21+ has a bug where OrtEnv destruction crashes due to
@@ -228,7 +255,7 @@ pub struct NerDetector {
     chunk_overlap: usize,
 }
 
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 impl NerDetector {
     /// Create a new NER detector from model files.
     ///
@@ -568,18 +595,18 @@ impl NerDetector {
 }
 
 /// Default model repository on HuggingFace.
-#[cfg(any(feature = "ner", test))]
+#[cfg(feature = "ner-gliner")]
 pub const DEFAULT_NER_MODEL: &str = "onnx-community/gliner_multi-v2.1";
 
 /// Model paths configuration for NER.
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 #[derive(Debug, Clone)]
 pub struct NerModelPaths {
     pub tokenizer: std::path::PathBuf,
     pub model: std::path::PathBuf,
 }
 
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 impl NerModelPaths {
     /// Create from explicit paths.
     pub fn new(tokenizer: std::path::PathBuf, model: std::path::PathBuf) -> Self {
@@ -599,6 +626,7 @@ impl NerModelPaths {
 /// to the chunk, so a re-joined or whitespace-normalized chunk shifts every span
 /// and redaction then targets the wrong bytes while still reporting the right
 /// matched text.
+#[cfg(feature = "ner-gliner")]
 fn chunk_texts(text: &str, chunk_size: usize, chunk_overlap: usize) -> Vec<(String, usize)> {
     let mut starts = Vec::new();
     let mut in_word = false;
@@ -636,7 +664,7 @@ fn chunk_texts(text: &str, chunk_size: usize, chunk_overlap: usize) -> Vec<(Stri
 }
 
 /// NER model configuration with cache and download support.
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 #[derive(Debug, Clone)]
 pub struct NerModelConfig {
     /// HuggingFace model repository (e.g., "onnx-community/gliner_multi-v2.1")
@@ -645,7 +673,7 @@ pub struct NerModelConfig {
     pub cache_dir: Option<std::path::PathBuf>,
 }
 
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 impl Default for NerModelConfig {
     fn default() -> Self {
         Self {
@@ -655,7 +683,7 @@ impl Default for NerModelConfig {
     }
 }
 
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 impl NerModelConfig {
     /// Create with a custom model repository.
     pub fn with_model(model_repo: impl Into<String>) -> Self {
@@ -755,7 +783,7 @@ impl NerModelConfig {
 #[path = "ner_exit_tests.rs"]
 mod exit_tests;
 
-#[cfg(all(test, feature = "ner"))]
+#[cfg(all(test, feature = "ner-gliner"))]
 mod tests {
 
     /// GLiNER span offsets are relative to the chunk, so each chunk must be a

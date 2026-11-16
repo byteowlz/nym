@@ -398,7 +398,7 @@ The default model (`onnx-community/gliner_multi-v2.1`) is Apache-2.0 licensed an
 
 nym ships two NER backends that can run individually or together:
 
-- **`gliner`** — GLiNER zero-shot span model; supply any labels you like.
+- **`gliner`** — GLiNER zero-shot span model; supply any labels you like. Opt-in: build with `--features ner-gliner` (the upstream engine pins an older ONNX Runtime that conflicts with the token backend's GPU acceleration, so the in-tree forks under `crates/` are only compiled when requested).
 - **`openmed`** — [OpenMed](https://github.com/maziyarpanahi/openmed) DeBERTa-v2 token-classification models fine-tuned for clinical/HIPAA PII, with a fixed 106-label taxonomy (names, dates of birth, medical record numbers, and more).
 - **`both`** (default) — run both and merge results for best recall.
 

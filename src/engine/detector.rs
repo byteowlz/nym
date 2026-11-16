@@ -18,7 +18,7 @@ use super::trace_policy::{TracePolicy, TracePolicyConfig, TracePolicyStats};
 static TLD_REGEX: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^\.[a-z]{2,}(\s|$|[^a-z])").unwrap());
 
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 use super::ner::{NerDetector, NerModelConfig, NerModelPaths};
 #[cfg(feature = "ner")]
 use super::ner_token::TokenClassDetector;
@@ -82,7 +82,7 @@ pub(crate) trait NerRuntime: Send + Sync {
     }
 }
 
-#[cfg(feature = "ner")]
+#[cfg(feature = "ner-gliner")]
 impl NerRuntime for NerDetector {
     fn detect(
         &self,
@@ -459,7 +459,25 @@ impl Detector {
     }
 
     /// Initialize NER detector from config.
-    #[cfg(feature = "ner")]
+    #[cfg(all(feature = "ner", not(feature = "ner-gliner")))]
+    fn init_ner(config: &DetectorConfig) -> Result<Box<dyn NerRuntime>, DetectionError> {
+        // GLiNER is opt-in (ner-gliner): gline-rs pins an ort version that
+        // lacks the CoreML acceleration options the token backend needs, so
+        // the default build ships without it. The configured-labels contract
+        // is still checked first (it must fail as Configuration before models
+        // load); only then does the missing backend fail as Initialization.
+        if let Some(labels) = &config.ner_labels {
+            crate::config::normalize_gliner_labels(labels)
+                .map_err(|_| DetectionError::Configuration)?;
+        }
+        log::warn!(
+            "GLiNER backend requested but this build has no GLiNER support; rebuild with --features ner-gliner"
+        );
+        Err(DetectionError::Initialization { backend: "GLiNER" })
+    }
+
+    /// Initialize NER detector from config.
+    #[cfg(feature = "ner-gliner")]
     fn init_ner(config: &DetectorConfig) -> Result<Box<dyn NerRuntime>, DetectionError> {
         let labels = match &config.ner_labels {
             Some(labels) => crate::config::normalize_gliner_labels(labels)
@@ -495,7 +513,7 @@ impl Detector {
 
     /// Explicit local paths never become remote repository requests. Preflight
     /// missing files before registering native exit hooks (notably on macOS).
-    #[cfg(feature = "ner")]
+    #[cfg(feature = "ner-gliner")]
     fn local_gliner_paths(model: Option<&str>) -> Result<Option<NerModelPaths>, DetectionError> {
         let Some(model) = model else {
             return Ok(None);

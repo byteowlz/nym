@@ -2946,12 +2946,23 @@ fn download_catalog_model(config: &Config, m: &CatalogModel) -> Result<()> {
         engine::ner_token::TokenClassDetector::download(&m.slug, cache_dir.as_deref())
             .map_err(|e| anyhow!("failed to download {}: {e}", m.slug))?;
     } else {
-        let mut cfg = engine::ner::NerModelConfig::with_model(m.slug.clone());
-        if let Some(dir) = cache_dir {
-            cfg = cfg.with_cache_dir(dir);
+        #[cfg(not(feature = "ner-gliner"))]
+        {
+            let _ = cache_dir;
+            anyhow::bail!(
+                "model {} is a GLiNER model; this build has no GLiNER support (--features ner-gliner)",
+                m.slug
+            );
         }
-        cfg.download()
-            .map_err(|e| anyhow!("failed to download {}: {e}", m.slug))?;
+        #[cfg(feature = "ner-gliner")]
+        {
+            let mut cfg = engine::ner::NerModelConfig::with_model(m.slug.clone());
+            if let Some(dir) = cache_dir {
+                cfg = cfg.with_cache_dir(dir);
+            }
+            cfg.download()
+                .map_err(|e| anyhow!("failed to download {}: {e}", m.slug))?;
+        }
     }
     Ok(())
 }

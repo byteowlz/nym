@@ -83,6 +83,61 @@ const DEFAULT_WINDOW_OVERLAP: usize = 64;
 /// Minimum text length in characters before attempting inference.
 const MIN_TEXT_LENGTH: usize = 3;
 
+/// Concurrent-inference holder for one shared ONNX session.
+///
+/// ONNX Runtime documents `OrtSession` as thread-safe for concurrent Run
+/// calls, and `ort` keeps `unsafe impl Send/Sync for Session`; the rc.15
+/// `&mut self` on `Session::run` exists only so output values borrow the
+/// session for their lifetime. Every output here is fully consumed (copied)
+/// before the raw borrow ends, so no output can escape it, and the trace
+/// workload relies on overlapping runs across workers (measured ~13x run
+/// overlap; serializing runs behind a mutex would give that overlap back).
+struct SharedSession {
+    /// Never dropped: matches the intentional leak that keeps ONNX Runtime
+    /// teardown (and its macOS exit crash) from ever running.
+    session: std::cell::UnsafeCell<std::mem::ManuallyDrop<Session>>,
+}
+
+// SAFETY: `Session` is Send + Sync (raw pointers guarded by ORT's internal
+// synchronization); the `UnsafeCell` is only dereferenced for the duration of
+// one `run` call whose outputs cannot outlive it.
+unsafe impl Send for SharedSession {}
+unsafe impl Sync for SharedSession {}
+
+impl SharedSession {
+    fn new(session: Session) -> Self {
+        Self {
+            session: std::cell::UnsafeCell::new(std::mem::ManuallyDrop::new(session)),
+        }
+    }
+
+    /// One padded forward pass; returns the row-major logits.
+    fn forward(
+        &self,
+        ids_tensor: Tensor<i64>,
+        mask_tensor: Tensor<i64>,
+        type_ids: Option<Tensor<i64>>,
+    ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
+        // SAFETY: see the type-level contract above. The borrow ends before
+        // `forward` returns; logits are copied out first.
+        let session = unsafe { &mut *self.session.get() };
+        let outputs = if let Some(type_ids) = type_ids {
+            session.run(ort::inputs![
+                "input_ids" => ids_tensor,
+                "attention_mask" => mask_tensor,
+                "token_type_ids" => type_ids,
+            ])?
+        } else {
+            session.run(ort::inputs![
+                "input_ids" => ids_tensor,
+                "attention_mask" => mask_tensor,
+            ])?
+        };
+        let (_, logits) = outputs["logits"].try_extract_tensor::<f32>()?;
+        Ok(logits.to_vec())
+    }
+}
+
 /// Cap on the number of texts in a single padded forward pass. seq can be up to
 /// window_tokens (480), so [N, seq] tensor is ~N*480*4 bytes; bounding N keeps
 /// the workspace (and the GPU CUDA allocator) from OOMing on big inputs. Larger
@@ -116,10 +171,10 @@ struct DecodedSpan {
 
 /// Token-classification NER detector (loads any BERT/DeBERTa PII model).
 pub struct TokenClassDetector {
-    /// ONNX Runtime session. Wrapped in `ManuallyDrop` to match the GLiNER
-    /// backend's workaround for the ONNX Runtime macOS exit crash.
-    /// See [`super::ner`] for details.
-    session: std::mem::ManuallyDrop<Session>,
+    /// ONNX Runtime session, shared concurrently across workers (see
+    /// [`SharedSession`]). Intentionally leaked to match the GLiNER backend's
+    /// workaround for the ONNX Runtime macOS exit crash; see [`super::ner`].
+    session: SharedSession,
     tokenizer: Tokenizer,
     /// Maps a label index to its BIO label string (e.g. `"B-email"`).
     id2label: Vec<String>,
@@ -308,11 +363,14 @@ impl TokenClassDetector {
             Err(error) => return Err(format!("token NER session failed: {error}").into()),
         };
 
-        let needs_token_type_ids = session.inputs.iter().any(|i| i.name == "token_type_ids");
+        let needs_token_type_ids = session
+            .inputs()
+            .iter()
+            .any(|input| input.name() == "token_type_ids");
 
         let o_id = id2label.iter().position(|l| l == "O").unwrap_or(0);
         Ok(Self {
-            session: std::mem::ManuallyDrop::new(session),
+            session: SharedSession::new(session),
             tokenizer,
             id2label,
             needs_token_type_ids,
@@ -324,15 +382,21 @@ impl TokenClassDetector {
         })
     }
 
-    /// Initialize ORT before registering providers. In ort rc.9 the session
-    /// builder does NOT create an environment until commit_from_file; CoreML's
-    /// hardware probe needs its default logger earlier and can throw across FFI.
-    /// The explicit CPU policy bypasses accelerator registration entirely.
+    /// Initialize ORT before registering providers. The process-global
+    /// environment must exist before any session builder touches it, and
+    /// CoreML's hardware probe needs its default logger earlier; it can throw
+    /// across FFI, so callers keep the catch_unwind wrapper. The explicit CPU
+    /// policy bypasses accelerator registration entirely.
     fn try_create_session(
         model_path: &Path,
         cpu_only: bool,
         threads: usize,
     ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
+        // Register the macOS fast-exit hook for every NER build, not only the
+        // GLiNER path that used to call it: token sessions now exist in all
+        // default builds, and the hook preserves exit statuses around native
+        // teardown (see `super::ner` and the exit tests).
+        super::ner::setup_macos_crash_workaround();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
             Self::create_session(model_path, cpu_only, threads)
         }))
@@ -340,55 +404,71 @@ impl TokenClassDetector {
         Ok(result?)
     }
 
-    fn create_session(model_path: &Path, cpu_only: bool, threads: usize) -> ort::Result<Session> {
-        let _environment = ort::environment::get_environment()?;
+    /// Process-global ONNX Runtime environment: one create-once helper owns it
+    /// for the whole binary (see `super::ner::global_environment`), so the
+    /// token backend and the exit tests always share the environment the
+    /// GLiNER stack may have created first.
+    fn global_environment()
+    -> Result<ort::environment::Environment, Box<dyn std::error::Error + Send + Sync>> {
+        super::ner::global_environment()
+    }
+
+    fn create_session(
+        model_path: &Path,
+        cpu_only: bool,
+        threads: usize,
+    ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
+        let environment = Self::global_environment()?;
         // A bounded intra-op pool avoids contention; explicit tuning can exceed
         // the automatic cap. Accelerator CPU fallback uses the same budget.
-        let mut builder = Session::builder()?.with_intra_threads(threads)?;
-        // On Apple Silicon, register the CoreML execution provider so the
-        // token-classification model runs on the ANE/GPU instead of CPU. CoreML
-        // is gated behind the `ner-coreml` build feature; the session builder
-        // falls back to CPU for any ops CoreML cannot handle.
-        #[cfg(feature = "ner-coreml")]
-        if !cpu_only {
-            builder = builder.with_execution_providers([
-                ort::execution_providers::CoreMLExecutionProvider::default()
-                    .build()
-                    .error_on_failure(),
-            ])?;
-        }
-        // On NVIDIA, register the CUDA execution provider so the token model
-        // runs on the GPU instead of the CPU. CUDA is gated behind the
-        // `ner-cuda` build feature; ONNX Runtime falls back to CPU for any ops
-        // CUDA cannot handle, so the session still works if a CUDA build is run
-        // on a box without a CUDA-capable GPU.
-        #[cfg(feature = "ner-cuda")]
-        if !cpu_only {
-            builder = builder.with_execution_providers([
-                ort::execution_providers::CUDAExecutionProvider::default()
-                    .build()
-                    .error_on_failure(),
-            ])?;
-        }
-        // TensorRT (fused NVIDIA kernels) — opt-in and may need TensorRT runtime
-        // installed; ONNX Runtime falls back to CUDA/CPU if unavailable.
-        #[cfg(feature = "ner-tensorrt")]
-        if !cpu_only {
-            builder = builder.with_execution_providers([
-                ort::execution_providers::TensorRTExecutionProvider::default()
-                    .build()
-                    .error_on_failure(),
-            ])?;
-        }
-        // Register CPU explicitly, without any accelerator provider.
-        if cpu_only {
-            builder = builder.with_execution_providers([
-                ort::execution_providers::CPUExecutionProvider::default()
-                    .build()
-                    .error_on_failure(),
-            ])?;
-        }
-        builder.commit_from_file(model_path)
+        // rc.15's builder errors carry the builder itself (not Send+Sync), so
+        // every builder step maps to a plain message for this error type.
+        let build = || -> ort::Result<Session> {
+            let mut builder = Session::builder(&environment)?
+                .with_intra_threads(threads)
+                .map_err(|error| ort::Error::new(error.to_string()))?;
+            // On Apple Silicon, register the CoreML execution provider so the
+            // token-classification model runs on the ANE/GPU instead of CPU.
+            // CoreML is gated behind the `ner-coreml` build feature; the session
+            // builder falls back to CPU for any ops CoreML cannot handle.
+            #[cfg(feature = "ner-coreml")]
+            if !cpu_only {
+                builder = builder
+                    .with_execution_providers([ort::ep::CoreML::default()
+                        .build()
+                        .error_on_failure()])
+                    .map_err(|error| ort::Error::new(error.to_string()))?;
+            }
+            // On NVIDIA, register the CUDA execution provider so the token model
+            // runs on the GPU instead of the CPU. CUDA is gated behind the
+            // `ner-cuda` build feature; ONNX Runtime falls back to CPU for any ops
+            // CUDA cannot handle, so the session still works if a CUDA build is run
+            // on a box without a CUDA-capable GPU.
+            #[cfg(feature = "ner-cuda")]
+            if !cpu_only {
+                builder = builder
+                    .with_execution_providers([ort::ep::CUDA::default().build().error_on_failure()])
+                    .map_err(|error| ort::Error::new(error.to_string()))?;
+            }
+            // TensorRT (fused NVIDIA kernels) — opt-in and may need TensorRT runtime
+            // installed; ONNX Runtime falls back to CUDA/CPU if unavailable.
+            #[cfg(feature = "ner-tensorrt")]
+            if !cpu_only {
+                builder = builder
+                    .with_execution_providers([ort::ep::TensorRT::default()
+                        .build()
+                        .error_on_failure()])
+                    .map_err(|error| ort::Error::new(error.to_string()))?;
+            }
+            // Register CPU explicitly, without any accelerator provider.
+            if cpu_only {
+                builder = builder
+                    .with_execution_providers([ort::ep::CPU::default().build()])
+                    .map_err(|error| ort::Error::new(error.to_string()))?;
+            }
+            builder.commit_from_file(model_path)
+        };
+        build().map_err(|error| error.to_string().into())
     }
 
     /// Enable/disable recall-first decoding (see the `recall_first` field).
@@ -517,21 +597,16 @@ impl TokenClassDetector {
         }
         let shape = vec![n as i64, seq as i64];
         let ids_tensor = Tensor::from_array((shape.clone(), input_ids))?;
-        let mask_tensor = Tensor::from_array((shape.clone(), attention_mask))?;
-        let outputs = if self.needs_token_type_ids {
-            let type_ids = Tensor::from_array((shape, vec![0i64; n * seq]))?;
-            self.session.run(ort::inputs![
-                "input_ids" => ids_tensor,
-                "attention_mask" => mask_tensor,
-                "token_type_ids" => type_ids,
-            ]?)?
+        let mask_tensor = Tensor::from_array((shape, attention_mask))?;
+        let type_ids = if self.needs_token_type_ids {
+            Some(Tensor::from_array((
+                vec![n as i64, seq as i64],
+                vec![0i64; n * seq],
+            ))?)
         } else {
-            self.session.run(ort::inputs![
-                "input_ids" => ids_tensor,
-                "attention_mask" => mask_tensor,
-            ]?)?
+            None
         };
-        let (_, logits) = outputs["logits"].try_extract_raw_tensor::<f32>()?;
+        let logits = self.session.forward(ids_tensor, mask_tensor, type_ids)?;
         if logits.len() != n * seq * num_labels {
             return Err(format!(
                 "unexpected logits length: got {}, expected {}",
@@ -540,7 +615,7 @@ impl TokenClassDetector {
             )
             .into());
         }
-        Ok((logits.to_vec(), seq))
+        Ok((logits, seq))
     }
 
     /// Run inference on a single chunk and decode entities at `offset`.

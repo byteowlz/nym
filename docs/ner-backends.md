@@ -5,8 +5,14 @@ nym supports two NER backends alongside regex detection:
 | Backend | Model kind | Crate / runtime | Labels |
 |---------|------------|-----------------|--------|
 | `tokens` (default) | BERT/DeBERTa token classification | `ort` (ONNX Runtime) | Classes defined by the selected model; no `ner.labels` filtering |
-| `gliner` | GLiNER zero-shot span model | `gline-rs` | Validated nym PII labels and aliases |
+| `gliner` (opt-in: `ner-gliner` feature) | GLiNER zero-shot span model | in-tree `gline-rs` fork | Validated nym PII labels and aliases |
 | `both` | Both engines, merged by span overlap | Both runtimes | Default GLiNER labels plus all token model classes |
+
+The `gliner` backend requires `--features ner-gliner`: upstream `gline-rs`/`orp`
+pin ONNX Runtime 2.0.0-rc.9, which predates the CoreML acceleration options the
+token backend needs. The patched forks live under `crates/` (see their
+`FORK.md`); without the feature, `backend = "gliner"` configs fail cleanly at
+runtime instead of building the extra engine.
 
 `openmed` is a legacy alias for `tokens`; the loader is not limited to OpenMed
 models. OpenMed's clinical/HIPAA models are one supported family. The default
