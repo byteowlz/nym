@@ -242,75 +242,100 @@ impl GpuBuckets {
         Some(Self { buckets, threads })
     }
 
-    /// Run all encodings through the buckets. Returns `None` when the GPU
-    /// path cannot take the batch (then the CPU session handles it). The
-    /// returned padded length is the bucket's `seq`; decoders ignore columns
-    /// beyond each row's real tokens, and padding rows are trimmed here.
+    /// Run all encodings through the buckets, partitioning each window into
+    /// its own smallest fitting bucket: one long window must not drag a batch
+    /// of short ones into a bigger bucket, which pads compute quadratically
+    /// away (that waste was the measured gap between raw-inference and
+    /// end-to-end speed). Returns one padded logits row per encoding in input
+    /// order, or `None` when the GPU path cannot take the batch (then the CPU
+    /// session handles it whole).
     fn run(
         &self,
         encodings: &[&tokenizers::Encoding],
         num_labels: usize,
-    ) -> Result<Option<(Vec<f32>, usize)>, Box<dyn std::error::Error + Send + Sync>> {
+    ) -> Result<Option<Vec<Vec<f32>>>, Box<dyn std::error::Error + Send + Sync>> {
         let n = encodings.len();
         if n < GPU_MIN_BATCH {
             return Ok(None);
         }
-        let seq = encodings
-            .iter()
-            .map(|encoding| encoding.get_ids().len())
-            .max()
-            .unwrap_or(1)
-            .max(1);
-        let Some(bucket) = self.buckets.iter().find(|bucket| bucket.seq >= seq) else {
+        let Some(longest) = self.buckets.last() else {
             return Ok(None);
         };
-        let session = match bucket.session(self.threads) {
-            Ok(session) => session,
-            Err(error) => {
-                log::warn!(
-                    "CoreML bucket {}x{} unavailable ({}); staying on CPU",
-                    bucket.batch,
-                    bucket.seq,
-                    error
-                );
-                return Ok(None);
+        // Every window must fit a bucket; a single oversize window would
+        // otherwise split the batch across engines.
+        if encodings
+            .iter()
+            .any(|encoding| encoding.get_ids().len() > longest.seq)
+        {
+            return Ok(None);
+        }
+        // Assign windows to buckets (ascending bucket order, stable within a
+        // bucket) so each session is created once per batch.
+        let mut groups: Vec<(usize, Vec<usize>)> = Vec::new();
+        for (index, encoding) in encodings.iter().enumerate() {
+            let len = encoding.get_ids().len();
+            let position = self
+                .buckets
+                .iter()
+                .position(|bucket| bucket.seq >= len)
+                .expect("windows are checked to fit the longest bucket");
+            match groups.last_mut() {
+                Some((last_position, members)) if *last_position == position => {
+                    members.push(index);
+                }
+                _ => groups.push((position, vec![index])),
             }
-        };
-        let row_len = bucket.seq * num_labels;
-        let mut out = Vec::with_capacity(n * row_len);
-        for rows in encodings.chunks(bucket.batch) {
-            let run_rows = rows.len();
-            let mut input_ids = vec![0i64; bucket.batch * bucket.seq];
-            let mut attention_mask = vec![0i64; bucket.batch * bucket.seq];
-            for (row, encoding) in rows.iter().enumerate() {
-                for (token, (&id, &mask)) in encoding
-                    .get_ids()
-                    .iter()
-                    .zip(encoding.get_attention_mask())
-                    .enumerate()
-                {
-                    input_ids[row * bucket.seq + token] = i64::from(id);
-                    attention_mask[row * bucket.seq + token] = i64::from(mask);
+        }
+        let mut rows: Vec<Vec<f32>> = vec![Vec::new(); n];
+        for (position, members) in groups {
+            let bucket = &self.buckets[position];
+            let session = match bucket.session(self.threads) {
+                Ok(session) => session,
+                Err(error) => {
+                    log::warn!(
+                        "CoreML bucket {}x{} unavailable ({}); staying on CPU",
+                        bucket.batch,
+                        bucket.seq,
+                        error
+                    );
+                    return Ok(None);
+                }
+            };
+            let row_len = bucket.seq * num_labels;
+            let needs_types = session.needs_token_type_ids();
+            for chunk in members.chunks(bucket.batch) {
+                let mut input_ids = vec![0i64; bucket.batch * bucket.seq];
+                let mut attention_mask = vec![0i64; bucket.batch * bucket.seq];
+                for (row, &index) in chunk.iter().enumerate() {
+                    let encoding = encodings[index];
+                    for (token, (&id, &mask)) in encoding
+                        .get_ids()
+                        .iter()
+                        .zip(encoding.get_attention_mask())
+                        .enumerate()
+                    {
+                        input_ids[row * bucket.seq + token] = i64::from(id);
+                        attention_mask[row * bucket.seq + token] = i64::from(mask);
+                    }
+                }
+                let shape = vec![bucket.batch as i64, bucket.seq as i64];
+                let ids_tensor = Tensor::from_array((shape.clone(), input_ids))?;
+                let mask_tensor = Tensor::from_array((shape, attention_mask))?;
+                let type_ids = if needs_types {
+                    Some(Tensor::from_array((
+                        vec![bucket.batch as i64, bucket.seq as i64],
+                        vec![0i64; bucket.batch * bucket.seq],
+                    ))?)
+                } else {
+                    None
+                };
+                let logits = session.forward(ids_tensor, mask_tensor, type_ids)?;
+                for (row, &index) in chunk.iter().enumerate() {
+                    rows[index] = logits[row * row_len..(row + 1) * row_len].to_vec();
                 }
             }
-            let ids_tensor =
-                Tensor::from_array((vec![bucket.batch as i64, bucket.seq as i64], input_ids))?;
-            let mask_tensor =
-                Tensor::from_array((vec![bucket.batch as i64, bucket.seq as i64], attention_mask))?;
-            let type_ids = if session.needs_token_type_ids() {
-                Some(Tensor::from_array((
-                    vec![bucket.batch as i64, bucket.seq as i64],
-                    vec![0i64; bucket.batch * bucket.seq],
-                ))?)
-            } else {
-                None
-            };
-            let logits = session.forward(ids_tensor, mask_tensor, type_ids)?;
-            // Drop the padding rows (beyond `run_rows`); keep all columns —
-            // decoders read only each row's real token positions.
-            out.extend_from_slice(&logits[..run_rows * row_len]);
         }
-        Ok(Some((out, bucket.seq)))
+        Ok(Some(rows))
     }
 }
 
@@ -863,6 +888,18 @@ impl TokenClassDetector {
                 start + padded_batch_len(windows[start..].iter().map(|w| w.3.get_ids().len()));
             let batch = &windows[start..end];
             let encodings: Vec<_> = batch.iter().map(|w| &w.3).collect();
+            // Apple GPU buckets carry batched work when they cover the batch
+            // shape; the CPU session serves everything they cannot take.
+            #[cfg(feature = "ner-coreml")]
+            if let Some(gpu_buckets) = &self.gpu_buckets {
+                if let Some(rows) = gpu_buckets.run(&encodings, self.id2label.len())? {
+                    for (i, (index, chunk, offset, encoding)) in batch.iter().enumerate() {
+                        out[*index].extend(self.decode_chunk(chunk, *offset, encoding, &rows[i]));
+                    }
+                    start = end;
+                    continue;
+                }
+            }
             let (logits, seq) = self.run_logits(&encodings)?;
             let row = seq * self.id2label.len();
             for (i, (index, chunk, offset, encoding)) in batch.iter().enumerate() {
@@ -893,15 +930,6 @@ impl TokenClassDetector {
         &self,
         encodings: &[&tokenizers::Encoding],
     ) -> Result<(Vec<f32>, usize), Box<dyn std::error::Error + Send + Sync>> {
-        // Apple GPU buckets carry batched work when they cover the batch
-        // shape; the CPU session serves everything they cannot take.
-        #[cfg(feature = "ner-coreml")]
-        if let Some(gpu_buckets) = &self.gpu_buckets {
-            let num_labels = self.id2label.len();
-            if let Some(result) = gpu_buckets.run(encodings, num_labels)? {
-                return Ok(result);
-            }
-        }
         let n = encodings.len();
         let seq = encodings
             .iter()
