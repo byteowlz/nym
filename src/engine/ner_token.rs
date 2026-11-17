@@ -1521,6 +1521,7 @@ fn label_to_pattern(base: &str) -> (&'static str, PiiCategory) {
         // Names / identity
         "first_name" | "given_name" => ("first_name", PiiCategory::Identity),
         "last_name" | "surname" => ("last_name", PiiCategory::Identity),
+        "person" => ("person", PiiCategory::Identity),
         "user_name" | "username" => ("username", PiiCategory::Social),
         "age" => ("age", PiiCategory::Identity),
         "gender" => ("gender", PiiCategory::Identity),
@@ -1528,17 +1529,19 @@ fn label_to_pattern(base: &str) -> (&'static str, PiiCategory) {
         // Government / record identifiers
         "ssn" => ("ssn", PiiCategory::Identity),
         "tax_id" => ("tax_id", PiiCategory::Identity),
-        "medical_record_number" => ("medical_record_number", PiiCategory::Identity),
+        "medical_record_number" | "medical_id" => ("medical_record_number", PiiCategory::Identity),
         "health_plan_beneficiary_number" => {
             ("health_plan_beneficiary_number", PiiCategory::Identity)
         }
-        "certificate_license_number" | "drivers_license" => {
+        "certificate_license_number" | "drivers_license" | "driver_license" | "license_number" => {
             ("certificate_license_number", PiiCategory::Identity)
         }
         "passport" => ("passport_us", PiiCategory::Identity),
-        "government_id" => ("government_id", PiiCategory::Identity),
-        "account_number" | "bank_account" => ("account_number", PiiCategory::Identity),
-        "customer_id" | "employee_id" | "unique_id" | "device_identifier" => {
+        "government_id" | "national_id" => ("government_id", PiiCategory::Identity),
+        "account_number" | "bank_account" | "account_id" => {
+            ("account_number", PiiCategory::Identity)
+        }
+        "customer_id" | "employee_id" | "unique_id" | "device_identifier" | "device_id" => {
             ("unique_id", PiiCategory::Identity)
         }
         "biometric_identifier" => ("biometric_identifier", PiiCategory::Identity),
@@ -1550,20 +1553,20 @@ fn label_to_pattern(base: &str) -> (&'static str, PiiCategory) {
         "street_address" | "street_name" | "building_number" | "secondary_address" => {
             ("street_address", PiiCategory::Contact)
         }
-        "city" => ("city", PiiCategory::Contact),
+        "city" | "location" => ("city", PiiCategory::Contact),
         "county" => ("county", PiiCategory::Contact),
         "state" => ("state", PiiCategory::Contact),
         "country" => ("country", PiiCategory::Contact),
         "postcode" | "zip_code" => ("postcode", PiiCategory::Contact),
         "coordinate" => ("coordinate", PiiCategory::Network),
         // Financial
-        "credit_debit_card" => ("credit_card", PiiCategory::Financial),
-        "cvv" => ("cvv", PiiCategory::Financial),
+        "credit_debit_card" | "credit_card" => ("credit_card", PiiCategory::Financial),
+        "cvv" | "credit_card_cvv" => ("cvv", PiiCategory::Financial),
         "pin" => ("pin", PiiCategory::Financial),
         "bank_routing_number" | "routing_number" => ("bank_routing_number", PiiCategory::Financial),
         "swift_bic" => ("swift_bic", PiiCategory::Financial),
         // Network / technical
-        "ipv4" => ("ipv4", PiiCategory::Network),
+        "ipv4" | "ip_address" => ("ipv4", PiiCategory::Network),
         "ipv6" => ("ipv6", PiiCategory::Network),
         "mac_address" => ("mac", PiiCategory::Network),
         "url" => ("url", PiiCategory::Network),
@@ -1571,14 +1574,18 @@ fn label_to_pattern(base: &str) -> (&'static str, PiiCategory) {
         // Credentials
         "api_key" => ("api_key", PiiCategory::Authentication),
         "password" => ("password", PiiCategory::Authentication),
+        // Secrets: API keys, tokens, private keys, connection strings, session
+        // cookies (Horizon pii-redactor's SECRET) get credential-grade
+        // treatment through the api_key class.
+        "secret" => ("api_key", PiiCategory::Authentication),
         // Organization
-        "company_name" => ("organization", PiiCategory::Other),
+        "company_name" | "organization" => ("organization", PiiCategory::Other),
         // Temporal
         "date" | "date_time" => ("date", PiiCategory::Other),
         "time" => ("time", PiiCategory::Other),
         // Vehicle
         "license_plate" => ("license_plate", PiiCategory::Other),
-        "vehicle_identifier" => ("vehicle_identifier", PiiCategory::Other),
+        "vehicle_identifier" | "vehicle_id" => ("vehicle_identifier", PiiCategory::Other),
         // Sensitive demographics and free-form fields
         _ => ("ner_entity", PiiCategory::Other),
     }
@@ -1620,6 +1627,10 @@ fn load_id2label(
 #[cfg(test)]
 #[path = "ner_token_runtime_tests.rs"]
 mod runtime_tests;
+
+#[cfg(test)]
+#[path = "ner_bench_tests.rs"]
+mod bench_tests;
 
 #[cfg(test)]
 mod tests {
@@ -1796,6 +1807,45 @@ mod tests {
         for label in ["USERNAME", "USER_NAME", "username", "user_name"] {
             assert_eq!(label_to_pattern(label), ("username", PiiCategory::Social));
         }
+        // Horizon pii-redactor taxonomy: identity and credential classes must
+        // get their canonical treatment, not the generic ner_entity fallback.
+        assert_eq!(
+            label_to_pattern("PERSON"),
+            ("person", PiiCategory::Identity)
+        );
+        assert_eq!(
+            label_to_pattern("SECRET"),
+            ("api_key", PiiCategory::Authentication)
+        );
+        assert_eq!(
+            label_to_pattern("ORGANIZATION"),
+            ("organization", PiiCategory::Other)
+        );
+        assert_eq!(label_to_pattern("LOCATION"), ("city", PiiCategory::Contact));
+        assert_eq!(
+            label_to_pattern("CREDIT_CARD"),
+            ("credit_card", PiiCategory::Financial)
+        );
+        assert_eq!(
+            label_to_pattern("CREDIT_CARD_CVV"),
+            ("cvv", PiiCategory::Financial)
+        );
+        assert_eq!(
+            label_to_pattern("NATIONAL_ID"),
+            ("government_id", PiiCategory::Identity)
+        );
+        assert_eq!(
+            label_to_pattern("DRIVER_LICENSE"),
+            ("certificate_license_number", PiiCategory::Identity)
+        );
+        assert_eq!(
+            label_to_pattern("IP_ADDRESS"),
+            ("ipv4", PiiCategory::Network)
+        );
+        assert_eq!(
+            label_to_pattern("ACCOUNT_ID"),
+            ("account_number", PiiCategory::Identity)
+        );
     }
 
     #[test]
