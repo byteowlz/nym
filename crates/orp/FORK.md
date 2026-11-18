@@ -15,6 +15,10 @@ Changes against 1.0.0:
   (`orp::env::global_environment`), because rc.15 allows exactly one
   environment and exposes no public accessor for an existing one. nym's token
   backend shares this environment in `ner-gliner` builds.
+- Session access is synchronized. `Run` results become an owned map of ORT
+  value handles before releasing the session lock, so post-processing cannot
+  retain a borrowed mutable session. A synthetic native concurrency test covers
+  simultaneous requests and results surviving subsequent runs.
 - `publish = false`; consumed only as a path dependency.
 
 Upstreamable: the environment module and rc.15 port could be proposed upstream;

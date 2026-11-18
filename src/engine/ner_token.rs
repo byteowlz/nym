@@ -83,40 +83,60 @@ const DEFAULT_WINDOW_OVERLAP: usize = 64;
 /// Minimum text length in characters before attempting inference.
 const MIN_TEXT_LENGTH: usize = 3;
 
-/// Concurrent-inference holder for one shared ONNX session.
+/// Synchronized owner of an ONNX session shared by trace workers.
 ///
-/// ONNX Runtime documents `OrtSession` as thread-safe for concurrent Run
-/// calls, and `ort` keeps `unsafe impl Send/Sync for Session`; the rc.15
-/// `&mut self` on `Session::run` exists only so output values borrow the
-/// session for their lifetime. Every output here is fully consumed (copied)
-/// before the raw borrow ends, so no output can escape it, and the trace
-/// workload relies on overlapping runs across workers (measured ~13x run
-/// overlap; serializing runs behind a mutex would give that overlap back).
+/// `Session::run` requires an exclusive Rust borrow. Native thread safety
+/// does not permit overlapping `&mut Session` references, so the lock covers
+/// the run and copying its outputs. Different bucket sessions remain independent.
 struct SharedSession {
     /// Never dropped: matches the intentional leak that keeps ONNX Runtime
     /// teardown (and its macOS exit crash) from ever running.
-    session: std::cell::UnsafeCell<std::mem::ManuallyDrop<Session>>,
+    sessions: Vec<std::sync::Mutex<std::mem::ManuallyDrop<Session>>>,
+    next: std::sync::atomic::AtomicUsize,
     /// Whether the model expects a `token_type_ids` input (BERT-family models
     /// do; DeBERTa-v2 exports typically don't).
     needs_token_type_ids: bool,
 }
 
-// SAFETY: `Session` is Send + Sync (raw pointers guarded by ORT's internal
-// synchronization); the `UnsafeCell` is only dereferenced for the duration of
-// one `run` call whose outputs cannot outlive it.
-unsafe impl Send for SharedSession {}
-unsafe impl Sync for SharedSession {}
-
 impl SharedSession {
-    fn new(session: Session) -> Self {
-        let needs_token_type_ids = session
+    fn from_sessions(primary: Session, replicas: Vec<Session>) -> Self {
+        let needs_token_type_ids = primary
             .inputs()
             .iter()
             .any(|input| input.name() == "token_type_ids");
         Self {
-            session: std::cell::UnsafeCell::new(std::mem::ManuallyDrop::new(session)),
+            sessions: std::iter::once(primary)
+                .chain(replicas)
+                .map(|session| std::sync::Mutex::new(std::mem::ManuallyDrop::new(session)))
+                .collect(),
+            next: std::sync::atomic::AtomicUsize::new(0),
             needs_token_type_ids,
         }
+    }
+
+    fn acquire(
+        &self,
+    ) -> Result<
+        std::sync::MutexGuard<'_, std::mem::ManuallyDrop<Session>>,
+        Box<dyn std::error::Error + Send + Sync>,
+    > {
+        if self.sessions.iter().any(std::sync::Mutex::is_poisoned) {
+            return Err("token NER session lock poisoned".into());
+        }
+        let start =
+            self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.sessions.len();
+        for offset in 0..self.sessions.len() {
+            match self.sessions[(start + offset) % self.sessions.len()].try_lock() {
+                Ok(session) => return Ok(session),
+                Err(std::sync::TryLockError::Poisoned(_)) => {
+                    return Err("token NER session lock poisoned".into());
+                }
+                Err(std::sync::TryLockError::WouldBlock) => {}
+            }
+        }
+        self.sessions[start]
+            .lock()
+            .map_err(|_| "token NER session lock poisoned".into())
     }
 
     fn needs_token_type_ids(&self) -> bool {
@@ -130,9 +150,7 @@ impl SharedSession {
         mask_tensor: Tensor<i64>,
         type_ids: Option<Tensor<i64>>,
     ) -> Result<Vec<f32>, Box<dyn std::error::Error + Send + Sync>> {
-        // SAFETY: see the type-level contract above. The borrow ends before
-        // `forward` returns; logits are copied out first.
-        let session = unsafe { &mut *self.session.get() };
+        let mut session = self.acquire()?;
         let outputs = if let Some(type_ids) = type_ids {
             session.run(ort::inputs![
                 "input_ids" => ids_tensor,
@@ -565,22 +583,16 @@ impl TokenClassDetector {
         let gpu_buckets = GpuBuckets::resolve(provider, gpu_static.unwrap_or_default(), threads);
         #[cfg(not(feature = "ner-coreml"))]
         let _ = gpu_static;
-        let session = match Self::try_create_session(model_path, eager_cpu_only, threads) {
-            Ok(session) => session,
-            Err(error)
-                if !eager_cpu_only && cfg!(any(feature = "ner-cuda", feature = "ner-tensorrt")) =>
-            {
-                log::warn!("Token NER accelerator initialization failed; retrying with CPU");
-                Self::try_create_session(model_path, true, threads).map_err(|cpu_error| {
-                    format!(
-                        "token NER accelerator failed: {error}; CPU fallback failed: {cpu_error}"
-                    )
-                })?
-            }
-            Err(error) => return Err(format!("token NER session failed: {error}").into()),
+        #[cfg(feature = "ner-coreml")]
+        let has_gpu_buckets = gpu_buckets.is_some();
+        #[cfg(not(feature = "ner-coreml"))]
+        let has_gpu_buckets = false;
+        let replicas = if eager_cpu_only && !has_gpu_buckets && threads > 1 {
+            4
+        } else {
+            1
         };
-
-        let session = SharedSession::new(session);
+        let session = Self::create_runtime(model_path, eager_cpu_only, threads, replicas)?;
         let needs_token_type_ids = session.needs_token_type_ids();
 
         let o_id = id2label.iter().position(|l| l == "O").unwrap_or(0);
@@ -597,6 +609,37 @@ impl TokenClassDetector {
             window_tokens: DEFAULT_WINDOW_TOKENS,
             window_overlap: DEFAULT_WINDOW_OVERLAP,
         })
+    }
+
+    /// Keep native session construction, CPU fallback and bounded replication
+    /// at one boundary. Independent sessions permit concurrent CPU work without
+    /// overlapping Rust exclusive borrows or concurrent Run on one session.
+    /// `threads` remains a per-session setting; CoreML fallbacks and other
+    /// accelerators request one session, CPU-only inference requests at most four.
+    fn create_runtime(
+        model_path: &Path,
+        cpu_only: bool,
+        threads: usize,
+        replicas: usize,
+    ) -> Result<SharedSession, Box<dyn std::error::Error + Send + Sync>> {
+        let primary = match Self::try_create_session(model_path, cpu_only, threads) {
+            Ok(session) => session,
+            Err(error)
+                if !cpu_only && cfg!(any(feature = "ner-cuda", feature = "ner-tensorrt")) =>
+            {
+                log::warn!("Token NER accelerator initialization failed; retrying with CPU");
+                Self::try_create_session(model_path, true, threads).map_err(|cpu_error| {
+                    format!(
+                        "token NER accelerator failed: {error}; CPU fallback failed: {cpu_error}"
+                    )
+                })?
+            }
+            Err(error) => return Err(format!("token NER session failed: {error}").into()),
+        };
+        let additional = (1..replicas)
+            .map(|_| Self::try_create_session(model_path, true, threads))
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok(SharedSession::from_sessions(primary, additional))
     }
 
     /// Resolve the static bucket variants next to a local model directory.
@@ -688,6 +731,8 @@ impl TokenClassDetector {
         std::fs::create_dir_all(&cache_dir)?;
         let build = || -> ort::Result<Session> {
             let mut builder = Session::builder(&environment)?
+                .with_auto_device(ort::session::builder::AutoDevicePolicy::PreferCPU)
+                .map_err(|error| ort::Error::new(error.to_string()))?
                 .with_intra_threads(threads)
                 .map_err(|error| ort::Error::new(error.to_string()))?
                 .with_execution_providers([ort::ep::CoreML::default()
@@ -706,9 +751,8 @@ impl TokenClassDetector {
         };
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(build))
             .map_err(|_| "CoreML bucket initialization failed")?;
-        result
-            .map(SharedSession::new)
-            .map_err(|error| error.to_string().into())
+        let primary = result.map_err(|error| error.to_string())?;
+        Ok(SharedSession::from_sessions(primary, Vec::new()))
     }
 
     /// Content-keyed cache directory for a compiled bucket specialization:

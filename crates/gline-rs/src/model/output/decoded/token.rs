@@ -148,7 +148,7 @@ impl TensorsToDecoded {
 
 }
 
-impl Composable<TensorOutput<'_>, SpanOutput> for TensorsToDecoded {
+impl Composable<TensorOutput, SpanOutput> for TensorsToDecoded {
     fn apply(&self, input: TensorOutput) -> Result<SpanOutput> {        
         let decoded = self.decode(&input)?;
         Ok(SpanOutput::new(input.context.texts, input.context.entities, decoded))

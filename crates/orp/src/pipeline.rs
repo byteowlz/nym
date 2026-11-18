@@ -1,4 +1,8 @@
-use ort::session::{SessionInputs, SessionOutputs};
+use ort::session::SessionInputs;
+
+/// Owned output values retain their native session through ort's value handles,
+/// without borrowing the session lock during downstream post-processing.
+pub type OwnedOutputs = std::collections::HashMap<String, ort::value::DynValue>;
 use composable::Composable;
 use super::model::Model;
 use super::Result;
@@ -39,8 +43,8 @@ impl<'a, I, C, T: Composable<I, (SessionInputs<'a, 'a>, C)>> PreProcessor<'a, I,
 
 
 /// Defines a generic post-processor
-pub trait PostProcessor<'a, O, C>: Composable<(SessionOutputs<'a>, C), O> {}
-impl<'a, O, C, T: Composable<(SessionOutputs<'a>, C), O>> PostProcessor<'a, O, C> for T {}
+pub trait PostProcessor<'a, O, C>: Composable<(OwnedOutputs, C), O> {}
+impl<'a, O, C, T: Composable<(OwnedOutputs, C), O>> PostProcessor<'a, O, C> for T {}
 
 
 /// Owns a pipeline, and references a model and some parameters to implement `Composable`

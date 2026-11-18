@@ -129,6 +129,15 @@ nym config ner-status
 nym --config nym.toml config ner-status --ner-model nationaldesignstudio/rampart
 ```
 
+### Native session concurrency
+
+ORT rc.15 requires exclusive access to a session during inference; native Run
+calls must not share aliased Rust mutable references. CPU inference uses at most
+four independent sessions, each with the configured intra-op thread count;
+`threads = 1` uses one session. This increases model memory compared with one
+session. Accelerator sessions use a single synchronized session per shape.
+GLiNER also synchronizes Run and hands owned output values to its decoder.
+
 ## Apple GPU acceleration (CoreML static buckets)
 
 On Apple Silicon, `provider = "auto"` uses the GPU through CoreML when the
@@ -144,9 +153,11 @@ Then point `[ner] token_model` at that directory. Batched windows are padded
 into the smallest bucket that fits; single windows and oversized batches stay
 on CPU. Compiled CoreML specializations cache under
 `~/Library/Caches/nym/coreml/` keyed by model content, so the per-shape compile
-(4-5 s) is paid once. Any bucket failure falls back to CPU permanently for the
-process. Measured 2.5-3.7x over CPU for batched inference with argmax agreement
-1.0000 against CPU logits (trx-zp2t).
+(4-5 s) is paid once. Bucket initialization failures stay on CPU; inference
+failures terminate the scan without publishing partial results. Earlier raw
+inference speed measurements are not an end-to-end acceleration guarantee;
+CoreML submission overhead, memory usage and numerical parity need measuring
+against the same model and workload (trx-zp2t).
 
 Status reports backend(s), safe model identifiers, threshold, label scope,
 decoding, token provider and effective token intra-op threads. `configured_enabled` is configuration, **not runtime

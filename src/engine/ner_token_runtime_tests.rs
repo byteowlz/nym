@@ -3,6 +3,73 @@
 use super::{NerProvider, TokenClassDetector, Tokenizer};
 use crate::config::NerConfig;
 
+/// Native execution must preserve every request when workers share a runtime.
+/// The tiny Add/Cast graph requires no cached model or network access.
+#[test]
+fn concurrent_native_session_requests_remain_independent()
+-> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let directory = tempfile::tempdir()?;
+    let model = directory.path().join("logits.onnx");
+    std::fs::write(
+        &model,
+        include_bytes!("../../tests/fixtures/concurrent_logits.onnx"),
+    )?;
+    for replicas in [1, 2, 4] {
+        let primary = TokenClassDetector::try_create_session(&model, true, 1)?;
+        let additional = (1..replicas)
+            .map(|_| TokenClassDetector::try_create_session(&model, true, 1))
+            .collect::<Result<Vec<_>, _>>()?;
+        let runtime = super::SharedSession::from_sessions(primary, additional);
+        let barrier = std::sync::Barrier::new(8);
+        std::thread::scope(|scope| {
+            let workers: Vec<_> = (0..8)
+                .map(|worker| {
+                    let runtime = &runtime;
+                    let barrier = &barrier;
+                    scope.spawn(
+                        move || -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+                            barrier.wait();
+                            for request in 0..32 {
+                                let value = worker * 32 + request;
+                                let ids = ort::value::Tensor::from_array((
+                                    [1usize, 1],
+                                    vec![i64::from(value)],
+                                ))?;
+                                let mask =
+                                    ort::value::Tensor::from_array(([1usize, 1], vec![1i64]))?;
+                                assert_eq!(
+                                    runtime.forward(ids, mask, None)?,
+                                    vec![(value + 1) as f32]
+                                );
+                            }
+                            Ok(())
+                        },
+                    )
+                })
+                .collect();
+            for worker in workers {
+                worker
+                    .join()
+                    .expect("native inference worker must not panic")?;
+            }
+            Ok::<_, Box<dyn std::error::Error + Send + Sync>>(())
+        })?;
+        // A panic must not route subsequent calls around a poisoned native
+        // session by selecting an otherwise healthy replica.
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _guard = runtime.acquire().expect("unpoisoned fixture session");
+                panic!("synthetic native-session panic");
+            }))
+            .is_err()
+        );
+        for _ in 0..replicas * 2 {
+            assert!(runtime.acquire().is_err());
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn provider_config_is_explicit_and_validated() -> Result<(), Box<dyn std::error::Error>> {
     let defaults: NerConfig = toml::from_str("")?;

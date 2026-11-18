@@ -1,6 +1,7 @@
 //! Timed NER throughput harness: measures `TokenClassDetector::detect_batch`
-//! over the real blind-round record lines, so engine-level speed can be
-//! compared without the traces pipeline around it. Ignored by default; run
+//! over raw JSONL records as a stress workload. This does NOT reproduce traces'
+//! decoded text extraction, line selection or deduplication; compare end-to-end
+//! speed using the traces CLI scorecard, not this stress test. Ignored by default; run
 //! with NYM_TEST_CACHED_NER_MODEL=<model dir> and
 //! NYM_BENCH_NER_CORPUS=<dir with *.jsonl>.
 
@@ -19,10 +20,11 @@ fn bench_detect_batch_throughput() -> Result<(), Box<dyn std::error::Error + Sen
     };
     let detector = TokenClassDetector::from_dir(model, Some(0.5), provider, None)?;
 
-    // Collect every JSONL line of every file, exactly like the traces
-    // pipeline's `lines_for_ner`: the raw record lines.
+    // Deliberately stress the backend with raw records, including metadata.
+    let files = walkdir(&corpus);
+    let file_count = files.len();
     let mut lines: Vec<String> = Vec::new();
-    for entry in walkdir(&corpus) {
+    for entry in files {
         let content = std::fs::read_to_string(&entry)?;
         for line in content.lines() {
             if !line.trim().is_empty() {
@@ -35,7 +37,7 @@ fn bench_detect_batch_throughput() -> Result<(), Box<dyn std::error::Error + Sen
         "records: {} lines, {} bytes in {} files",
         lines.len(),
         total_bytes,
-        lines.len()
+        file_count
     );
 
     // Warm up (compile buckets on the GPU path), then time.
