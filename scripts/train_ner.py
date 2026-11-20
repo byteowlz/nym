@@ -30,6 +30,7 @@ from __future__ import annotations
 import argparse
 import glob
 import json
+import math
 import sys
 from pathlib import Path
 
@@ -107,6 +108,76 @@ def load_training_model(model_cls, base_model, labels, label2id, frozen=False):
         raise ValueError(f"frozen continuation requires exact learned tensors: {problems}")
     validate_checkpoint_labels(model.config, label2id)
     return model
+
+
+def check_finite_gradients(model, is_finite=None):
+    """Fail closed before optimizer.step() if gradients are missing or non-finite."""
+    if is_finite is None:
+        import torch
+        is_finite = lambda t: bool(torch.isfinite(t).all().item())
+    grads = [p.grad for p in model.parameters() if getattr(p, "grad", None) is not None]
+    if not grads or any(not is_finite(g) for g in grads):
+        raise FloatingPointError("non-finite or absent gradients before optimizer step")
+
+
+def check_finite_logs(logs):
+    """Fail closed if any logged numeric metric is NaN or Inf."""
+    if any(isinstance(v, (int, float)) and not math.isfinite(v) for v in (logs or {}).values()):
+        raise FloatingPointError("non-finite training metric")
+
+
+def build_training_args(args, has_val, args_cls):
+    """Construct TrainingArguments with explicit step, seed and NaN-filter bounds."""
+    if args.max_steps == 0 or args.max_steps < -1:
+        raise ValueError("--max-steps must be -1 or positive")
+    if args.logging_steps < 1:
+        raise ValueError("--logging-steps must be positive")
+    return args_cls(
+        output_dir=args.output_dir,
+        num_train_epochs=args.epochs,
+        max_steps=args.max_steps,
+        per_device_train_batch_size=args.batch_size,
+        per_device_eval_batch_size=args.batch_size,
+        gradient_accumulation_steps=args.grad_accum,
+        gradient_checkpointing=args.grad_checkpointing,
+        optim=args.optim,
+        learning_rate=args.lr,
+        eval_strategy="epoch" if has_val else "no",
+        save_strategy="epoch",
+        save_total_limit=1,
+        logging_steps=args.logging_steps,
+        logging_nan_inf_filter=not args.require_finite_grads,
+        seed=args.seed,
+        data_seed=args.data_seed,
+        load_best_model_at_end=bool(has_val),
+        metric_for_best_model="f1",
+        bf16=not args.no_bf16,
+        report_to=[],
+    )
+
+
+def verify_bounded_controls(trainer, args, finite_callback_cls=None):
+    """Register and verify effective TrainingArguments and active callbacks before training."""
+    if args.require_finite_grads and finite_callback_cls is not None and hasattr(trainer, "add_callback"):
+        trainer.add_callback(finite_callback_cls())
+    targs = getattr(trainer, "args", None)
+    if targs is None:
+        raise ValueError("trainer is missing TrainingArguments")
+    checks = (
+        ("max_steps", targs.max_steps, args.max_steps),
+        ("logging_steps", targs.logging_steps, args.logging_steps),
+        ("seed", targs.seed, args.seed),
+        ("data_seed", targs.data_seed, args.data_seed),
+    )
+    for name, actual, expected in checks:
+        if actual != expected:
+            raise ValueError(f"bounded trainer control mismatch for {name}: {actual} != {expected}")
+    if args.require_finite_grads:
+        if targs.logging_nan_inf_filter is not False:
+            raise ValueError("require_finite_grads requires logging_nan_inf_filter=False")
+        callbacks = getattr(getattr(trainer, "callback_handler", None), "callbacks", ())
+        if finite_callback_cls is None or not any(isinstance(cb, finite_callback_cls) for cb in callbacks):
+            raise ValueError("require_finite_grads callback is not registered on trainer")
 
 
 def align(rows, tokenizer, label2id, max_length, mask_o_sources=frozenset()):
@@ -190,6 +261,13 @@ def main():
     ap.add_argument("--distill-alpha", type=float, default=0.5,
                     help="loss = (1-a)*CE + a*KL(student||teacher)")
     ap.add_argument("--distill-temp", type=float, default=2.0)
+    ap.add_argument("--max-steps", type=int, default=-1,
+                    help="explicit optimizer step cap (-1 uses epochs)")
+    ap.add_argument("--logging-steps", type=int, default=50)
+    ap.add_argument("--seed", type=int, default=42)
+    ap.add_argument("--data-seed", type=int, default=42)
+    ap.add_argument("--require-finite-grads", action="store_true",
+                    help="register and verify a pre-step finite-gradient guard")
     ap.add_argument("--dry-run", action="store_true", help="load+align a sample, print, exit (no training)")
     args = ap.parse_args()
     mask_srcs = frozenset(s.strip() for s in args.mask_o_sources.split(",")) if args.mask_o_sources else frozenset()
@@ -304,26 +382,17 @@ def main():
 
     if args.grad_checkpointing:
         model.config.use_cache = False
-    targs = TrainingArguments(
-        output_dir=args.output_dir,
-        num_train_epochs=args.epochs,
-        per_device_train_batch_size=args.batch_size,
-        per_device_eval_batch_size=args.batch_size,
-        gradient_accumulation_steps=args.grad_accum,
-        gradient_checkpointing=args.grad_checkpointing,
-        optim=args.optim,
-        learning_rate=args.lr,
-        eval_strategy="epoch" if val_ds else "no",
-        save_strategy="epoch",
-        save_total_limit=1,
-        logging_steps=50,
-        load_best_model_at_end=bool(val_ds),
-        metric_for_best_model="f1",
-        bf16=not args.no_bf16,
-        report_to=[],
-    )
+    targs = build_training_args(args, bool(val_ds), TrainingArguments)
     import torch
     import torch.nn.functional as F
+    from transformers import TrainerCallback
+
+    class FiniteGradCallback(TrainerCallback):
+        def on_pre_optimizer_step(self, *cb_args, model=None, **kwargs):
+            check_finite_gradients(model)
+
+        def on_log(self, *cb_args, logs=None, **kwargs):
+            check_finite_logs(logs)
 
     class WeightedKDTrainer(Trainer):
         """Trainer with (a) class-weighted CE (--o-weight) and (b) online logit
@@ -360,6 +429,7 @@ def main():
 
     trainer = WeightedKDTrainer(model=model, args=targs, train_dataset=train_ds, eval_dataset=val_ds,
                                 data_collator=collator, compute_metrics=compute_metrics if val_ds else None)
+    verify_bounded_controls(trainer, args, FiniteGradCallback)
     trainer.train()
     trainer.save_model(args.output_dir)
     tokenizer.save_pretrained(args.output_dir)
