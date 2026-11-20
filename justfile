@@ -59,6 +59,7 @@ test-gold:
 # Pinned public replay corpus boundaries (offline, synthetic fixtures)
 test-openpii:
     uv run --no-project python scripts/test_prepare_openpii.py
+    uv run --no-project python scripts/test_prepare_replay_trace.py
 
 # Synthetic trace plans, policy labels, token boundaries and full-span diagnostics
 test-trace-data:
