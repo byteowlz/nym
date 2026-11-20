@@ -300,34 +300,36 @@ def _cover_language_quota(pool: list[dict], quota: int, seed: int) -> list[dict]
     return chosen[:quota]
 
 
+def _append_unique_trace_pieces(rows: list[dict], prior_blocked: set[str],
+                                ctx: SplitContext, out: list[dict]) -> None:
+    for row in rows:
+        for piece in split_and_validate(row, "trace_synth", ctx):
+            digest = norm_hash(piece["text"])
+            if digest in prior_blocked:
+                raise ValueError("trace_synth collided with reserved or cross-partition text")
+            if digest not in ctx.blocked:
+                ctx.blocked.add(digest)
+                out.append(piece)
+
+
 def select_trace_train(path: Path, required_types: set[str], seed: int, ctx: SplitContext) -> list[dict]:
+    prior_blocked = set(ctx.blocked)
     by_lang = defaultdict(list)
     for row in read_jsonl(path):
         by_lang[row["language"]].append(row)
     quota = min(len(v) for v in by_lang.values())
     selected = []
     for _, pool in sorted(by_lang.items()):
-        for row in _cover_language_quota(pool, quota, seed):
-            for piece in split_and_validate(row, "trace_synth", ctx):
-                digest = norm_hash(piece["text"])
-                if digest in ctx.blocked:
-                    raise ValueError("trace_synth train collided with blocked text")
-                ctx.blocked.add(digest)
-                selected.append(piece)
+        _append_unique_trace_pieces(_cover_language_quota(pool, quota, seed), prior_blocked, ctx, selected)
     if {e["label"] for r in selected for e in r["entities"]} != required_types:
         raise ValueError("trace_synth train failed full entity-type coverage")
     return selected
 
 
 def load_trace_eval(path: Path, required_types: set[str], ctx: SplitContext) -> list[dict]:
+    prior_blocked = set(ctx.blocked)
     out = []
-    for row in read_jsonl(path):
-        for piece in split_and_validate(row, "trace_synth", ctx):
-            digest = norm_hash(piece["text"])
-            if digest in ctx.blocked:
-                raise ValueError(f"trace eval collision in {path}")
-            ctx.blocked.add(digest)
-            out.append(piece)
+    _append_unique_trace_pieces(read_jsonl(path), prior_blocked, ctx, out)
     if {e["label"] for r in out for e in r["entities"]} != required_types:
         raise ValueError(f"trace eval missing entity types in {path}")
     return out
