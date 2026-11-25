@@ -636,22 +636,35 @@ fn anon(common: &crate::CommonOpts, config: &Config, args: AnonArgs) -> Result<(
         .filter_map(|(p, _)| fs::metadata(p).ok())
         .map(|m| m.len())
         .sum();
-    let results: Vec<Result<(SessionStats, SessionPlan)>> = pool.install(|| {
-        files
-            .par_iter()
-            .map(|(path, rel)| {
-                let result = process(path, rel, &args, &shared);
-                let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                if progress {
-                    eprint!(
-                        "\r[{n}/{total}] sessions, {:.0}s elapsed",
-                        started.elapsed().as_secs_f64()
-                    );
-                }
-                result
-            })
-            .collect()
-    });
+    // Schedule largest sessions first so long files never straggle at the tail,
+    // then restore original path order so `--plan` output stays deterministic.
+    let mut work_order: Vec<(usize, u64)> = files
+        .iter()
+        .enumerate()
+        .map(|(i, (p, _))| (i, fs::metadata(p).map_or(0, |m| m.len())))
+        .collect();
+    work_order.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    let mut indexed_results: Vec<(usize, Result<(SessionStats, SessionPlan)>)> =
+        pool.install(|| {
+            work_order
+                .par_iter()
+                .map(|&(idx, _)| {
+                    let (path, rel) = &files[idx];
+                    let result = process(path, rel, &args, &shared);
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if progress {
+                        eprint!(
+                            "\r[{n}/{total}] sessions, {:.0}s elapsed",
+                            started.elapsed().as_secs_f64()
+                        );
+                    }
+                    (idx, result)
+                })
+                .collect()
+        });
+    indexed_results.sort_by_key(|(idx, _)| *idx);
+    let results: Vec<Result<(SessionStats, SessionPlan)>> =
+        indexed_results.into_iter().map(|(_, r)| r).collect();
     if progress {
         eprintln!();
     }
@@ -1790,7 +1803,7 @@ fn process(
             + ner_texts.iter().map(|t| t.len()).sum::<usize>();
         progress.report("ner", 0, ner_total, true);
         let results =
-            crate::traces_cache::detect_cached(ner, shared.cache.as_ref(), &unique, 64, |bytes| {
+            crate::traces_cache::detect_cached(ner, shared.cache.as_ref(), &unique, 256, |bytes| {
                 ner_done += bytes;
                 progress.report("ner", ner_done, ner_total, false);
             })
@@ -1817,7 +1830,7 @@ fn process(
             ner,
             shared.cache.as_ref(),
             &ner_texts,
-            32,
+            256,
             |bytes| {
                 ner_done += bytes;
                 progress.report("ner", ner_done, ner_total, false);

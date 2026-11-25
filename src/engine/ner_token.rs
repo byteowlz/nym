@@ -92,6 +92,9 @@ struct SharedSession {
     /// Never dropped: matches the intentional leak that keeps ONNX Runtime
     /// teardown (and its macOS exit crash) from ever running.
     sessions: Vec<std::sync::Mutex<std::mem::ManuallyDrop<Session>>>,
+    /// Shared prepacked weight container backing multi-replica CPU sessions so
+    /// replicas reuse one packed copy in memory rather than duplicating it.
+    _prepacked: Option<std::mem::ManuallyDrop<ort::session::builder::PrepackedWeights>>,
     next: std::sync::atomic::AtomicUsize,
     /// Whether the model expects a `token_type_ids` input (BERT-family models
     /// do; DeBERTa-v2 exports typically don't).
@@ -99,7 +102,16 @@ struct SharedSession {
 }
 
 impl SharedSession {
+    #[cfg(any(test, feature = "ner-coreml"))]
     fn from_sessions(primary: Session, replicas: Vec<Session>) -> Self {
+        Self::from_sessions_with_prepacked(primary, replicas, None)
+    }
+
+    fn from_sessions_with_prepacked(
+        primary: Session,
+        replicas: Vec<Session>,
+        prepacked: Option<ort::session::builder::PrepackedWeights>,
+    ) -> Self {
         let needs_token_type_ids = primary
             .inputs()
             .iter()
@@ -109,6 +121,7 @@ impl SharedSession {
                 .chain(replicas)
                 .map(|session| std::sync::Mutex::new(std::mem::ManuallyDrop::new(session)))
                 .collect(),
+            _prepacked: prepacked.map(std::mem::ManuallyDrop::new),
             next: std::sync::atomic::AtomicUsize::new(0),
             needs_token_type_ids,
         }
@@ -369,14 +382,54 @@ const MAX_BATCH_SIZE: usize = 128;
 /// This bounds each batch, not total process RSS or arbitrary worker counts.
 const MAX_BATCH_TOKENS: usize = 2 * 1024;
 
+/// Cap on quadratic attention workspace per padded forward pass (`rows * seq^2`).
+/// Keeps CPU attention tensors inside L2/L3 cache: `[1, 480]` (230k) and
+/// `[16, 128]` (262k) stay cache-resident, while `[4, 480]` (921k) was measured
+/// >2x slower per token due to cache thrashing across concurrent replicas.
+const MAX_BATCH_ATTN_CELLS: usize = 320 * 1024;
+
 /// Number of ascending window lengths fitting one padded forward pass.
 /// Always admit one window: an oversized window runs alone, never disappears.
+/// Bounds linear tokens, quadratic attention workspace, and mixed-length
+/// padding blowup (kept within ~1.33x / +8 tokens of the shortest row so SGEMM
+/// does not waste FLOPs multiplying zero padding tokens).
 fn padded_batch_len(lengths: impl Iterator<Item = usize>) -> usize {
+    let mut first_len = None;
     lengths
         .take(MAX_BATCH_SIZE)
         .enumerate()
-        .take_while(|&(row, tokens)| row == 0 || tokens <= MAX_BATCH_TOKENS / (row + 1))
+        .take_while(|&(row, tokens)| {
+            if row == 0 {
+                first_len = Some(tokens);
+                return true;
+            }
+            let base = first_len.unwrap_or(tokens);
+            let max_padded = base.saturating_add(base / 3).max(base.saturating_add(8));
+            let rows = row + 1;
+            tokens <= max_padded
+                && tokens <= MAX_BATCH_TOKENS / rows
+                && tokens.saturating_mul(tokens) <= MAX_BATCH_ATTN_CELLS / rows
+        })
         .count()
+}
+
+/// Choose `(replicas, global_pool_threads, fallback_intra_threads)` for CPU-only
+/// inference. Replicas enable concurrent trace workers while sharing one global
+/// ORT intra-op thread pool (avoiding per-replica thread oversubscription and
+/// capping default scaling at 16 threads so short ops do not spill onto slow
+/// efficiency cores on hybrid CPUs). `fallback_intra_threads` applies only if
+/// another subsystem initialized the process-global ORT environment without a
+/// global thread pool (e.g., `ner-gliner`).
+fn cpu_pool_layout(threads: usize, available_cpus: usize) -> (usize, usize, usize) {
+    if threads <= 1 {
+        return (1, 1, 1);
+    }
+    let replicas = threads.min(4);
+    let cpus = available_cpus.max(1);
+    let cap = cpus.min(16).max(threads).min(cpus);
+    let global_pool = threads.saturating_mul(2).clamp(1, cap);
+    let fallback_intra = (global_pool / replicas).max(1);
+    (replicas, global_pool, fallback_intra)
 }
 
 /// A decoded entity span within a single chunk, in chunk-local byte offsets.
@@ -587,12 +640,19 @@ impl TokenClassDetector {
         let has_gpu_buckets = gpu_buckets.is_some();
         #[cfg(not(feature = "ner-coreml"))]
         let has_gpu_buckets = false;
-        let replicas = if eager_cpu_only && !has_gpu_buckets && threads > 1 {
-            4
+        let (replicas, global_pool, session_threads) = if eager_cpu_only && !has_gpu_buckets {
+            let available = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
+            cpu_pool_layout(threads, available)
         } else {
-            1
+            (1, 1, threads)
         };
-        let session = Self::create_runtime(model_path, eager_cpu_only, threads, replicas)?;
+        let session = Self::create_runtime(
+            model_path,
+            eager_cpu_only,
+            session_threads,
+            replicas,
+            (replicas > 1).then_some(global_pool),
+        )?;
         let needs_token_type_ids = session.needs_token_type_ids();
 
         let o_id = id2label.iter().position(|l| l == "O").unwrap_or(0);
@@ -621,14 +681,33 @@ impl TokenClassDetector {
         cpu_only: bool,
         threads: usize,
         replicas: usize,
+        global_pool_threads: Option<usize>,
     ) -> Result<SharedSession, Box<dyn std::error::Error + Send + Sync>> {
-        let primary = match Self::try_create_session(model_path, cpu_only, threads) {
+        let use_global_pool = global_pool_threads.is_some();
+        if let Some(pool_threads) = global_pool_threads {
+            let _ = super::ner::global_environment_with_pool(Some(pool_threads))?;
+        }
+        let prepacked = (replicas > 1).then(ort::session::builder::PrepackedWeights::new);
+        let primary = match Self::try_create_session(
+            model_path,
+            cpu_only,
+            threads,
+            use_global_pool,
+            prepacked.as_ref(),
+        ) {
             Ok(session) => session,
             Err(error)
                 if !cpu_only && cfg!(any(feature = "ner-cuda", feature = "ner-tensorrt")) =>
             {
                 log::warn!("Token NER accelerator initialization failed; retrying with CPU");
-                Self::try_create_session(model_path, true, threads).map_err(|cpu_error| {
+                Self::try_create_session(
+                    model_path,
+                    true,
+                    threads,
+                    use_global_pool,
+                    prepacked.as_ref(),
+                )
+                .map_err(|cpu_error| {
                     format!(
                         "token NER accelerator failed: {error}; CPU fallback failed: {cpu_error}"
                     )
@@ -636,10 +715,22 @@ impl TokenClassDetector {
             }
             Err(error) => return Err(format!("token NER session failed: {error}").into()),
         };
+        // Replicas share the prepacked weight container populated by `primary`,
+        // avoiding duplicate weight packing and cutting multi-replica RSS.
         let additional = (1..replicas)
-            .map(|_| Self::try_create_session(model_path, true, threads))
+            .map(|_| {
+                Self::try_create_session(
+                    model_path,
+                    true,
+                    threads,
+                    use_global_pool,
+                    prepacked.as_ref(),
+                )
+            })
             .collect::<Result<Vec<_>, _>>()?;
-        Ok(SharedSession::from_sessions(primary, additional))
+        Ok(SharedSession::from_sessions_with_prepacked(
+            primary, additional, prepacked,
+        ))
     }
 
     /// Resolve the static bucket variants next to a local model directory.
@@ -703,6 +794,8 @@ impl TokenClassDetector {
         model_path: &Path,
         cpu_only: bool,
         threads: usize,
+        use_global_pool: bool,
+        prepacked: Option<&ort::session::builder::PrepackedWeights>,
     ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
         // Register the macOS fast-exit hook for every NER build, not only the
         // GLiNER path that used to call it: token sessions now exist in all
@@ -710,7 +803,7 @@ impl TokenClassDetector {
         // teardown (see `super::ner` and the exit tests).
         super::ner::setup_macos_crash_workaround();
         let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            Self::create_session(model_path, cpu_only, threads)
+            Self::create_session(model_path, cpu_only, threads, use_global_pool, prepacked)
         }))
         .map_err(|_| "NER runtime initialization failed")?;
         Ok(result?)
@@ -811,6 +904,8 @@ impl TokenClassDetector {
         model_path: &Path,
         cpu_only: bool,
         threads: usize,
+        use_global_pool: bool,
+        prepacked: Option<&ort::session::builder::PrepackedWeights>,
     ) -> Result<Session, Box<dyn std::error::Error + Send + Sync>> {
         let environment = Self::global_environment()?;
         // A bounded intra-op pool avoids contention; explicit tuning can exceed
@@ -825,7 +920,24 @@ impl TokenClassDetector {
                 .with_auto_device(ort::session::builder::AutoDevicePolicy::PreferCPU)
                 .map_err(|error| ort::Error::new(error.to_string()))?
                 .with_intra_threads(threads)
+                .map_err(|error| ort::Error::new(error.to_string()))?
+                .with_inter_threads(1)
+                .map_err(|error| ort::Error::new(error.to_string()))?
+                // Batch/sequence shapes vary per call; ORT recommends disabling
+                // memory pattern caching for dynamic shapes so per-shape peaks
+                // are not retained across replicas.
+                .with_memory_pattern(false)
                 .map_err(|error| ort::Error::new(error.to_string()))?;
+            if !use_global_pool {
+                builder = builder
+                    .with_independent_thread_pool()
+                    .map_err(|error| ort::Error::new(error.to_string()))?;
+            }
+            if let Some(weights) = prepacked {
+                builder = builder
+                    .with_prepacked_weights(weights)
+                    .map_err(|error| ort::Error::new(error.to_string()))?;
+            }
             // CoreML is not registered here: the Apple GPU path runs through
             // fixed-shape bucket sessions only (see `GpuBuckets`). On NVIDIA,
             // runs on the GPU instead of the CPU. CUDA is gated behind the
@@ -848,10 +960,14 @@ impl TokenClassDetector {
                         .error_on_failure()])
                     .map_err(|error| ort::Error::new(error.to_string()))?;
             }
-            // Register CPU explicitly, without any accelerator provider.
+            // Register CPU explicitly with its arena allocator enabled so
+            // intermediate tensors reuse arena blocks instead of hammering the
+            // system allocator on every dynamic batch.
             if cpu_only {
                 builder = builder
-                    .with_execution_providers([ort::ep::CPU::default().build()])
+                    .with_execution_providers([ort::ep::CPU::default()
+                        .with_arena_allocator(true)
+                        .build()])
                     .map_err(|error| ort::Error::new(error.to_string()))?;
             }
             builder.commit_from_file(model_path)
@@ -910,6 +1026,16 @@ impl TokenClassDetector {
         let mut multi = vec![false; texts.len()];
         for (index, &text) in texts.iter().enumerate() {
             if text.trim().len() < MIN_TEXT_LENGTH {
+                continue;
+            }
+            // Fast path: encode once with special tokens; if total length fits
+            // within `window_tokens`, non-special token count is guaranteed to
+            // fit in one window, skipping redundant tokenization in split_into_chunks.
+            let encoding = self.tokenizer.encode(text, true)?;
+            if encoding.get_ids().len() <= self.window_tokens {
+                if !encoding.get_ids().is_empty() {
+                    windows.push((index, text.to_string(), 0, encoding));
+                }
                 continue;
             }
             let mut chunks = self.split_into_chunks(text)?;
@@ -1686,12 +1812,13 @@ mod tests {
             [
                 padded_batch_len(std::iter::empty()),
                 padded_batch_len(std::iter::repeat_n(512, 100)),
+                padded_batch_len(std::iter::repeat_n(128, 100)),
                 padded_batch_len(std::iter::repeat_n(8, 256)),
                 padded_batch_len([8, 8, 480, 480, 480].into_iter()),
                 padded_batch_len([2049, 2049].into_iter()),
                 padded_batch_len([usize::MAX, usize::MAX].into_iter()),
             ],
-            [0, 4, 128, 4, 1, 1]
+            [0, 1, 16, 128, 2, 1, 1]
         );
         let lengths = [2, 2, 700, 700, 700];
         let mut batches = Vec::new();
@@ -1702,7 +1829,33 @@ mod tests {
             batches.push(lengths[start..start + count].to_vec());
             start += count;
         }
-        assert_eq!(batches, vec![vec![2, 2], vec![700, 700], vec![700]]);
+        assert_eq!(batches, vec![vec![2, 2], vec![700], vec![700], vec![700]]);
+    }
+
+    #[test]
+    fn cpu_pool_layout_avoids_core_oversubscription() {
+        assert_eq!(
+            [
+                cpu_pool_layout(1, 24),
+                cpu_pool_layout(2, 8),
+                cpu_pool_layout(4, 4),
+                cpu_pool_layout(4, 8),
+                cpu_pool_layout(8, 8),
+                cpu_pool_layout(8, 16),
+                cpu_pool_layout(8, 24),
+                cpu_pool_layout(24, 32),
+            ],
+            [
+                (1, 1, 1),
+                (2, 4, 2),
+                (4, 4, 1),
+                (4, 8, 2),
+                (4, 8, 2),
+                (4, 16, 4),
+                (4, 16, 4),
+                (4, 24, 6),
+            ]
+        );
     }
 
     #[test]

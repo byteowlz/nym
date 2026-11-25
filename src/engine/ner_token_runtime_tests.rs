@@ -15,9 +15,9 @@ fn concurrent_native_session_requests_remain_independent()
         include_bytes!("../../tests/fixtures/concurrent_logits.onnx"),
     )?;
     for replicas in [1, 2, 4] {
-        let primary = TokenClassDetector::try_create_session(&model, true, 1)?;
+        let primary = TokenClassDetector::try_create_session(&model, true, 1, false, None)?;
         let additional = (1..replicas)
-            .map(|_| TokenClassDetector::try_create_session(&model, true, 1))
+            .map(|_| TokenClassDetector::try_create_session(&model, true, 1, false, None))
             .collect::<Result<Vec<_>, _>>()?;
         let runtime = super::SharedSession::from_sessions(primary, additional);
         let barrier = std::sync::Barrier::new(8);

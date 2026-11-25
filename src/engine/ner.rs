@@ -150,17 +150,37 @@ pub fn set_exit_code(code: i32) {
 #[cfg(feature = "ner")]
 pub(super) fn global_environment()
 -> Result<ort::environment::Environment, Box<dyn std::error::Error + Send + Sync>> {
+    global_environment_with_pool(None)
+}
+
+/// Process-global ONNX Runtime environment, optionally configured with a shared
+/// intra-op thread pool so multiple CPU session replicas share cores without
+/// oversubscribing. Single-session callers opt out via
+/// `SessionBuilder::with_independent_thread_pool`.
+#[cfg(feature = "ner")]
+pub(super) fn global_environment_with_pool(
+    intra_threads: Option<usize>,
+) -> Result<ort::environment::Environment, Box<dyn std::error::Error + Send + Sync>> {
     #[cfg(feature = "ner-gliner")]
-    return orp::env::global_environment().map_err(Into::into);
+    {
+        let _ = intra_threads;
+        return orp::env::global_environment().map_err(Into::into);
+    }
     #[cfg(not(feature = "ner-gliner"))]
     {
         static ENVIRONMENT: std::sync::OnceLock<Result<ort::environment::Environment, String>> =
             std::sync::OnceLock::new();
         ENVIRONMENT
             .get_or_init(|| {
-                ort::environment::init()
-                    .build()
-                    .map_err(|error| error.to_string())
+                let mut builder = ort::environment::init();
+                if let Some(threads) = intra_threads.filter(|&n| n > 1) {
+                    let tp = ort::environment::GlobalThreadPoolOptions::default()
+                        .with_intra_threads(threads)
+                        .and_then(|o| o.with_inter_threads(1))
+                        .map_err(|error| error.to_string())?;
+                    builder = builder.with_global_thread_pool(tp);
+                }
+                builder.build().map_err(|error| error.to_string())
             })
             .clone()
             .map_err(Into::into)
