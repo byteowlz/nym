@@ -1226,6 +1226,22 @@ pub(crate) mod tests {
                 "pay DE89 3704 0044 0532 0130 00 today",
                 "DE89 3704 0044 0532 0130 00",
             ),
+            (
+                "transfer SA03 8000 0000 6080 1016 7519 2026",
+                "SA03 8000 0000 6080 1016 7519",
+            ),
+            (
+                "wire KW81 CBKU 0000 0000 0000 1234 5601 01 ref1",
+                "KW81 CBKU 0000 0000 0000 1234 5601 01",
+            ),
+            (
+                "account QA58 DOHB 0000 1234 5678 90AB CDEF G 2026",
+                "QA58 DOHB 0000 1234 5678 90AB CDEF G",
+            ),
+            (
+                "remit EG38 0019 0005 0000 0000 2631 8000 2 9999",
+                "EG38 0019 0005 0000 0000 2631 8000 2",
+            ),
         ] {
             let matches = detector.detect(text).unwrap();
             let start = text.find(iban).unwrap();
